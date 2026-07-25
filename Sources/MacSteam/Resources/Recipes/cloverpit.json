@@ -16,6 +16,9 @@
     ]
   },
   "detection": {
-    "manifestName": "appmanifest_3314790.acf"
+    "manifestName": "appmanifest_3314790.acf",
+    "executableCandidates": [
+      "CloverPit.exe"
+    ]
   }
 }

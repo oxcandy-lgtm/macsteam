@@ -84,7 +84,7 @@ final class GameManager: ObservableObject, Sendable {
         let steamResult = steamDetector.detectWindowsSteam(in: runtime)
         switch steamResult {
         case .windowsSteamFound(let steamURL):
-            log("Windows Steam found at \(steamURL.path)")
+            log("Windows Steam found at \(PathRedactor.redactPath(steamURL.path))")
         case .nativeMacSteamOnly:
             log("Only native macOS Steam found")
             state = .storeMissing
@@ -102,11 +102,7 @@ final class GameManager: ObservableObject, Sendable {
         log("Game inspection: manifest=\(gameInspection.manifestPresent) installDir=\(gameInspection.installDirectoryResolved) executable=\(gameInspection.executablePresent)")
 
         guard gameInspection.isReady else {
-            if !gameInspection.manifestPresent {
-                state = .gameNotInstalled
-            } else {
-                state = .gameNotInstalled
-            }
+            state = .gameNotInstalled
             return
         }
 
@@ -124,9 +120,9 @@ final class GameManager: ObservableObject, Sendable {
 
         do {
             try await runtime.launchGame(recipe)
-            // After launch complete, return to ready
+            // Detached launch: return to ready immediately after process spawn
             state = .ready
-            log("Launch completed")
+            log("Launch command submitted")
         } catch {
             log("Launch failed: \(error.localizedDescription)")
             state = .failed(.processStartFailed(underlying: error.localizedDescription))

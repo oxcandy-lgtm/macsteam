@@ -10,7 +10,7 @@
 
 **Do not report security vulnerabilities through public GitHub issues.**
 
-Please report security vulnerabilities via email to **security@macsteam.app** (placeholder — address will be activated before first release).
+Please report security vulnerabilities via email to **security@example.invalid** (placeholder — a real address will be activated before the first release).
 
 You should receive a response within 48 hours. If you do not, please follow up.
 

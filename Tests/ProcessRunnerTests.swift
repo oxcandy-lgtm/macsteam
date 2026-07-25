@@ -44,9 +44,10 @@ struct ProcessRunnerTests {
                 arguments: ["10"],
                 timeout: 2
             )
+            // If the process somehow completed, exit could be 0 or -15
             #expect(result.exitCode == 0 || result.exitCode == -15)
         } catch let error as ProcessRunner.RunnerError {
-            #expect(error == .timeoutReached(2) || error == .cancelled)
+            #expect(error == .timeoutReached(2) || error == .processTerminated(signal: 15) || error == .cancelled)
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
@@ -58,6 +59,16 @@ struct ProcessRunnerTests {
             timeout: 5
         )
         #expect(result.stdout.contains("PATH=/usr/bin:/bin:/usr/sbin:/sbin"))
+        #expect(result.exitCode == 0)
+    }
+
+    @Test func detachedReturnsImmediately() async throws {
+        let result = try await runner.run(
+            executable: URL(fileURLWithPath: "/bin/sleep"),
+            arguments: ["60"],
+            mode: .detached
+        )
+        // detached should return immediately without waiting
         #expect(result.exitCode == 0)
     }
 }

@@ -41,6 +41,15 @@ extension GameRecipe {
 
     struct DetectionConfig: Codable, Equatable, Sendable {
         let manifestName: String
+        /// Candidate game executable filenames (e.g. `["CloverPit.exe"]`).
+        /// When non‑empty, at least one must be present in the install directory
+        /// for `isReady` to be true.
+        let executableCandidates: [String]?
+
+        init(manifestName: String, executableCandidates: [String]? = nil) {
+            self.manifestName = manifestName
+            self.executableCandidates = executableCandidates
+        }
     }
 }
 

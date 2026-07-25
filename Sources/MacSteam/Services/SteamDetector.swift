@@ -22,31 +22,16 @@ class SteamDetector: @unchecked Sendable {
 
     /// Detect Windows Steam inside a given runtime.
     func detectWindowsSteam(in runtime: any CompatibilityRuntime) -> SteamDetectionResult {
-        // This implementation is runtime‑aware.
-        // For CrossOver we check the standard bottle layout.
         guard let crossover = runtime as? CrossOverRuntime else {
             return .noSteamFound
         }
 
-        let bundleURL = crossover.bundleURL
-
-        // Standard CrossOver bottle locations for Steam
-        let steamCandidates = [
-            bundleURL
-                .appendingPathComponent("Contents/SharedSupport/CrossOver")
-                .appendingPathComponent("Bottles/Steam/drive_c/Program Files (x86)/Steam/steam.exe"),
-            bundleURL
-                .appendingPathComponent("Contents/SharedSupport/CrossOver")
-                .appendingPathComponent("Bottles/Steam/drive_c/Program Files/Steam/steam.exe")
-        ]
-
-        for candidate in steamCandidates {
-            if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                return .windowsSteamFound(candidate)
-            }
+        // Use CrossOverRuntime's bottle discovery
+        if let (_, steamURL) = crossover.findSteamBottle() {
+            return .windowsSteamFound(steamURL)
         }
 
-        // Check if native macOS Steam is installed (but not Windows Steam in runtime)
+        // Check if native macOS Steam is installed
         let nativeSteamPath = "/Applications/Steam.app"
         if FileManager.default.fileExists(atPath: nativeSteamPath) {
             return .nativeMacSteamOnly
@@ -58,9 +43,8 @@ class SteamDetector: @unchecked Sendable {
     /// Inspect a specific game's installation status within a Windows Steam
     /// installation.
     func inspectGame(_ recipe: GameRecipe, windowsSteamURL: URL) -> GameInspection {
-        let steamRoot = windowsSteamURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        // Steam root is the parent directory of steam.exe
+        let steamRoot = windowsSteamURL.deletingLastPathComponent()
 
         let manifestPath = steamRoot
             .appendingPathComponent("steamapps")
@@ -84,8 +68,11 @@ class SteamDetector: @unchecked Sendable {
                 installDirectoryResolved = FileManager.default
                     .fileExists(atPath: gameDir.path)
 
-                // Check for common Windows executable patterns
-                executablePresent = checkForGameExecutable(in: gameDir)
+                // Check for game executable using recipe candidates or fallback
+                executablePresent = checkForGameExecutable(
+                    in: gameDir,
+                    candidates: recipe.detection.executableCandidates
+                )
             } else {
                 installDirectoryResolved = false
                 executablePresent = false
@@ -117,11 +104,10 @@ class SteamDetector: @unchecked Sendable {
 
     /// Extract the install directory name from an ACF manifest.
     private func extractInstallDir(from manifest: String) -> String? {
-        // ACF manifests contain "installdir" or "installDir" key
         let patterns = [
-            #""installdir"\s+"([^"]+)""#,
-            #""installDir"\s+"([^"]+)""#,
-            #""InstallDir"\s+"([^"]+)""#
+            #"\"installdir\"\s+\"([^\"]+)\""#,
+            #"\"installDir\"\s+\"([^\"]+)\""#,
+            #"\"InstallDir\"\s+\"([^\"]+)\""#
         ]
 
         for pattern in patterns {
@@ -139,15 +125,16 @@ class SteamDetector: @unchecked Sendable {
         return nil
     }
 
-    /// Check for common game executable patterns in a directory.
-    private func checkForGameExecutable(in directory: URL) -> Bool {
+    /// Check for game executables in a directory.
+    private func checkForGameExecutable(in directory: URL, candidates: [String]?) -> Bool {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(atPath: directory.path) else {
             return false
         }
-
-        // Look for .exe files (we don't know the exact name ahead of time)
-        let exeFiles = contents.filter { $0.hasSuffix(".exe") }
-        return !exeFiles.isEmpty
+        if let candidates, !candidates.isEmpty {
+            return candidates.contains { contents.contains($0) }
+        }
+        // Fallback: any .exe file
+        return contents.contains { $0.hasSuffix(".exe") }
     }
 }
