@@ -130,6 +130,7 @@ final class GameManager: ObservableObject, Sendable {
     }
 
     /// Open the store (e.g., Windows Steam) for the current recipe.
+    /// Errors propagate to the UI.
     func openStore() async {
         guard let recipe = currentRecipe, let runtime = activeRuntime else { return }
         do {
@@ -137,6 +138,7 @@ final class GameManager: ObservableObject, Sendable {
             log("Store opened for \(recipe.displayName)")
         } catch {
             log("Failed to open store: \(error.localizedDescription)")
+            state = .failed(.processStartFailed(underlying: error.localizedDescription))
         }
     }
 

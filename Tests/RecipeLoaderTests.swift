@@ -93,7 +93,7 @@ struct RecipeLoaderTests {
         let json = """
         {
             "schemaVersion": 1,
-            "id": "/Users/evil/recipe",
+            "id": "/Users/example/recipe",
             "displayName": "Evil",
             "store": { "type": "steam", "appId": "12345" },
             "runtime": { "preferredAdapter": "crossover" },

@@ -16,6 +16,7 @@ xcuserdata/
 *.crash
 
 # Build artifacts
+.build/
 *.dSYM
 *.ipa
 *.pkg

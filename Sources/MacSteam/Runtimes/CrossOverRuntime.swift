@@ -58,7 +58,8 @@ final class CrossOverRuntime: CompatibilityRuntime, @unchecked Sendable {
             )
         }
 
-        // Check that the wine CLI tool exists (required for launching)
+        // Check that the wine CLI tool exists (required for launching).
+        // wine is a macOS binary — isExecutableFile is appropriate here.
         guard wineExecutable != nil else {
             return RuntimeInspection(
                 id: id,
@@ -138,12 +139,12 @@ final class CrossOverRuntime: CompatibilityRuntime, @unchecked Sendable {
 
     func openStore(for recipe: GameRecipe) async throws {
         let plan = try makeStorePlan(for: recipe)
-        try performDetached(plan)
+        try await performDetached(plan)
     }
 
     func launchGame(_ recipe: GameRecipe) async throws {
         let plan = try makeLaunchPlan(for: recipe)
-        try performDetached(plan)
+        try await performDetached(plan)
     }
 
     // MARK: - Launch plan
@@ -197,8 +198,10 @@ final class CrossOverRuntime: CompatibilityRuntime, @unchecked Sendable {
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: bottleDir.path, isDirectory: &isDir), isDir.boolValue else { continue }
 
-                let cxarchive = bottleDir.appendingPathComponent("\(item).cxarchive")
-                guard fm.fileExists(atPath: cxarchive.path) else { continue }
+                // A bottle must contain a drive_c/ directory
+                let driveC = bottleDir.appendingPathComponent("drive_c")
+                var isDriveDir: ObjCBool = false
+                guard fm.fileExists(atPath: driveC.path, isDirectory: &isDriveDir), isDriveDir.boolValue else { continue }
 
                 // Look for Windows Steam inside the bottle
                 let steam = findSteamExe(in: bottleDir)
@@ -225,6 +228,7 @@ final class CrossOverRuntime: CompatibilityRuntime, @unchecked Sendable {
     // MARK: - Private
 
     /// Path to the CrossOver‑bundled wine CLI.
+    /// wine is a macOS binary — `isExecutableFile` is correct here.
     private var wineExecutable: URL? {
         let candidate = bundleURL
             .appendingPathComponent("Contents/SharedSupport/CrossOver/bin/wine")
@@ -293,13 +297,15 @@ final class CrossOverRuntime: CompatibilityRuntime, @unchecked Sendable {
     }
 
     /// Find steam.exe inside a bottle by checking standard Windows paths.
+    /// Does NOT require the POSIX executable bit — Windows .exe files are
+    /// data files on macOS.
     private func findSteamExe(in bottleDir: URL) -> URL? {
         let candidates = [
             bottleDir.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe"),
             bottleDir.appendingPathComponent("drive_c/Program Files/Steam/steam.exe")
         ]
         for candidate in candidates {
-            if fm.isExecutableFile(atPath: candidate.path) {
+            if isRegularFile(candidate, boundedBy: bottleDir) {
                 return candidate
             }
         }
@@ -314,18 +320,46 @@ final class CrossOverRuntime: CompatibilityRuntime, @unchecked Sendable {
         return bottle.name
     }
 
-    /// Launch a plan in detached mode.
-    private func performDetached(_ plan: LaunchPlan) throws {
+    /// Launch a plan in detached mode.  Errors from process spawning
+    /// propagate directly to the caller (no silent `Task` swallow).
+    private func performDetached(_ plan: LaunchPlan) async throws {
         guard plan.mode == .detached else {
-            throw LauncherFailure.processStartFailed(underlying: "Expected detached launch mode")
-        }
-        Task {
-            let _ = try? await processRunner.run(
-                executable: plan.runtimeExecutable,
-                arguments: plan.arguments,
-                mode: .detached
+            throw LauncherFailure.processStartFailed(
+                underlying: "Expected detached launch mode"
             )
         }
+        _ = try await processRunner.run(
+            executable: plan.runtimeExecutable,
+            arguments: plan.arguments,
+            mode: .detached
+        )
+    }
+
+    // MARK: - File helpers
+
+    /// Check whether `url` is a regular file (not a directory, not a
+    /// symlink escaping the bounded root) with a `.exe` extension.
+    ///
+    /// Does NOT require the POSIX executable bit — Windows .exe files
+    /// are data files when copied to macOS and should not be rejected
+    /// for lacking the executable permission.
+    private func isRegularFile(_ url: URL, boundedBy root: URL) -> Bool {
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir),
+              !isDir.boolValue else { return false }
+
+        guard url.pathExtension.lowercased() == "exe" else { return false }
+
+        // Resolve symlinks and verify the resolved path stays inside the bottle
+        let resolved: URL
+        if let linkDest = try? fm.destinationOfSymbolicLink(atPath: url.path) {
+            resolved = URL(fileURLWithPath: linkDest, relativeTo: url.deletingLastPathComponent()).standardized
+        } else {
+            resolved = url.standardized
+        }
+
+        let rootStd = root.standardized.path
+        return resolved.path.hasPrefix(rootStd)
     }
 
     /// Extract the install directory name from an ACF manifest.
@@ -351,13 +385,16 @@ final class CrossOverRuntime: CompatibilityRuntime, @unchecked Sendable {
     }
 
     /// Check for game executables in a directory.
+    /// Uses `isRegularFile` so POSIX executable bit is not required.
     private func checkForGameExecutable(in directory: URL, candidates: [String]?) -> Bool {
         guard let contents = try? fm.contentsOfDirectory(atPath: directory.path) else {
             return false
         }
         if let candidates, !candidates.isEmpty {
-            // At least one candidate must be present
-            return candidates.contains { contents.contains($0) }
+            // At least one candidate must be present AND be a regular file
+            return candidates.contains { candidate in
+                isRegularFile(directory.appendingPathComponent(candidate), boundedBy: directory)
+            }
         }
         // Fallback: any .exe file
         return contents.contains { $0.hasSuffix(".exe") }

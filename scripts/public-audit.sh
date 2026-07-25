@@ -31,6 +31,13 @@ check() {
     fi
 }
 
+# Format a WARN with location info for manual inspection.
+warn_detail() {
+    local category="$1" file="$2" line="$3" value="$4"
+    echo -e "  ${YELLOW}→${NC} ${category}: ${file}:${line}"
+    echo -e "    value: ${value}"
+}
+
 # List all git‑tracked files (ignoring submodules, build artifacts).
 git_ls() {
     git ls-files -z --cached --others --exclude-standard \
@@ -102,7 +109,9 @@ for term in CCL CCLLM CCLMUX KARASI BOOTMUX SAI; do
     matches=$(git_grep "$term" \
         | grep -v 'scripts/public-audit\.sh' || true)
     if [ -n "$matches" ]; then
-        echo "$matches"
+        while IFS= read -r line; do
+            warn_detail "internal name '$term'" "$line" "" ""
+        done <<< "$matches"
         check "No internal name '$term' in source" "fail"
     else
         check "No internal name '$term' in source" "pass"
@@ -111,13 +120,20 @@ done
 
 # ––– Email addresses –––
 echo "--- Email Addresses ---"
+# Tests are NOT excluded — test data must use @example.* domains only.
 matches=$(git_grep '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' \
     | grep -v '@example\.\(com\|org\|net\|invalid\)' \
     | grep -v 'spdx\.org' \
-    | grep -v 'scripts/public-audit\.sh' \
-    | grep -v 'Tests/' || true)
+    | grep -v 'scripts/public-audit\.sh' || true)
 if [ -n "$matches" ]; then
-    echo "$matches"
+    while IFS= read -r line; do
+        file="${line%%:*}"
+        rest="${line#*:}"
+        lineno="${rest%%:*}"
+        raw="${rest#*:}"
+        redacted=$(echo "$raw" | sed 's/[a-zA-Z0-9._%+-]*@[a-zA-Z0-9.-]*\.[a-zA-Z]*/***@***.***/g')
+        warn_detail "email" "$file" "$lineno" "$redacted"
+    done <<< "$matches"
     check "No personal email addresses in repository" "fail"
 else
     check "No personal email addresses in repository" "pass"
@@ -125,14 +141,21 @@ fi
 
 # ––– Absolute personal paths –––
 echo "--- Personal Paths ---"
+# Tests are NOT excluded — test data must use /Users/example/ only.
 matches=$(git_grep '/Users/[A-Za-z0-9_-]+/' \
     | grep -v '/Users/example' \
     | grep -v '/Users/Shared' \
-    | grep -v '/Users/Guest' \
-    | grep -v 'Tests/' || true)
+    | grep -v '/Users/Guest' || true)
 if [ -n "$matches" ]; then
-    echo "$matches"
-    check "No real user paths in source" "warn"
+    while IFS= read -r line; do
+        file="${line%%:*}"
+        rest="${line#*:}"
+        lineno="${rest%%:*}"
+        raw="${rest#*:}"
+        redacted=$(echo "$raw" | sed 's|/Users/[A-Za-z0-9_-]*|/Users/<redacted>|g')
+        warn_detail "personal path" "$file" "$lineno" "$redacted"
+    done <<< "$matches"
+    check "No real user paths in source" "fail"
 else
     check "No real user paths in source" "pass"
 fi
@@ -150,7 +173,7 @@ else
     check "No .p12 files" "pass"
 fi
 if git_ls | tr '\0' '\n' | grep -q '\.dSYM$'; then
-    check "No .dSYM files" "warn"
+    check "No .dSYM files" "fail"
 else
     check "No .dSYM files" "pass"
 fi
@@ -186,6 +209,10 @@ echo -e "${GREEN}Pass:${NC} $PASS  ${RED}Fail:${NC} $FAIL  ${YELLOW}Warn:${NC} $
 if [ "$FAIL" -gt 0 ]; then
     echo -e "${RED}FAILED: $FAIL blocking items must be resolved before publication.${NC}"
     exit 1
+elif [ "$WARN" -gt 0 ]; then
+    # Warnings are informational — they do not block publication.
+    echo -e "${YELLOW}WARNINGS: $WARN non-blocking items found.${NC}"
+    exit 0
 else
     echo -e "${GREEN}Audit passed.${NC}"
     exit 0
