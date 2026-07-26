@@ -3,69 +3,58 @@
 import Foundation
 
 /// A fully mocked runtime for testing UI and state transitions without
-/// a real CrossOver installation.
+/// a real Wine or CrossOver installation.
 ///
 /// Configure behaviour by setting properties before calling methods.
-final class MockRuntime: CompatibilityRuntime, @unchecked Sendable {
-    let id = "mock"
+final class MockRuntime: @unchecked Sendable {
+    static let runtimeID = "mock"
 
     var simulatedInspection: RuntimeInspection
-    var simulatedGameInspection: GameInspection
-    var shouldThrowOnLaunch = false
-    var shouldThrowOnOpenStore = false
+    var shouldThrowOnValidate = false
+    var simulatedLaunchPlan: LaunchPlan?
 
     // Call tracking for tests
-    var didCallLaunch = false
-    var didCallOpenStore = false
     var didCallInspect = false
-    var didCallInspectGame = false
+    var didCallValidate = false
+    var didCallLaunchPlan = false
 
-    init(
-        inspection: RuntimeInspection? = nil,
-        gameInspection: GameInspection? = nil
-    ) {
+    init(inspection: RuntimeInspection? = nil) {
         self.simulatedInspection = inspection ?? RuntimeInspection(
-            id: "mock",
+            runtimeID: "mock",
             displayName: "Mock Runtime",
             version: "1.0.0",
-            bundleURL: URL(fileURLWithPath: "/Applications/Mock.app"),
-            isValid: true,
-            failure: nil
-        )
-        self.simulatedGameInspection = gameInspection ?? GameInspection(
-            recipeID: "cloverpit",
-            steamPresent: true,
-            isWindowsSteam: true,
-            manifestPresent: true,
-            installDirectoryResolved: true,
-            executablePresent: true,
-            isReady: true
+            isUsable: true
         )
     }
 
-    func inspect() async -> RuntimeInspection {
+    init?(url: URL) {
+        self.simulatedInspection = RuntimeInspection(runtimeID: "mock", isUsable: true)
+    }
+
+    static func detectSystem() -> Bool { true }
+}
+
+// MARK: - CompatibilityRuntime conformance
+
+extension MockRuntime: CompatibilityRuntime {
+    func inspect() -> RuntimeInspection {
         didCallInspect = true
         return simulatedInspection
     }
 
-    func inspectGame(_ recipe: GameRecipe) async -> GameInspection {
-        didCallInspectGame = true
-        return simulatedGameInspection
+    func validate() throws {
+        didCallValidate = true
+        if shouldThrowOnValidate {
+            throw RuntimeFailure(code: .bundleNotValid, message: "Mock validation error")
+        }
     }
 
-    func openStore(for recipe: GameRecipe) async throws {
-        didCallOpenStore = true
-        if shouldThrowOnOpenStore {
-            throw LauncherFailure.processStartFailed(underlying: "Mock store error")
-        }
-        // no-op in mock
-    }
-
-    func launchGame(_ recipe: GameRecipe) async throws {
-        didCallLaunch = true
-        if shouldThrowOnLaunch {
-            throw LauncherFailure.processStartFailed(underlying: "Mock launch error")
-        }
-        // no-op in mock
+    func launchPlan(for recipe: GameRecipe) -> LaunchPlan? {
+        didCallLaunchPlan = true
+        return simulatedLaunchPlan ?? LaunchPlan(
+            runtimeExecutable: URL(fileURLWithPath: "/usr/bin/true"),
+            arguments: recipe.launch.storeArguments,
+            mode: .detached
+        )
     }
 }

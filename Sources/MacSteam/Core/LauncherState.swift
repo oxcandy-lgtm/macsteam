@@ -24,15 +24,6 @@ enum LauncherState: Equatable, Sendable {
     case failed(LauncherFailure)
 }
 
-// MARK: - Failure types
-
-/// Errors that can occur during runtime inspection.
-enum RuntimeFailure: Error, Equatable, Sendable {
-    case bundleNotValid
-    case executableMissing
-    case versionNotSupported
-}
-
 /// Errors that can occur during game launch or management.
 enum LauncherFailure: Error, Equatable, Sendable {
     case processExecutableInvalid
@@ -42,10 +33,7 @@ enum LauncherFailure: Error, Equatable, Sendable {
     case processCancelled
 }
 
-// MARK: - Error codes (machine‑readable)
-
-/// Stable, machine‑readable error codes that are independent of
-/// user‑facing strings.
+/// Stable, machine‑readable error codes.
 enum ErrorCode: String, Equatable, Sendable {
     case runtimeNotFound = "RUNTIME_NOT_FOUND"
     case runtimeInvalid = "RUNTIME_INVALID"

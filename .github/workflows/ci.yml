@@ -30,6 +30,48 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Validate JSON Schemas
+        run: |
+          for schema in Contracts/*.schema.json; do
+            python3 -c "import json; json.loads(open('$schema').read())" && echo "✓ $schema" || echo "✗ $schema"
+          done
+      - name: Validate component-lock
+        run: |
+          python3 -c "
+            import json
+            lock = json.loads(open('Sources/MacSteam/Resources/Legal/component-lock.json').read())
+            assert lock['schemaVersion'] == 1
+            ids = [c['id'] for c in lock['components']]
+            assert 'steam-client' in ids
+            assert 'wine' in ids
+            assert 'dxvk-macos' in ids
+            print('component-lock.json valid')
+          "
+      - name: Validate distribution gate
+        run: bash scripts/distribution-gate.sh
+      - name: License file validation
+        run: |
+          for f in Legal/*.md; do
+            [ -f "$f" ] && echo "✓ $f"
+          done
+      - name: Recipe security validation
+        run: |
+          for f in Sources/MacSteam/Resources/Recipes/*.json; do
+            python3 -c "
+              import json
+              r = json.loads(open('$f').read())
+              assert r['schemaVersion'] == 2
+              assert 'storeInstallation' in r
+              assert r['storeInstallation']['redistribution'] == 'forbidden'
+
+              # Check no forbidden fields
+              text = open('$f').read()
+              forbidden = ['runShell', 'runSudo', 'downloadArbitraryURL', 'deleteHostPath']
+              for op in forbidden:
+                assert op not in text, f'Forbidden operation \$op found in \$f'
+              print('✓ \$(basename \$f)')
+            "
+          done
       - name: Run public audit
         run: bash scripts/public-audit.sh
 

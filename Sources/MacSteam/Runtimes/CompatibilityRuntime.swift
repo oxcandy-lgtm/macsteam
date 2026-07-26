@@ -2,26 +2,94 @@
 
 import Foundation
 
-/// Abstract interface for a compatibility runtime (CrossOver, Wine, Whisky, etc.).
+/// Result of inspecting a compatibility runtime.
+public struct RuntimeInspection: Sendable, Equatable {
+    public let runtimeID: String
+    public let displayName: String
+    public let version: String?
+    public let architecture: String?
+    public let isUsable: Bool
+    public let capabilities: RuntimeCapabilities
+    public let failures: [RuntimeFailure]
+
+    public init(
+        runtimeID: String,
+        displayName: String = "",
+        version: String? = nil,
+        architecture: String? = nil,
+        isUsable: Bool,
+        capabilities: RuntimeCapabilities = [],
+        failures: [RuntimeFailure] = []
+    ) {
+        self.runtimeID = runtimeID
+        self.displayName = displayName.isEmpty ? runtimeID : displayName
+        self.version = version
+        self.architecture = architecture
+        self.isUsable = isUsable
+        self.capabilities = capabilities
+        self.failures = failures
+    }
+}
+
+/// A failure found during runtime inspection.
+public struct RuntimeFailure: Error, Sendable, Equatable {
+    public let code: RuntimeFailureCode
+    public let message: String
+
+    public init(code: RuntimeFailureCode, message: String) {
+        self.code = code
+        self.message = message
+    }
+}
+
+public enum RuntimeFailureCode: String, Sendable, Equatable {
+    case bundleNotValid
+    case executableMissing
+    case wineserverMissing
+    case winebootMissing
+    case symlinkEscape
+    case worldWritable
+    case architectureProbeFailed
+    case versionProbeFailed
+    case dynamicLibraryMissing
+    case runtimeRootNotFound
+    case invalidManifest
+    case missingLicense
+    case unknownSPDX
+    case forbiddenRedistribution
+
+    /// Backward compatibility with old enum values.
+    var oldFailure: Self {
+        switch self {
+        case .executableMissing, .bundleNotValid: return self
+        default: return .bundleNotValid
+        }
+    }
+}
+
+/// Protocol for all compatibility runtime implementations.
 ///
-/// Every runtime adapter must implement inspection, game detection,
-/// store opening, and game launching.
-///
-/// The UI and ``GameManager`` never call runtime-specific code directly;
-/// all interactions go through this protocol.
+/// Adapters are registered in priority order:
+///   1. ManagedWineRuntime
+///   2. ImportedWineRuntime
+///   3. SystemWineRuntime
+///   4. CrossOverRuntime (optional fallback)
 protocol CompatibilityRuntime: Sendable {
-    /// Unique identifier for this runtime type (e.g. "crossover", "wine").
-    var id: String { get }
+    /// Unique identifier for this runtime class (e.g. "imported-wine").
+    static var runtimeID: String { get }
 
-    /// Perform self-inspection and return capabilities.
-    func inspect() async -> RuntimeInspection
+    /// Initialize with a specific root URL (e.g. user-selected directory).
+    init?(url: URL)
 
-    /// Check whether a specific game is installed and ready.
-    func inspectGame(_ recipe: GameRecipe) async -> GameInspection
+    /// Inspect the runtime and return its capabilities.
+    func inspect() -> RuntimeInspection
 
-    /// Open the game's store (e.g., launch Steam to the game page).
-    func openStore(for recipe: GameRecipe) async throws
+    /// Whether this runtime executable can be found at the expected system location.
+    static func detectSystem() -> Bool
 
-    /// Launch the game via this runtime.
-    func launchGame(_ recipe: GameRecipe) async throws
+    /// The preferred launch plan for this runtime given a game recipe.
+    func launchPlan(for recipe: GameRecipe) -> LaunchPlan?
+
+    /// Validate that the runtime is in a safe state to use.
+    func validate() throws
 }

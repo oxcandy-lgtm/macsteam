@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "components": [
+    {
+      "id": "wine",
+      "displayName": "Wine",
+      "version": null,
+      "upstreamCommit": null,
+      "license": "LGPL-2.1-or-later",
+      "redistribution": "review-required",
+      "bundled": false,
+      "binarySha256": null,
+      "sourceReference": null,
+      "patchsetReference": null
+    },
+    {
+      "id": "dxvk-macos",
+      "displayName": "DXVK-macOS",
+      "version": null,
+      "upstreamCommit": null,
+      "license": "Zlib",
+      "redistribution": "review-required",
+      "bundled": false,
+      "binarySha256": null,
+      "sourceReference": null,
+      "patchsetReference": null
+    },
+    {
+      "id": "moltenvk",
+      "displayName": "MoltenVK",
+      "version": null,
+      "upstreamCommit": null,
+      "license": "Apache-2.0",
+      "redistribution": "review-required",
+      "bundled": false,
+      "binarySha256": null,
+      "sourceReference": null,
+      "patchsetReference": null
+    },
+    {
+      "id": "steam-client",
+      "displayName": "Steam Client",
+      "version": null,
+      "upstreamCommit": null,
+      "license": "Proprietary",
+      "redistribution": "forbidden",
+      "bundled": false,
+      "binarySha256": null,
+      "sourceReference": null,
+      "patchsetReference": null
+    },
+    {
+      "id": "d3dmetal",
+      "displayName": "D3DMetal",
+      "version": null,
+      "upstreamCommit": null,
+      "license": "Proprietary / Apple terms",
+      "redistribution": "forbidden-until-reviewed",
+      "bundled": false,
+      "binarySha256": null,
+      "sourceReference": null,
+      "patchsetReference": null
+    }
+  ]
+}

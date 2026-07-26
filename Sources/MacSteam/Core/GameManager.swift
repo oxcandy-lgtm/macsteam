@@ -70,10 +70,11 @@ final class GameManager: ObservableObject, Sendable {
             return
         }
 
-        let inspection = await runtime.inspect()
-        guard inspection.isValid else {
-            log("Runtime invalid: \(inspection.failure?.localizedDescription ?? "unknown")")
-            state = .runtimeInvalid(inspection.failure ?? .bundleNotValid)
+        let inspection = runtime.inspect()
+        guard inspection.isUsable else {
+            let fail = inspection.failures.first ?? RuntimeFailure(code: .bundleNotValid, message: "Runtime unusable")
+            log("Runtime invalid: \(fail.message)")
+            state = .runtimeInvalid(fail)
             return
         }
 
@@ -81,7 +82,7 @@ final class GameManager: ObservableObject, Sendable {
         log("Runtime found: \(inspection.displayName) v\(inspection.version ?? "?")")
 
         // 3. Detect Steam
-        let steamResult = steamDetector.detectWindowsSteam(in: runtime)
+        let steamResult = await steamDetector.detectWindowsSteam(in: runtime, recipe: recipe)
         switch steamResult {
         case .windowsSteamFound(let steamURL):
             log("Windows Steam found at \(PathRedactor.redactPath(steamURL.path))")
@@ -95,13 +96,11 @@ final class GameManager: ObservableObject, Sendable {
             return
         }
 
-        // 4. Inspect game
-        let gameInspection = await runtime.inspectGame(recipe)
-        currentGameInspection = gameInspection
+        // 4. Check game installation via detection config
+        let gameDetected = await checkGameInstallation(recipe: recipe, runtime: runtime)
+        currentGameInspection = gameDetected
 
-        log("Game inspection: manifest=\(gameInspection.manifestPresent) installDir=\(gameInspection.installDirectoryResolved) executable=\(gameInspection.executablePresent)")
-
-        guard gameInspection.isReady else {
+        guard gameDetected.isReady else {
             state = .gameNotInstalled
             return
         }
@@ -118,9 +117,29 @@ final class GameManager: ObservableObject, Sendable {
         state = .launching
         log("Launching \(recipe.displayName)...")
 
+        guard let plan = runtime.launchPlan(for: recipe) else {
+            log("No launch plan available")
+            state = .failed(.processExecutableInvalid)
+            return
+        }
+
+        // Validate boundary before executing
+        if let boundary = plan.boundary {
+            do {
+                try boundary.validate(plan: plan)
+            } catch {
+                log("Boundary violation: \(error.localizedDescription)")
+                state = .failed(.processStartFailed(underlying: "Boundary violation: \(error.localizedDescription)"))
+                return
+            }
+        }
+
         do {
-            try await runtime.launchGame(recipe)
-            // Detached launch: return to ready immediately after process spawn
+            _ = try await processRunner.run(
+                executable: plan.runtimeExecutable,
+                arguments: plan.arguments,
+                mode: plan.mode
+            )
             state = .ready
             log("Launch command submitted")
         } catch {
@@ -129,17 +148,12 @@ final class GameManager: ObservableObject, Sendable {
         }
     }
 
-    /// Open the store (e.g., Windows Steam) for the current recipe.
-    /// Errors propagate to the UI.
+    /// Open the store URL.
     func openStore() async {
-        guard let recipe = currentRecipe, let runtime = activeRuntime else { return }
-        do {
-            try await runtime.openStore(for: recipe)
-            log("Store opened for \(recipe.displayName)")
-        } catch {
-            log("Failed to open store: \(error.localizedDescription)")
-            state = .failed(.processStartFailed(underlying: error.localizedDescription))
-        }
+        guard let recipe = currentRecipe else { return }
+        let storeURL = URL(string: "https://store.steampowered.com/app/\(recipe.store.appId)")!
+        log("Store URL: \(storeURL.absoluteString)")
+        // User opens the URL via browser — MacSteam does not intercept
     }
 
     /// Open diagnostics screen data.
@@ -149,7 +163,27 @@ final class GameManager: ObservableObject, Sendable {
 
     // MARK: - Helpers
 
+    private func checkGameInstallation(recipe: GameRecipe, runtime: any CompatibilityRuntime) async -> GameInspection {
+        // Check for Steam manifest and executables in the prefix
+        let inspector = SteamInstallationDetector()
+        return await inspector.inspect(recipe: recipe, runtime: runtime)
+    }
+
     private func log(_ message: String) {
         diagnosticsStore.append(message)
     }
 }
+
+// MARK: - Supporting types
+
+/// Snapshot of a game's installation state within a runtime.
+struct GameInspection: Equatable, Sendable {
+    let recipeID: String
+    let steamPresent: Bool
+    let isWindowsSteam: Bool
+    let manifestPresent: Bool
+    let installDirectoryResolved: Bool
+    let executablePresent: Bool
+    let isReady: Bool
+}
+
