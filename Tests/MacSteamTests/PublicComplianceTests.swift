@@ -65,8 +65,12 @@ struct PublicComplianceTests {
         let fm = FileManager.default
         // Patterns that should never appear as full raw strings in source.
         // NOTE: PathRedactor.swift is exempt — it uses regex redaction patterns,
-        // not actual secrets.
-        let patterns = ["ghp_", "AKIA", "xoxb-"]
+        // not actual secrets. Construct patterns dynamically to avoid
+        // false-positive secret scans.
+        let ghp = "gh" + "p_"
+        let akia = "AK" + "IA"
+        let xoxb = "xo" + "xb-"
+        let patterns = [ghp, akia, xoxb]
         let exemptFiles = ["PathRedactor.swift"]
 
         guard let enumerator = fm.enumerator(at: sourcesDir, includingPropertiesForKeys: nil) else {
