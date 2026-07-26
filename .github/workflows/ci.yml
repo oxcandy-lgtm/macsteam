@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feat/public-oss-bootstrap]
   push:
     branches: [main]
 
@@ -15,7 +15,7 @@ jobs:
     name: Swift Build
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
       - name: Swift build
@@ -27,51 +27,39 @@ jobs:
     name: Public Audit
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
       - name: Validate JSON Schemas
         run: |
+          set -euo pipefail
           for schema in Contracts/*.schema.json; do
-            python3 -c "import json; json.loads(open('$schema').read())" && echo "✓ $schema" || echo "✗ $schema"
+            python3 -m json.tool "$schema" >/dev/null
+            echo "valid: $schema"
           done
+      - name: Validate schema fixtures
+        run: bash scripts/validate-fixtures.sh
       - name: Validate component-lock
-        run: |
-          python3 -c "
-            import json
-            lock = json.loads(open('Sources/MacSteam/Resources/Legal/component-lock.json').read())
-            assert lock['schemaVersion'] == 1
-            ids = [c['id'] for c in lock['components']]
-            assert 'steam-client' in ids
-            assert 'wine' in ids
-            assert 'dxvk-macos' in ids
-            print('component-lock.json valid')
-          "
+        run: python3 scripts/validate-component-lock.py
       - name: Validate distribution gate
         run: bash scripts/distribution-gate.sh
       - name: License file validation
         run: |
-          for f in Legal/*.md; do
-            [ -f "$f" ] && echo "✓ $f"
+          set -euo pipefail
+          required=(
+            Legal/COMPONENT_POLICY.md
+            Legal/DISTRIBUTION_POLICY.md
+            Legal/PROPRIETARY_COMPONENTS.md
+            Legal/SOURCE_OFFER_POLICY.md
+            Legal/TRADEMARK_POLICY.md
+            THIRD_PARTY_NOTICES.md
+            LICENSE
+          )
+          for f in "${required[@]}"; do
+            if [ -f "$f" ]; then echo "present: $f"; else echo "MISSING: $f"; exit 1; fi
           done
       - name: Recipe security validation
-        run: |
-          for f in Sources/MacSteam/Resources/Recipes/*.json; do
-            python3 -c "
-              import json
-              r = json.loads(open('$f').read())
-              assert r['schemaVersion'] == 2
-              assert 'storeInstallation' in r
-              assert r['storeInstallation']['redistribution'] == 'forbidden'
-
-              # Check no forbidden fields
-              text = open('$f').read()
-              forbidden = ['runShell', 'runSudo', 'downloadArbitraryURL', 'deleteHostPath']
-              for op in forbidden:
-                assert op not in text, f'Forbidden operation \$op found in \$f'
-              print('✓ \$(basename \$f)')
-            "
-          done
+        run: python3 scripts/validate-recipes.py
       - name: Run public audit
         run: bash scripts/public-audit.sh
 
@@ -79,44 +67,44 @@ jobs:
     name: License Validation
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Check LICENSE exists
+      - name: Check LICENSE
         run: test -f LICENSE && head -1 LICENSE | grep -q "GNU"
-      - name: Check THIRD_PARTY_NOTICES exists
+      - name: Check THIRD_PARTY_NOTICES
         run: test -f THIRD_PARTY_NOTICES.md
-      - name: Check SPDX headers in Swift files
+      - name: SPDX headers
         run: |
-          count=$(find Sources -name "*.swift" -exec grep -l "SPDX-License-Identifier: GPL-3.0-or-later" {} \; | wc -l)
-          total=$(find Sources -name "*.swift" | wc -l)
-          echo "SPDX headers: $count/$total"
-          [ "$count" = "$total" ] || exit 1
+          c=$(find Sources -name "*.swift" -exec grep -l "SPDX-License-Identifier: GPL-3.0-or-later" {} \; | wc -l)
+          t=$(find Sources -name "*.swift" | wc -l)
+          echo "SPDX headers: $c/$t"
+          [ "$c" = "$t" ] || exit 1
 
   recipe-validation:
     name: Recipe Validation
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
       - name: Validate recipe JSON
         run: |
           for f in Sources/MacSteam/Resources/Recipes/*.json; do
-            echo "Validating $f"
             python3 -m json.tool "$f" > /dev/null
+            echo "valid: $f"
           done
 
   gitignore-validation:
     name: Gitignore Validation
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Check .gitignore exists
+      - name: Check .gitignore
         run: test -f .gitignore
-      - name: Check no forbidden patterns in repo
+      - name: Check forbidden patterns
         run: |
           ! find . -name ".DS_Store" 2>/dev/null | grep -q .
           ! find . -name "xcuserdata" -not -path "./.git/*" 2>/dev/null | grep -q .

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 3,
+  "runShell": "echo vulnerable",
+  "id": "cloverpit",
+  "displayName": "CloverPit",
+  "store": {
+    "type": "steam",
+    "appId": "3314790"
+  },
+  "runtime": {
+    "requiredCapabilities": [
+      "windows-process",
+      "steam-client",
+      "isolated-prefix"
+    ],
+    "preferredRuntime": "managed-wine"
+  },
+  "graphics": {
+    "preferred": "wined3d"
+  },
+  "prefix": {
+    "id": "cloverpit",
+    "windowsVersion": "win10",
+    "isolation": "per-game"
+  },
+  "storeInstallation": {
+    "installerMode": "user-selected-file",
+    "installerProduct": "steam-client",
+    "redistribution": "forbidden"
+  },
+  "launch": {
+    "storeArguments": [
+      "-applaunch",
+      "3314790"
+    ]
+  },
+  "detection": {
+    "manifestName": "appmanifest_3314790.acf",
+    "executableCandidates": [
+      "CloverPit.exe"
+    ]
+  },
+  "savePolicy": {
+    "mode": "discover-only"
+  }
+}

@@ -134,7 +134,7 @@ struct LauncherView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(.accentColor)
+            .tint(.blue)
             .frame(maxWidth: .infinity)
 
         case .launching:
@@ -157,7 +157,7 @@ struct LauncherView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(.accentColor)
+            .tint(.blue)
             .frame(maxWidth: .infinity)
         }
     }

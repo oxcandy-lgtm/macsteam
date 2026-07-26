@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "id": "com.macsteam.runtime.managed-wine.v8.0",
+  "version": "8.0.1+build20260714",
+  "hostArchitectures": [
+    {
+      "arch": "arm64",
+      "name": "Apple Silicon"
+    }
+  ],
+  "runtimeArchitectures": [
+    {
+      "arch": "arm64",
+      "name": "ARM64 (Apple Silicon)",
+      "wow64": true
+    },
+    {
+      "arch": "x86_64",
+      "name": "x86-64 (Intel)",
+      "wow64": false
+    }
+  ],
+  "minimumMacOS": "11.0",
+  "source": {
+    "upstreamRepository": "https://github.com/wine-mirror/wine",
+    "upstreamCommit": "e3c9f5a2b8d147f6a91c0d4e7f2b8a3c5d6e7f8a",
+    "sourceArchiveSHA256": "2f7902f4298bcc2efa4c4d63230b1035d1efbf71fdc26d2341e0fbbe0dfa0727",
+    "patchsetSHA256": "30ce0d2a958571caa984e865439d0d15a391216e222c0079ccc71d7c2e7a00a4",
+    "buildRecipeSHA256": "6d4bbcb4bf282075811f5f8d003668ada2ece403397f0f1e1f2e51417fe506a6"
+  },
+  "license": {
+    "spdx": "LGPL-2.1-only",
+    "licenseFiles": [
+      "share/wine/LICENSE",
+      "share/wine/COPYING.LIB"
+    ],
+    "noticeFiles": [
+      "share/wine/THIRD_PARTY_NOTICES"
+    ],
+    "redistribution": {
+      "mode": "allowedWithConditions"
+    }
+  },
+  "archive": {
+    "filename": "managed-wine-v8.0.1-arm64-x86_64.tar.gz",
+    "sha256": "f6e8253a16d08d3d87e8f1ab8350ed547793c27b618db732c5e67c5adc1e9e30",
+    "size": 89128960
+  },
+  "capabilities": [
+    "windows-process",
+    "steam-client",
+    "isolated-prefix",
+    "d3d"
+  ]
+}

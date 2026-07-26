@@ -35,3 +35,6 @@ Secrets.*
 
 # macOS
 .DS_Store
+
+# AI agent scratch files
+.hermes/

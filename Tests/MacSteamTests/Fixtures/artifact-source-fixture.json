@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "provider": "github_app_installation_token",
+  "repositoryProbeStatus": 200,
+  "requestedHead": "e3c9f5a2b8d147f6a91c0d4e7f2b8a3c5d6e7f8a",
+  "observedHead": "e3c9f5a2b8d147f6a91c0d4e7f2b8a3c5d6e7f8a",
+  "secretScanFindings": 0,
+  "credentialValueOutput": 1,
+  "bundleSha256": "3d5f5087a9d863e38a6e8e5615b634b7118c0b703df2632a178a541ffc158d21"
+}

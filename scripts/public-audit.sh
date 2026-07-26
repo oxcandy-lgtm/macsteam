@@ -202,6 +202,14 @@ else
     check "No xcuserdata in repository" "pass"
 fi
 
+# ––– AI agent scratch files –––
+echo "--- AI Agent Scratch Files ---"
+if git_ls | tr '\0' '\n' | grep -q '\.hermes/'; then
+    check "No .hermes tracked files in repository" "fail"
+else
+    check "No .hermes tracked files in repository" "pass"
+fi
+
 # ––– Summary –––
 echo ""
 echo "=== Summary ==="

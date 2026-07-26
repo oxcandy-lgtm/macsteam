@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "gameId": "cloverpit",
+  "confidence": "confirmed",
+  "candidates": [
+    {
+      "relativePath": "drive_c/users/steamuser/AppData/Local/CloverPit",
+      "confidence": "confirmed",
+      "description": "Primary CloverPit save data directory under the game prefix"
+    },
+    {
+      "relativePath": "drive_c/users/steamuser/Documents/My Games/CloverPit",
+      "confidence": "speculative",
+      "description": "Documents-based save path commonly used by Unity games"
+    },
+    {
+      "relativePath": "drive_c/Program Files (x86)/Steam/userdata/3314790/remote",
+      "confidence": "speculative",
+      "description": "Steam Cloud remote storage directory for CloverPit"
+    }
+  ],
+  "confirmedPaths": [
+    "drive_c/users/steamuser/AppData/Local/CloverPit"
+  ],
+  "failedDiscovery": false,
+  "discoveredAt": "2026-07-27T14:30:00Z"
+}

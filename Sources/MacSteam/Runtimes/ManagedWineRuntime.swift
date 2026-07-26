@@ -5,10 +5,10 @@ import Foundation
 /// Managed Wine runtime — MacSteam's own curated Wine distribution.
 ///
 /// In U1 this is a **contract-only implementation**: no binary distribution
-/// is performed. The scaffold defines the storage layout and installation
-/// pipeline that will be activated in a future release.
+/// is performed.  `inspect()` always returns `isUsable: false` unless a
+/// valid activation receipt is present, which is impossible in U1.
 ///
-/// Storage layout:
+/// Storage layout (future):
 /// ```
 /// ~/Library/Application Support/MacSteam/Runtimes/
 /// └── <runtime-id>/
@@ -38,9 +38,11 @@ final class ManagedWineRuntime: @unchecked Sendable {
     private let fm = FileManager.default
 
     init?(url: URL) {
-        guard url.path.hasPrefix(Self.runtimesRoot.path) else { return nil }
+        // Use canonical component comparison, NOT hasPrefix on path strings
+        guard url.standardized.pathComponents.starts(with: Self.runtimesRoot.standardized.pathComponents) else {
+            return nil
+        }
         guard fm.fileExists(atPath: url.path) else { return nil }
-        // Check for manifest.json as the marker of a valid managed runtime
         let manifestURL = url.appendingPathComponent("manifest.json")
         guard fm.fileExists(atPath: manifestURL.path) else { return nil }
         self.runtimeURL = url
@@ -52,10 +54,33 @@ final class ManagedWineRuntime: @unchecked Sendable {
         guard let contents = try? FileManager.default.contentsOfDirectory(atPath: runtimesRoot.path) else {
             return false
         }
-        return contents.contains { $0.hasSuffix(".json") == false }
+        // Must have at least one non-JSON entry (manifest-only dirs don't count)
+        let validEntries = contents.filter { entry in
+            let entryURL = runtimesRoot.appendingPathComponent(entry)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: entryURL.path, isDirectory: &isDir), isDir.boolValue else { return false }
+            let manifestURL = entryURL.appendingPathComponent("manifest.json")
+            let receiptURL = entryURL.appendingPathComponent("receipt.json")
+            return fm.fileExists(atPath: manifestURL.path) && fm.fileExists(atPath: receiptURL.path)
+        }
+        return !validEntries.isEmpty
     }
 
     func inspect() -> RuntimeInspection {
+        // U1: contract-only — managed runtime activation is impossible.
+        // All the scaffold below is dead code for future use; inspect()
+        // always returns isUsable: false in U1.
+        guard isActivated() else {
+            return RuntimeInspection(
+                runtimeID: Self.runtimeID,
+                isUsable: false,
+                failures: [RuntimeFailure(
+                    code: .invalidManifest,
+                    message: "U1_MANAGED_RUNTIME_NOT_ACTIVATED"
+                )]
+            )
+        }
+
         let manifestURL = runtimeURL.appendingPathComponent("manifest.json")
         let sourceIdentityURL = runtimeURL.appendingPathComponent("source-identity.json")
 
@@ -76,7 +101,6 @@ final class ManagedWineRuntime: @unchecked Sendable {
             )
         }
 
-        // Verify license artifacts exist
         let hasMissingLicense = manifest.license.licenseFiles.contains { fname in
             !fm.fileExists(atPath: runtimeURL.appendingPathComponent("licenses/\(fname)").path)
         }
@@ -88,7 +112,6 @@ final class ManagedWineRuntime: @unchecked Sendable {
             )
         }
 
-        // Verify source identity
         guard fm.fileExists(atPath: sourceIdentityURL.path) else {
             return RuntimeInspection(
                 runtimeID: Self.runtimeID,
@@ -97,7 +120,6 @@ final class ManagedWineRuntime: @unchecked Sendable {
             )
         }
 
-        // Check wine executables
         let wineExe = runtimeURL.appendingPathComponent("runtime/bin/wine")
         guard fm.isExecutableFile(atPath: wineExe.path) else {
             return RuntimeInspection(
@@ -117,6 +139,7 @@ final class ManagedWineRuntime: @unchecked Sendable {
     }
 
     func launchPlan(for recipe: GameRecipe) -> LaunchPlan? {
+        guard isActivated() else { return nil }
         let wineExe = runtimeURL.appendingPathComponent("runtime/bin/wine")
         guard fm.isExecutableFile(atPath: wineExe.path) else { return nil }
 
@@ -136,12 +159,35 @@ final class ManagedWineRuntime: @unchecked Sendable {
             )
         )
     }
+
+    // MARK: - Private
+
+    /// U1: always returns false.  In a future release this will check for a
+    /// valid activation receipt after passing the full installation pipeline:
+    ///
+    /// canonical runtime root → manifest schema valid → manifest SHA valid →
+    /// source identity valid → license files complete → notice files complete →
+    /// runtime inventory valid → symlink bounds valid → world-writable files zero →
+    /// wine/wineserver/wineboot verified → activation receipt valid → atomic activation
+    private func isActivated() -> Bool {
+        let receiptURL = runtimeURL.appendingPathComponent("receipt.json")
+        guard fm.fileExists(atPath: receiptURL.path) else { return false }
+        guard let data = try? Data(contentsOf: receiptURL),
+              let receipt = try? JSONDecoder().decode(OperationReceipt.self, from: data) else {
+            return false
+        }
+        return receipt.result == .success
+    }
 }
 
 // MARK: - CompatibilityRuntime conformance
 
 extension ManagedWineRuntime: CompatibilityRuntime {
     func validate() throws {
+        // U1: not available unless activated via receipt
+        guard isActivated() else {
+            throw RuntimeFailure(code: .invalidManifest, message: "U1_MANAGED_RUNTIME_NOT_ACTIVATED")
+        }
         let manifestURL = runtimeURL.appendingPathComponent("manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
             throw RuntimeFailure(code: .invalidManifest, message: "Managed runtime manifest not found")
