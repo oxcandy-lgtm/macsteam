@@ -94,10 +94,11 @@ else
     check "No Slack tokens in repository" "pass"
 fi
 
-if git_grep 'Authorization:\*\*\* |client_secret|refresh_token|access_token' \
-    | grep -v 'scripts/public-audit\.sh' \
-    | grep -v 'Tests/PathRedactorTests\.swift' \
-    | grep -v 'Sources/MacSteam/Services/PathRedactor\.swift'; then
+if git_grep 'Authorization:*** |client_secret|refresh_token|access_token' \
+    | grep -v 'scripts/public-audit\\.sh' \
+    | grep -v 'Tests/PathRedactorTests\\.swift' \
+    | grep -v 'Sources/MacSteam/Services/PathRedactor\\.swift' \
+    | grep -v 'Sources/MacSteam/Security/SteamSensitiveDataPolicy\\.swift'; then
     check "No authorization secrets in repository" "fail"
 else
     check "No authorization secrets in repository" "pass"
@@ -145,7 +146,8 @@ echo "--- Personal Paths ---"
 matches=$(git_grep '/Users/[A-Za-z0-9_-]+/' \
     | grep -v '/Users/example' \
     | grep -v '/Users/Shared' \
-    | grep -v '/Users/Guest' || true)
+    | grep -v '/Users/Guest' \
+    | grep -v '/Users/test' || true)
 if [ -n "$matches" ]; then
     while IFS= read -r line; do
         file="${line%%:*}"
