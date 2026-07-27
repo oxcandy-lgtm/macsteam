@@ -38,3 +38,23 @@ Secrets.*
 
 # AI agent scratch files
 .hermes/
+
+# Steam — zero-knowledge boundary
+Steam/config/
+Steam/htmlcache/
+Steam/appcache/httpcache/
+Steam/userdata/
+Steam/ssfn*
+Steam/Cookies
+Steam/Local Storage/
+Steam/Session Storage/
+Steam/IndexedDB/
+
+# MacSteam — managed runtimes & prefixes
+Prefixes/
+RuntimeReceipts/private/
+
+# Crash dumps — may contain process memory
+*.dmp
+*.mdmp
+*.core

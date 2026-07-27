@@ -13,8 +13,13 @@ import UniformTypeIdentifiers
 ///
 /// References ``SteamInstallerCoordinator`` for file verification,
 /// ``SteamInstallationDetector`` for post-install detection, and
-/// ``SteamLaunchCoordinator`` for launch-plan creation.
+/// Select a Windows Steam installer from the local filesystem, verify its
+/// integrity, install it into the Wine prefix, and detect the result.
+///
+/// Wires into ``UltimateSetupCoordinator`` for installer selection,
+/// verification, and launch.
 struct SteamSetupView: View {
+    let coordinator: UltimateSetupCoordinator
     @State private var installerURL: URL? = nil
     @State private var fileSize: UInt64 = 0
     @State private var sha256: String = ""
@@ -25,7 +30,7 @@ struct SteamSetupView: View {
     @State private var steamDetected = false
     @State private var detectionMessage: String = ""
 
-    private let coordinator = SteamInstallerCoordinator()
+    private let installerCoordinator = SteamInstallerCoordinator()
     private let detector = SteamInstallationDetector()
 
     // SteamSetup.exe download page
@@ -212,7 +217,7 @@ struct SteamSetupView: View {
             fileSize = size
         }
 
-        isVerified = coordinator.verifyInstaller(url: url)
+        isVerified = installerCoordinator.verifyInstaller(url: url)
 
         if isVerified {
             // TODO: wire ArtifactVerifier.sha256(url:)
@@ -229,7 +234,7 @@ struct SteamSetupView: View {
 
         // TODO: wire to SteamInstallerCoordinator / wine execution
         // let prefixURL = prefixManager.prefixURL(for: recipe)
-        // let sha = coordinator.recordInstallation(url: url, prefixURL: prefixURL)
+        // let sha = installerCoordinator.recordInstallation(url: url, prefixURL: prefixURL)
         // Launch wine with SteamSetup.exe inside the prefix
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {

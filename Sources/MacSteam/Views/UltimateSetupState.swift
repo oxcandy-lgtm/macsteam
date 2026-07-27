@@ -37,6 +37,8 @@ enum UltimateSetupState: String, Sendable, Equatable, CaseIterable {
     case launching
     /// The launch command has been submitted.
     case launchSubmitted
+    /// Process has been observed running.
+    case processObserved
 
     // MARK: - Display helpers
 
@@ -57,6 +59,7 @@ enum UltimateSetupState: String, Sendable, Equatable, CaseIterable {
         case .cloverPitReady:          return "Ready to launch"
         case .launching:               return "Launching…"
         case .launchSubmitted:         return "Launch submitted"
+        case .processObserved:         return "Process running"
         }
     }
 

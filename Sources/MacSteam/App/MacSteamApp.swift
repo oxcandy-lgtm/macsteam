@@ -4,11 +4,12 @@ import SwiftUI
 
 @main
 struct MacSteamApp: App {
+    @State private var coordinator = UltimateSetupCoordinator()
     @State private var gameManager = GameManager()
 
     var body: some Scene {
         WindowGroup {
-            LauncherView(manager: gameManager)
+            UltimateSetupView(coordinator: coordinator)
                 .frame(minWidth: 480, minHeight: 360)
         }
         .windowResizability(.contentSize)

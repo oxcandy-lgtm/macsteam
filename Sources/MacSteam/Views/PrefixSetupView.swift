@@ -8,6 +8,8 @@ import SwiftUI
 /// Uses ``PrefixManager`` to create the managed directory structure
 /// and ``PrefixInspector`` to validate the resulting environment.
 struct PrefixSetupView: View {
+    let coordinator: UltimateSetupCoordinator
+
     @State private var prefixPath: String = ""
     @State private var inspection: PrefixInspection?
     @State private var isCreating = false
@@ -184,14 +186,17 @@ struct PrefixSetupView: View {
     private func createPrefix() {
         isCreating = true
         creationError = nil
-
-        // TODO: wire to real GameRecipe / PrefixManager
-        // let recipe = recipeLoader.loadRecipe(named: "cloverpit")
-        // try prefixManager.createPrefix(for: recipe)
-        // prefixPath = prefixManager.prefixURL(for: recipe).path
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            isCreating = false
+        Task {
+            await coordinator.createPrefix()
+            await MainActor.run {
+                isCreating = false
+                if let error = coordinator.error {
+                    creationError = error.localizedDescription
+                } else {
+                    prefixPath = coordinator.prefixInspection.map { _ in "Created" } ?? ""
+                    inspection = coordinator.prefixInspection
+                }
+            }
         }
     }
 

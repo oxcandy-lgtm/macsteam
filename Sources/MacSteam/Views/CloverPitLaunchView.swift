@@ -9,6 +9,8 @@ import SwiftUI
 /// game manifest and executable, and ``SteamLaunchCoordinator`` to
 /// build the launch plan.
 struct CloverPitLaunchView: View {
+    let coordinator: UltimateSetupCoordinator
+
     @State private var isDetecting = false
     @State private var isLaunching = false
     @State private var cloverPitDetected = false

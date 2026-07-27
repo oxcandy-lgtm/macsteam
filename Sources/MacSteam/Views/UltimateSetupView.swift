@@ -2,281 +2,256 @@
 
 import SwiftUI
 
-/// Main setup wizard for the MacSteam Ultimate CloverPit flow.
+/// Root view for the MacSteam Ultimate U1 setup flow.
 ///
-/// Guides the user through four sequential steps:
-///  1. Compatibility Runtime  (detect / select / validate)
-///  2. Environment (Wine prefix creation and inspection)
-///  3. Windows Steam  (installer download and installation)
-///  4. CloverPit  (detection and launch)
-///
-/// Each step is represented by a collapsible section whose state is
-/// driven by ``UltimateSetupState``.
+/// Replaces `LauncherView` as the app entry point during U1.  CrossOver-specific
+/// selection is removed from the main UI (moved to advanced settings).
 struct UltimateSetupView: View {
-    @State private var setupState: UltimateSetupState = .inspecting
-    @State private var errorMessage: String = ""
-    @State private var showingDiagnostics = false
+    @Bindable var coordinator: UltimateSetupCoordinator
 
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding([.horizontal, .top], 24)
-                .padding(.bottom, 16)
-
-            ScrollView {
-                VStack(spacing: 12) {
-                    stepSection(
-                        number: 1,
-                        title: "Compatibility Runtime",
-                        state: runtimeStepState,
-                        icon: "shippingbox"
-                    )
-                    stepSection(
-                        number: 2,
-                        title: "Environment",
-                        state: prefixStepState,
-                        icon: "folder"
-                    )
-                    stepSection(
-                        number: 3,
-                        title: "Windows Steam",
-                        state: steamStepState,
-                        icon: "steeringwheel"
-                    )
-                    stepSection(
-                        number: 4,
-                        title: "CloverPit",
-                        state: cloverPitStepState,
-                        icon: "gamecontroller"
-                    )
-                }
-                .padding(.horizontal, 24)
-            }
-
             Divider()
-                .padding(.horizontal, 16)
-
-            footnotes
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-
-            bottomBar
-                .padding(.horizontal, 24)
-                .padding(.bottom, 20)
+            content
         }
-        .frame(width: 520, height: 520)
-        .sheet(isPresented: $showingDiagnostics) {
-            // TODO: wire to real DiagnosticsView / GameManager
-            Text("Diagnostics — not yet wired")
-                .padding()
-        }
+        .frame(minWidth: 520, minHeight: 420)
+        .task { await coordinator.inspectSystem() }
     }
 
     // MARK: - Header
 
     private var header: some View {
         HStack {
-            Image(systemName: "gearshape.2.fill")
-                .font(.title2)
-                .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text("MacSteam Ultimate")
+                Text("CloverPit Ultimate")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("CloverPit Setup")
-                    .font(.subheadline)
+                Text("MacSteam Setup")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            progressIndicator
+        }
+        .padding()
+    }
+
+    private var progressIndicator: some View {
+        HStack(spacing: 4) {
+            stepDot(index: 0, label: "Runtime", active: coordinator.state == .runtimeReady || beyond(.runtimeReady))
+            stepDot(index: 1, label: "Prefix", active: coordinator.state == .prefixReady || beyond(.prefixReady))
+            stepDot(index: 2, label: "Steam", active: coordinator.state == .steamReady || beyond(.steamReady))
+            stepDot(index: 3, label: "Launch", active: coordinator.state == .cloverPitReady || beyond(.cloverPitReady))
         }
     }
 
-    // MARK: - Step section
+    private func stepDot(index: Int, label: String, active: Bool) -> some View {
+        VStack(spacing: 2) {
+            Circle()
+                .fill(active ? Color.green : Color.gray.opacity(0.3))
+                .frame(width: 10, height: 10)
+            Text(label)
+                .font(.system(size: 8))
+                .foregroundStyle(active ? .primary : .secondary)
+        }
+        .frame(width: 44)
+    }
 
-    private func stepSection(
-        number: Int,
-        title: String,
-        state: StepState,
-        icon: String
-    ) -> some View {
-        HStack(spacing: 12) {
-            // Step number / status indicator
-            ZStack {
-                Circle()
-                    .fill(state.tint)
-                    .frame(width: 28, height: 28)
+    private func beyond(_ state: UltimateSetupState) -> Bool {
+        let order: [UltimateSetupState] = [.inspecting, .runtimeRequired, .runtimeInvalid, .runtimeReady,
+            .prefixRequired, .prefixReady, .steamInstallerRequired, .steamInstallerVerified,
+            .steamInstallationPending, .steamReady, .cloverPitNotInstalled, .cloverPitReady,
+            .launching, .launchSubmitted, .processObserved]
+        guard let currentIdx = order.firstIndex(of: coordinator.state),
+              let targetIdx = order.firstIndex(of: state) else { return false }
+        return currentIdx > targetIdx
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder
+    private var content: some View {
+        switch coordinator.state {
+        case .inspecting:
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Inspecting system…")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxHeight: .infinity)
+
+        case .runtimeRequired, .runtimeInvalid:
+            RuntimeSetupView(coordinator: coordinator)
+
+        case .runtimeReady:
+            runtimeReadyView
+            nextButton("Create Prefix →", action: { Task { await coordinator.createPrefix() } })
+
+        case .prefixRequired:
+            PrefixSetupView(coordinator: coordinator)
+
+        case .prefixReady:
+            prefixReadyView
+            nextButton("Select Steam Installer →", action: { coordinator.state = .steamInstallerRequired })
+
+        case .steamInstallerRequired:
+            SteamSetupView(coordinator: coordinator)
+
+        case .steamInstallerVerified:
+            steamVerifiedView
+            nextButton("Install Steam", action: { Task { await coordinator.installSteam() } })
+
+        case .steamInstallationPending:
+            steamPendingView
+
+        case .steamReady:
+            steamReadyView
+            nextButton("Re-check CloverPit →", action: { Task { await coordinator.recheckCloverPit() } })
+
+        case .cloverPitNotInstalled:
+            cloverPitNotInstalledView
+
+        case .cloverPitReady:
+            CloverPitLaunchView(coordinator: coordinator)
+
+        case .launching, .launchSubmitted, .processObserved:
+            launchingView
+        }
+    }
+
+    // MARK: - Subviews
+
+    private var runtimeReadyView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Runtime ready", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            if let inspection = coordinator.runtimeInspection {
                 Group {
-                    switch state {
-                    case .completed:
-                        Image(systemName: "checkmark")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.white)
-                    case .working:
-                        ProgressView()
-                            .scaleEffect(0.6)
-                            .controlSize(.small)
-                    case .pending:
-                        Text("\(number)")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white)
-                    case .error:
-                        Image(systemName: "exclamationmark")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.white)
-                    }
+                    Text("Version: \(inspection.version ?? "unknown")")
+                    Text("Arch: \(inspection.architecture ?? "unknown")")
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                Text(state.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Spacer()
         }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding()
     }
 
-    // MARK: - Step states
-
-    /// Derived state for the Runtime step.
-    private var runtimeStepState: StepState {
-        switch setupState {
-        case .inspecting:              return .working("Detecting available runtimes…")
-        case .runtimeRequired:         return .pending("Select a Wine runtime to continue")
-        case .runtimeInvalid:          return .error("Runtime failed validation")
-        case .runtimeReady:            return .completed("Runtime ready")
-        default:                       return .completed("Runtime ready")
+    private var prefixReadyView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Prefix created", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text("CloverPit environment ready")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
         }
+        .padding()
     }
 
-    /// Derived state for the Environment (prefix) step.
-    private var prefixStepState: StepState {
-        switch setupState {
-        case .inspecting, .runtimeRequired, .runtimeInvalid:
-            return .pending("Waiting for runtime")
-        case .runtimeReady:              return .pending("Create the CloverPit environment")
-        case .prefixRequired:            return .pending("Create prefix to continue")
-        case .prefixReady:               return .completed("Environment ready")
-        case .steamInstallerRequired,
-             .steamInstallerVerified,
-             .steamInstallationPending,
-             .steamReady,
-             .cloverPitNotInstalled,
-             .cloverPitReady,
-             .launching,
-             .launchSubmitted:
-            return .completed("Environment ready")
+    private var steamVerifiedView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Installer verified", systemImage: "checkmark.shield.fill")
+                .foregroundStyle(.green)
+            if let installer = coordinator.selectedInstaller {
+                Text("\(installer.fileName) (\(installer.fileSize / 1024 / 1024) MB)")
+                    .font(.caption)
+                Text("SHA-256: \(installer.sha256.prefix(16))…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
         }
+        .padding()
     }
 
-    /// Derived state for the Steam step.
-    private var steamStepState: StepState {
-        switch setupState {
-        case .inspecting, .runtimeRequired, .runtimeInvalid,
-                .runtimeReady, .prefixRequired:
-            return .pending("Waiting for environment")
-        case .prefixReady:                 return .pending("Install Windows Steam")
-        case .steamInstallerRequired:      return .pending("Download SteamSetup.exe")
-        case .steamInstallerVerified:      return .pending("Run the installer")
-        case .steamInstallationPending:    return .working("Installing Steam…")
-        case .steamReady:                  return .completed("Steam ready")
-        case .cloverPitNotInstalled,
-             .cloverPitReady,
-             .launching,
-             .launchSubmitted:
-            return .completed("Steam ready")
+    private var steamPendingView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Installing Steam…")
+            Text("Follow the Steam installer window.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Check again") {
+                Task { await coordinator.recheckSteam() }
+            }
+            .buttonStyle(.bordered)
         }
+        .frame(maxHeight: .infinity)
     }
 
-    /// Derived state for the CloverPit step.
-    private var cloverPitStepState: StepState {
-        switch setupState {
-        case .inspecting, .runtimeRequired, .runtimeInvalid,
-                .runtimeReady, .prefixRequired, .prefixReady,
-                .steamInstallerRequired, .steamInstallerVerified,
-                .steamInstallationPending:
-            return .pending("Waiting for Steam")
-        case .steamReady:                  return .pending("Detect CloverPit")
-        case .cloverPitNotInstalled:       return .pending("Install CloverPit via Steam")
-        case .cloverPitReady:              return .completed("Ready")
-        case .launching:                   return .working("Launching…")
-        case .launchSubmitted:             return .completed("Launched")
+    private var steamReadyView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Steam ready", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text("Windows Steam detected in prefix.")
+                .font(.caption)
+            Text("Install CloverPit via Steam if not already installed.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Spacer()
         }
+        .padding()
     }
 
-    // MARK: - Footnotes
+    private var cloverPitNotInstalledView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundStyle(.orange)
+            Text("CloverPit not detected")
+            Text("Install CloverPit via Steam, then check again.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Re-check") {
+                Task { await coordinator.recheckCloverPit() }
+            }
+            .buttonStyle(.borderedProminent)
+            Button("Open Steam Library") {
+                // User can launch Steam manually
+                Task { await coordinator.launchCloverPit() }
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxHeight: .infinity)
+    }
 
-    private var footnotes: some View {
-        Group {
-            if setupState == .cloverPitNotInstalled {
-                Label("CloverPit was not found in the Steam library. Open Steam and install it, then recheck.", systemImage: "info.circle")
+    private var launchingView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text(statusText)
+                .font(.headline)
+            if coordinator.state == .processObserved {
+                Text("Waiting for game window…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if case .runtimeInvalid = setupState {
-                Label(errorMessage.isEmpty ? "The selected runtime did not pass validation." : errorMessage, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            } else if !errorMessage.isEmpty {
-                Label(errorMessage, systemImage: "xmark.circle")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-    }
-
-    // MARK: - Bottom bar
-
-    private var bottomBar: some View {
-        HStack {
-            Button("View Diagnostics") {
-                showingDiagnostics = true
-            }
-            .controlSize(.small)
-
-            Spacer()
-
-            if setupState == .cloverPitReady {
-                Button("Launch CloverPit") {
-                    // TODO: wire to GameManager.launch()
-                    setupState = .launching
+                Button("I see the CloverPit window") {
+                    coordinator.confirmWindow()
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
             }
         }
+        .frame(maxHeight: .infinity)
     }
-}
 
-// MARK: - Internal state representation
-
-/// Lightweight representation of a single step's UI state.
-private enum StepState {
-    case completed(String)
-    case working(String)
-    case pending(String)
-    case error(String)
-
-    var detail: String {
-        switch self {
-        case .completed(let d), .working(let d),
-             .pending(let d), .error(let d):
-            return d
+    private var statusText: String {
+        switch coordinator.state {
+        case .launching: return "Launching…"
+        case .launchSubmitted: return "Launch submitted"
+        case .processObserved: return "Process observed"
+        default: return ""
         }
     }
 
-    var tint: Color {
-        switch self {
-        case .completed: return .green
-        case .working:   return .blue
-        case .pending:   return .gray
-        case .error:     return .orange
+    private func nextButton(_ title: String, action: @escaping () -> Void) -> some View {
+        HStack {
+            Spacer()
+            Button(title, action: action)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
         }
+        .padding()
     }
 }
