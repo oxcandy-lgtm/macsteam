@@ -15,6 +15,7 @@ actor ProcessRunner {
         public let exitCode: Int32
         public let stdout: String
         public let stderr: String
+        public let pid: Int32?
     }
 
     enum RunnerError: Error, LocalizedError, Equatable, Sendable {
@@ -52,6 +53,7 @@ actor ProcessRunner {
         executable: URL,
         arguments: [String] = [],
         environment: [String: String]? = nil,
+        workingDirectory: URL? = nil,
         timeout: TimeInterval? = nil,
         mode: LaunchMode = .waitForExit
     ) async throws -> ProcessResult {
@@ -77,6 +79,11 @@ actor ProcessRunner {
         ]
         process.environment = safeEnv
 
+        // Working directory
+        if let wd = workingDirectory {
+            process.currentDirectoryURL = wd
+        }
+
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
@@ -93,7 +100,7 @@ actor ProcessRunner {
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
                 let _ = handle.availableData
             }
-            return ProcessResult(exitCode: 0, stdout: "", stderr: "")
+            return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
         }
 
         // Wait-for-exit mode: use continuation with async pipe reading
@@ -162,7 +169,8 @@ actor ProcessRunner {
                     continuation.resume(returning: ProcessResult(
                         exitCode: terminationStatus,
                         stdout: collector.stdout,
-                        stderr: collector.stderr
+                        stderr: collector.stderr,
+                        pid: proc.processIdentifier
                     ))
                 }
             }

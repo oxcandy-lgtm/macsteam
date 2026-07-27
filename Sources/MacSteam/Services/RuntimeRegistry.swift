@@ -39,6 +39,14 @@ public enum RuntimeType: String, Sendable, CaseIterable, Comparable {
     case systemWine
     case crossover
 
+    /// Whether this type is a free / open-source Wine runtime.
+    var isOpenSource: Bool {
+        switch self {
+        case .managedWine, .importedWine, .systemWine: true
+        case .crossover: false
+        }
+    }
+
     public static func < (lhs: RuntimeType, rhs: RuntimeType) -> Bool {
         Self.priorityOrder[lhs] ?? 99 < Self.priorityOrder[rhs] ?? 99
     }
@@ -57,17 +65,29 @@ public enum RuntimeType: String, Sendable, CaseIterable, Comparable {
 /// 1. `ManagedWineRuntime` — MacsTeam bundled Wine (Coming later)
 /// 2. `ImportedWineRuntime` — user-selected Wine directory
 /// 3. `SystemWineRuntime` — Homebrew/MacPorts Wine
-/// 4. `CrossOverRuntime` — optional third-party commercial runtime
+/// 4. `CrossOverRuntime` — optional commercial runtime (disabled by default)
 ///
-/// CrossOver is **never** selected ahead of any Wine runtime.
+/// **U1R6:** Commercial runtimes (CrossOver) are disabled by default.
+/// They are never auto-detected unless the user explicitly opts in via
+/// `CommercialRuntimePolicy.explicitUserOptIn`.
+///
 /// CrossOver absence never blocks app startup or runtime selection UI.
+/// CrossOver is never recommended, never auto-selected, and never treated
+/// as the only available option.
 @MainActor
 final class RuntimeRegistry {
     private let fm = FileManager.default
+    private let commercialPolicy: CommercialRuntimePolicy
 
-    /// Discover all available runtimes on the system.
-    /// Returns candidates sorted by priority (lowest-first).
-    func discover() async -> [RuntimeCandidate] {
+    init(commercialPolicy: CommercialRuntimePolicy = .disabled) {
+        self.commercialPolicy = commercialPolicy
+    }
+
+    // MARK: - Discovery
+
+    /// Discover all **open-source** Wine runtimes on the system.
+    /// These are always eligible for automatic selection.
+    func discoverOpenSourceRuntimes() async -> [RuntimeCandidate] {
         var candidates: [RuntimeCandidate] = []
 
         // 1. ManagedWineRuntime (Coming later — skip for now)
@@ -81,7 +101,15 @@ final class RuntimeRegistry {
             candidates.append(sys)
         }
 
-        // 4. CrossOverRuntime — optional commercial adapter
+        return candidates.sorted { $0.runtimeType < $1.runtimeType }
+    }
+
+    /// Discover **commercial** Wine runtimes (e.g. CrossOver).
+    /// Only called when `commercialPolicy == .explicitUserOptIn`.
+    func discoverCommercialRuntimes() async -> [RuntimeCandidate] {
+        guard commercialPolicy == .explicitUserOptIn else { return [] }
+        var candidates: [RuntimeCandidate] = []
+
         if let co = discoverCrossOver() {
             candidates.append(co)
         }
@@ -89,13 +117,40 @@ final class RuntimeRegistry {
         return candidates.sorted { $0.runtimeType < $1.runtimeType }
     }
 
+    /// Discover all runtimes the current policy allows.
+    /// Open-source always included; commercial only with explicit opt-in.
+    func discover() async -> [RuntimeCandidate] {
+        var candidates = await discoverOpenSourceRuntimes()
+        candidates.append(contentsOf: await discoverCommercialRuntimes())
+        return candidates
+    }
+
+    // MARK: - Selection
+
     /// Select the preferred runtime from candidates, respecting priority.
+    /// Only considers **open-source** runtimes unless commercial policy
+    /// explicitly allows them.
     /// Returns `nil` only when no usable runtime exists.
     func selectPreferred(from candidates: [RuntimeCandidate]) -> RuntimeCandidate? {
-        let usable = candidates.filter { $0.inspection?.isUsable == true }
-        // Within usable candidates, respect priority order
+        var pool = candidates
+
+        // Filter out commercial runtimes unless explicitly opted in
+        if commercialPolicy != .explicitUserOptIn {
+            pool = pool.filter { $0.runtimeType.isOpenSource }
+        }
+
+        let usable = pool.filter { $0.inspection?.isUsable == true }
         return usable.min { $0.runtimeType < $1.runtimeType }
     }
+
+    /// Whether the given candidate is eligible for automatic selection
+    /// under the current policy.
+    func isEligible(_ candidate: RuntimeCandidate) -> Bool {
+        if candidate.runtimeType.isOpenSource { return true }
+        return commercialPolicy == .explicitUserOptIn
+    }
+
+    // MARK: - User-selected runtime
 
     /// Locate runtime at a user-selected URL (imported Wine).
     func locateUserSelected(at url: URL) -> RuntimeCandidate? {
