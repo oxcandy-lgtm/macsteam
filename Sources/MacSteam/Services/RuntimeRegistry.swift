@@ -77,7 +77,7 @@ public enum RuntimeType: String, Sendable, CaseIterable, Comparable {
 @MainActor
 final class RuntimeRegistry {
     private let fm = FileManager.default
-    private let commercialPolicy: CommercialRuntimePolicy
+    var commercialPolicy: CommercialRuntimePolicy
 
     init(commercialPolicy: CommercialRuntimePolicy = .disabled) {
         self.commercialPolicy = commercialPolicy

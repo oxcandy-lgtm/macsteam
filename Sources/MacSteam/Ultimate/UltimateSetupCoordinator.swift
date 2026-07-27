@@ -23,7 +23,7 @@ final class UltimateSetupCoordinator {
     // U1R6: Commercial runtime policy (persisted via AppStorage in SettingsView)
     var commercialPolicy: CommercialRuntimePolicy = .disabled {
         didSet {
-            UserDefaults.standard.set(commercialPolicy.rawValue, forKey: "commercialRuntimePolicy")
+            runtimeRegistry.commercialPolicy = commercialPolicy
         }
     }
 
@@ -45,6 +45,7 @@ final class UltimateSetupCoordinator {
     // MARK: - Private
 
     private let recipe: GameRecipe
+    private let runtimeRegistry: RuntimeRegistry
     private let processRunner = ProcessRunner()
     private let sessionSupervisor = GameSessionSupervisor()
     private let prefixManager = PrefixManager()
@@ -67,6 +68,7 @@ final class UltimateSetupCoordinator {
     // MARK: - Init
 
     init() {
+        self.runtimeRegistry = RuntimeRegistry(commercialPolicy: .disabled)
         // Hardcoded CloverPit recipe (RecipeLoader not available in this module)
         self.recipe = GameRecipe(
             schemaVersion: 2,
@@ -76,7 +78,7 @@ final class UltimateSetupCoordinator {
             runtime: .init(
                 requiredCapabilities: ["windows-process", "steam-client", "isolated-prefix"],
                 preferredRuntime: .importedWine,
-                fallbackRuntimes: [.systemWine, .crossover]
+                fallbackRuntimes: [.systemWine]  // NOTE: no .crossover — see CommercialRuntimePolicy
             ),
             graphics: .init(preferred: .wined3d, fallback: []),
             prefix: .init(id: "cloverpit", windowsVersion: .win10, isolation: .perGame),
@@ -91,68 +93,47 @@ final class UltimateSetupCoordinator {
 
     // MARK: - Flow
 
-    /// Step 1: Inspect the system for available Wine runtimes.
+    /// Step 1: Inspect the system for available Wine runtimes using RuntimeRegistry.
     func inspectSystem() async {
         state = .inspecting
         error = nil
 
-        // 1. Try system Wine (Homebrew path)
-        let probePaths = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/opt/local/bin",
-        ]
-        for path in probePaths {
-            let url = URL(fileURLWithPath: path)
-            let wineExe = url.appendingPathComponent("wine")
-            guard FileManager.default.isExecutableFile(atPath: wineExe.path) else { continue }
-
-            guard let runtime = SystemWineRuntime(url: url) else { continue }
-            let inspection = runtime.inspect()
-            self.runtimeInspection = inspection
-            self.activeRuntime = runtime
-            self.runtimeURL = url
-
-            self.runtimeSourceType = "system_wine"
-            self.runtimeExactVersion = inspection.version
-            self.runtimeArchitecture = inspection.architecture
-
-            if inspection.isUsable {
-                state = .runtimeReady
-            } else {
-                state = .runtimeInvalid
-                error = .runtimeInspectionFailed(inspection.failures.map(\.message).joined(separator: "; "))
-            }
+        let candidates = await runtimeRegistry.discover()
+        guard let preferred = runtimeRegistry.selectPreferred(from: candidates)
+        else {
+            state = .runtimeRequired
+            error = .runtimeNotFound
             return
         }
 
-        // 2. If no system Wine, check imported runtimes directory
-        let importedDir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support/MacSteam/ImportedRuntimes")
-        if let contents = try? FileManager.default.contentsOfDirectory(at: importedDir,
-            includingPropertiesForKeys: nil, options: .skipsHiddenFiles) {
-            for dir in contents {
-                guard let runtime = ImportedWineRuntime(url: dir) else { continue }
-                let inspection = runtime.inspect()
-                self.runtimeInspection = inspection
-                self.activeRuntime = runtime
-                self.runtimeURL = dir
+        selectCandidate(preferred)
+    }
 
-                self.runtimeSourceType = "imported_wine"
-                self.runtimeExactVersion = inspection.version
-                self.runtimeArchitecture = inspection.architecture
+    /// Apply a selected candidate as the active runtime.
+    private func selectCandidate(_ candidate: RuntimeCandidate) {
+        self.runtimeInspection = candidate.inspection
+        self.activeRuntime = candidate.runtime
+        self.runtimeURL = candidate.url
 
-                if inspection.isUsable {
-                    state = .runtimeReady
-                } else {
-                    state = .runtimeInvalid
-                }
-                return
-            }
+        switch candidate.runtimeType {
+        case .managedWine:
+            runtimeSourceType = "managed_wine"
+        case .importedWine:
+            runtimeSourceType = "imported_wine"
+        case .systemWine:
+            runtimeSourceType = "system_wine"
+        case .crossover:
+            runtimeSourceType = "crossover"
         }
+        self.runtimeExactVersion = candidate.inspection?.version
+        self.runtimeArchitecture = candidate.inspection?.architecture
 
-        state = .runtimeRequired
-        error = .runtimeNotFound
+        if candidate.inspection?.isUsable == true {
+            state = .runtimeReady
+        } else {
+            state = .runtimeInvalid
+            error = .runtimeInspectionFailed(candidate.inspection?.failures.map(\.message).joined(separator: "; ") ?? "Unknown failure")
+        }
     }
 
     /// Step 1b: User selected a Wine runtime directory.
@@ -160,26 +141,13 @@ final class UltimateSetupCoordinator {
         state = .inspecting
         error = nil
 
-        guard let runtime = ImportedWineRuntime(url: url) else {
+        guard let candidate = runtimeRegistry.locateUserSelected(at: url) else {
             state = .runtimeInvalid
             error = .runtimeInspectionFailed("Not a valid Wine runtime directory")
             return
         }
-        let inspection = runtime.inspect()
-        self.runtimeInspection = inspection
-        self.activeRuntime = runtime
-        self.runtimeURL = url
 
-        self.runtimeSourceType = "imported_wine"
-        self.runtimeExactVersion = inspection.version
-        self.runtimeArchitecture = inspection.architecture
-
-        if inspection.isUsable {
-            state = .runtimeReady
-        } else {
-            state = .runtimeInvalid
-            error = .runtimeInspectionFailed(inspection.failures.map(\.message).joined(separator: "; "))
-        }
+        selectCandidate(candidate)
     }
 
     /// Step 2: Create the CloverPit Wine prefix.
@@ -385,15 +353,17 @@ final class UltimateSetupCoordinator {
         }
     }
 
-    /// Step 6: Launch CloverPit through Windows Steam.
+    /// Step 6: Launch CloverPit through Windows Steam via GameSessionSupervisor.
     func launchCloverPit() async {
         state = .launching
         error = nil
         launchPhase = nil
 
         guard let runtime = activeRuntime,
-              let runtimeURL = runtimeURL else {
-            error = .launchFailed("No runtime selected")
+              let runtimeURL = runtimeURL,
+              let runtimeControl = runtime as? WineRuntimeControl
+        else {
+            error = .launchFailed("No runtime selected or runtime lacks WineRuntimeControl")
             state = .cloverPitReady
             return
         }
@@ -416,27 +386,29 @@ final class UltimateSetupCoordinator {
         }
 
         do {
-            // Launch: wine steam.exe -applaunch 3314790
-            let result = try await processRunner.run(
-                executable: wineURL,
-                arguments: [steamExe.path, "-applaunch", "3314790"],
+            let plan = LaunchPlan(
+                runtimeExecutable: wineURL,
+                arguments: [steamExe.path, "-applaunch", "3314790", "-popupwindow", "-screen-fullscreen", "0"],
+                mode: .detached,
                 environment: [
                     "WINEPREFIX": prefixDir.path,
                     "WINEARCH": "win64",
                     "WINEDEBUG": "-all",
                 ],
-                timeout: nil,
-                mode: .detached
+                workingDirectory: prefixDir
             )
 
-            launchPhase = .launched
-            state = .launchSubmitted
+            let session = try await sessionSupervisor.launch(
+                plan: plan,
+                runtimeControl: runtimeControl,
+                prefixRoot: prefixDir,
+                recipeID: recipe.id,
+                runtimeID: runtimeSourceType ?? "unknown"
+            )
 
-            // Wait a moment and check for process
-            try await Task.sleep(nanoseconds: 5_000_000_000)
-            // Check if steam/cloverpit process is running
-            // (simplified — real PID tracking would need more)
             launchPhase = .processObserved
+            state = .processObserved
+            // activeSession is exposed via sessionSupervisor.activeSession
         } catch {
             self.error = .launchFailed(error.localizedDescription)
             state = .cloverPitReady
@@ -456,6 +428,28 @@ final class UltimateSetupCoordinator {
     /// Stop the active game session.
     func stopSession() async {
         try? await sessionSupervisor.stop()
+    }
+
+    // MARK: - Session supervisor proxy
+
+    /// Current session state from the supervisor.
+    var sessionSupervisorState: GameSessionState {
+        sessionSupervisor.state
+    }
+
+    /// Whether a session is currently running.
+    var sessionSupervisorIsRunning: Bool {
+        sessionSupervisor.isRunning
+    }
+
+    /// Whether a stop is in progress.
+    var sessionSupervisorIsStopping: Bool {
+        sessionSupervisor.isStopping
+    }
+
+    /// Whether recovery is needed.
+    var sessionSupervisorNeedsRecovery: Bool {
+        sessionSupervisor.needsRecovery
     }
 
     // MARK: - Diagnostics / Receipt

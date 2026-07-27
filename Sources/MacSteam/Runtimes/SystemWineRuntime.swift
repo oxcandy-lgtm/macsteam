@@ -116,3 +116,22 @@ extension SystemWineRuntime: CompatibilityRuntime {
         }
     }
 }
+
+// MARK: - WineRuntimeControl conformance
+
+extension SystemWineRuntime: WineRuntimeControl {
+    var wineserverExecutable: URL {
+        runtimeURL.appendingPathComponent("wineserver")
+    }
+
+    func controlEnvironment(for prefix: URL) throws -> [String: String] {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: prefix.path, isDirectory: &isDir),
+              isDir.boolValue else {
+            throw WineServerError.prefixNotFound(prefix)
+        }
+        return SafeProcessEnvironment.base.merging([
+            "WINEPREFIX": prefix.path
+        ]) { _, new in new }
+    }
+}
