@@ -52,6 +52,8 @@ struct PublicComplianceTests {
         var found = false
         for case let fileURL as URL in enumerator {
             guard fileURL.pathExtension == "swift" else { continue }
+            // Exempt SteamPathDenylist.swift – uses patterns for authorisation
+            if fileURL.lastPathComponent == "SteamPathDenylist.swift" { continue }
             let content = try String(contentsOf: fileURL, encoding: .utf8)
             if content.contains("CloverPit.exe") {
                 found = true
