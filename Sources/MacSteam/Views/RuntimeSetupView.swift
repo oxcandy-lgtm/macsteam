@@ -9,6 +9,8 @@ import SwiftUI
 /// results of ``RuntimeInspection`` including version, architecture,
 /// capabilities, and any validation failures.
 struct RuntimeSetupView: View {
+    let coordinator: UltimateSetupCoordinator
+
     @State private var selectedRuntimePath: String = ""
     @State private var inspectionResult: RuntimeInspection?
     @State private var isInspecting = false
@@ -59,6 +61,58 @@ struct RuntimeSetupView: View {
                 .font(.subheadline)
                 .fontWeight(.medium)
 
+            // MARK: Managed Wine (Coming later)
+            HStack {
+                Image(systemName: "shippingbox")
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("MacsTeam Managed Wine")
+                        .font(.subheadline)
+                    Text("Coming later")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+            .padding(8)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            // MARK: Imported Wine Runtime
+            HStack {
+                Image(systemName: "folder.badge.gearshape")
+                    .foregroundStyle(.blue)
+                Text("Imported Wine Runtime")
+                    .font(.subheadline)
+                Spacer()
+                if !selectedRuntimePath.isEmpty {
+                    Text(selectedRuntimePath)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            HStack(spacing: 8) {
+                Button("Select Wine Runtime…") {
+                    selectRuntime()
+                }
+                .controlSize(.small)
+
+                if !selectedRuntimePath.isEmpty {
+                    Button("Clear") {
+                        selectedRuntimePath = ""
+                        inspectionResult = nil
+                    }
+                    .controlSize(.small)
+                }
+            }
+
+            // MARK: System Wine
             if systemRuntimesAvailable {
                 HStack {
                     Image(systemName: "checkmark.circle.fill")
@@ -88,26 +142,26 @@ struct RuntimeSetupView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
-            if !selectedRuntimePath.isEmpty {
+            // MARK: CrossOver (optional proprietary)
+            VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Image(systemName: "folder.badge.gearshape")
-                        .foregroundStyle(.blue)
-                    Text(selectedRuntimePath)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    Image(systemName: "gearshape.2")
+                        .foregroundStyle(.secondary)
+                    Text("CrossOver")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Text("Optional")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
-                .padding(8)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                Text("Optional third-party commercial runtime. Not required by MacsTeam Ultimate. May require a separate trial or license.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
-
-            Button("Select Wine Runtime…") {
-                selectRuntime()
-            }
-            .controlSize(.small)
+            .padding(8)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .padding(12)
         .background(Color(nsColor: .windowBackgroundColor))

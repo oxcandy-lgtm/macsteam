@@ -268,7 +268,7 @@ struct LauncherView: View {
         Task {
             isWorking = true
             defer { isWorking = false }
-            _ = manager.runtimeLocator.locateRuntime(at: url)
+            // RuntimeRegistry handles discovery in inspect()
             await manager.inspect()
         }
     }

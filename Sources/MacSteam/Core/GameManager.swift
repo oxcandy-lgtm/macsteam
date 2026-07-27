@@ -18,7 +18,7 @@ final class GameManager: ObservableObject, Sendable {
     // MARK: - Dependencies
 
     let recipeLoader: RecipeLoader
-    let runtimeLocator: RuntimeLocator
+    let runtimeRegistry: RuntimeRegistry
     private let steamDetector: SteamDetector
     private let processRunner: ProcessRunner
     private let diagnosticsStore: DiagnosticsStore
@@ -26,19 +26,20 @@ final class GameManager: ObservableObject, Sendable {
     // MARK: - Internal state
 
     private var activeRuntime: (any CompatibilityRuntime)?
+    private var activeCandidate: RuntimeCandidate?
     private var currentGameInspection: GameInspection?
 
     // MARK: - Init
 
     init(
         recipeLoader: RecipeLoader = RecipeLoader(),
-        runtimeLocator: RuntimeLocator = RuntimeLocator(),
+        runtimeRegistry: RuntimeRegistry = RuntimeRegistry(),
         steamDetector: SteamDetector = SteamDetector(),
         processRunner: ProcessRunner = ProcessRunner(),
         diagnosticsStore: DiagnosticsStore = DiagnosticsStore()
     ) {
         self.recipeLoader = recipeLoader
-        self.runtimeLocator = runtimeLocator
+        self.runtimeRegistry = runtimeRegistry
         self.steamDetector = steamDetector
         self.processRunner = processRunner
         self.diagnosticsStore = diagnosticsStore
@@ -63,14 +64,24 @@ final class GameManager: ObservableObject, Sendable {
             return
         }
 
-        // 2. Locate runtime
-        guard let runtime = runtimeLocator.locatePreferredRuntime() else {
-            log("No compatible runtime found")
+        // 2. Locate runtime via Registry (priority: Managed → Imported → System → CrossOver)
+        let candidates = await runtimeRegistry.discover()
+        guard let preferred = runtimeRegistry.selectPreferred(from: candidates) else {
+            log("No compatible runtime found among \\(candidates.count) candidate(s)")
             state = .runtimeMissing
             return
         }
 
-        let inspection = runtime.inspect()
+        guard let runtime = preferred.runtime else {
+            log("Selected candidate has no runtime instance")
+            state = .runtimeMissing
+            return
+        }
+
+        let inspection = preferred.inspection ?? runtime.inspect()
+        activeCandidate = preferred
+        activeRuntime = runtime
+
         guard inspection.isUsable else {
             let fail = inspection.failures.first ?? RuntimeFailure(code: .bundleNotValid, message: "Runtime unusable")
             log("Runtime invalid: \(fail.message)")
@@ -78,7 +89,6 @@ final class GameManager: ObservableObject, Sendable {
             return
         }
 
-        activeRuntime = runtime
         log("Runtime found: \(inspection.displayName) v\(inspection.version ?? "?")")
 
         // 3. Detect Steam
@@ -182,8 +192,38 @@ struct GameInspection: Equatable, Sendable {
     let steamPresent: Bool
     let isWindowsSteam: Bool
     let manifestPresent: Bool
+    let manifestAppID: String?
+    let installdir: String?
     let installDirectoryResolved: Bool
     let executablePresent: Bool
+    let executableName: String?
     let isReady: Bool
+    let stateFlags: String?
+
+    init(recipeID: String, steamPresent: Bool, isWindowsSteam: Bool,
+         manifestPresent: Bool, manifestAppID: String? = nil,
+         installdir: String? = nil,
+         installDirectoryResolved: Bool, executablePresent: Bool,
+         executableName: String? = nil, isReady: Bool,
+         stateFlags: String? = nil) {
+        self.recipeID = recipeID
+        self.steamPresent = steamPresent
+        self.isWindowsSteam = isWindowsSteam
+        self.manifestPresent = manifestPresent
+        self.manifestAppID = manifestAppID
+        self.installdir = installdir
+        self.installDirectoryResolved = installDirectoryResolved
+        self.executablePresent = executablePresent
+        self.executableName = executableName
+        self.isReady = isReady
+        self.stateFlags = stateFlags
+    }
+
+    static func notReady(recipeID: String) -> GameInspection {
+        GameInspection(recipeID: recipeID, steamPresent: false,
+            isWindowsSteam: false, manifestPresent: false,
+            installDirectoryResolved: false, executablePresent: false,
+            isReady: false)
+    }
 }
 
