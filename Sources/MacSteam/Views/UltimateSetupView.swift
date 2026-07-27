@@ -8,6 +8,7 @@ import SwiftUI
 /// selection is removed from the main UI (moved to advanced settings).
 struct UltimateSetupView: View {
     @Bindable var coordinator: UltimateSetupCoordinator
+    @State private var showingSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,6 +18,9 @@ struct UltimateSetupView: View {
         }
         .frame(minWidth: 520, minHeight: 420)
         .task { await coordinator.inspectSystem() }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView(coordinator: coordinator)
+        }
     }
 
     // MARK: - Header
@@ -33,6 +37,11 @@ struct UltimateSetupView: View {
             }
             Spacer()
             progressIndicator
+            Button("Settings", systemImage: "gearshape") {
+                showingSettings = true
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
         }
         .padding()
     }

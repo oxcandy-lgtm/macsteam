@@ -20,6 +20,23 @@ final class UltimateSetupCoordinator {
     var error: UltimateSetupError?
     var launchPhase: LaunchPhase?
 
+    // U1R6: Commercial runtime policy (persisted via AppStorage in SettingsView)
+    var commercialPolicy: CommercialRuntimePolicy = .disabled {
+        didSet {
+            UserDefaults.standard.set(commercialPolicy.rawValue, forKey: "commercialRuntimePolicy")
+        }
+    }
+
+    // U1R6: Active session exposed for UI (read-only)
+    var activeSession: GameSession? {
+        sessionSupervisor.activeSession
+    }
+
+    // U1R6: Selected graphics backend
+    var graphicsBackend: GraphicsBackendKind? {
+        GraphicsBackendRegistry().selectPreferred()
+    }
+
     // Runtime info for receipt/report
     var runtimeSourceType: String?
     var runtimeExactVersion: String?
@@ -29,6 +46,7 @@ final class UltimateSetupCoordinator {
 
     private let recipe: GameRecipe
     private let processRunner = ProcessRunner()
+    private let sessionSupervisor = GameSessionSupervisor()
     private let prefixManager = PrefixManager()
     private let steamDetector = SteamInstallationDetector()
     private let launchCoordinator = SteamLaunchCoordinator()
@@ -433,6 +451,11 @@ final class UltimateSetupCoordinator {
     /// User confirmed seeing main menu.
     func confirmMainMenu() {
         launchPhase = .mainMenuConfirmed
+    }
+
+    /// Stop the active game session.
+    func stopSession() async {
+        try? await sessionSupervisor.stop()
     }
 
     // MARK: - Diagnostics / Receipt
