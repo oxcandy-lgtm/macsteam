@@ -2,6 +2,18 @@
 
 import Foundation
 
+/// Result of a path authorisation check.
+///
+/// Unknown or unrecognised paths are denied by default (fail-closed).
+enum SteamReadAuthorization: Sendable, Equatable {
+    /// The path is an allowed app manifest; only the listed keys may be read.
+    case allowManifest(keys: Set<String>)
+    /// Executable metadata (existence, size, regular-file check) is permitted.
+    case allowExecutableMetadata
+    /// The path is denied.
+    case deny
+}
+
 /// Path deny list that prevents MacSteam from reading Steam authentication
 /// files, crash dumps, and browser profiles.
 ///
@@ -9,21 +21,37 @@ import Foundation
 /// allowed by default.
 struct SteamPathDenylist: Sendable {
 
-    /// Returns `true` if the URL should be blocked.
-    static func isDenied(_ url: URL) -> Bool {
-        deniedGlobs.contains { glob in
-            matches(glob: glob, url: url)
+    /// Authorise reading the given URL.
+    ///
+    /// - Parameter url: The URL to check.
+    /// - Returns: An authorisation decision.  Default is `.deny`.
+    static func authorizeRead(_ url: URL) -> SteamReadAuthorization {
+        let std = url.standardized
+        let path = std.path
+
+        // App manifests are partially readable
+        if matches(glob: "**/steamapps/appmanifest_*.acf", path: path) {
+            return .allowManifest(keys: allowedManifestKeys)
         }
+
+        // CloverPit executable metadata
+        if path.hasSuffix("/CloverPit.exe")
+            || path.hasSuffix("/UnityPlayer.dll")
+            || path.hasSuffix("/UnityCrashHandler64.exe") {
+            return .allowExecutableMetadata
+        }
+
+        // Game install directories
+        if matches(glob: "**/steamapps/common/**", path: path) {
+            // Common game files — allowed for detection purposes
+            return .allowExecutableMetadata
+        }
+
+        // Everything else is denied
+        return .deny
     }
 
-    /// Returns `true` if the URL matches an allowlisted pattern.
-    static func isAllowed(_ url: URL) -> Bool {
-        allowedGlobs.contains { glob in
-            matches(glob: glob, url: url)
-        } && !isDenied(url)
-    }
-
-    // MARK: - Steam app manifest access (allowlisted)
+    // MARK: - Manifest key allowlist
 
     /// Keys that may be read from an app manifest `.acf` file.
     static let allowedManifestKeys: Set<String> = [
@@ -41,52 +69,37 @@ struct SteamPathDenylist: Sendable {
         allowedManifestKeys.contains(key)
     }
 
-    // MARK: - Denied path globs
+    // MARK: - Legacy compatibility (deprecated)
 
-    private static let deniedGlobs: Set<String> = [
-        "**/loginusers.vdf",
-        "**/ssfn*",
-        "**/config/config.vdf",
-        "**/htmlcache/**",
-        "**/webcache/**",
-        "**/appcache/httpcache/**",
-        "**/userdata/**",
-        "**/Cookies",
-        "**/Local Storage/**",
-        "**/Session Storage/**",
-        "**/IndexedDB/**",
-        "**/*.dmp",
-        "**/*.mdmp",
-        "**/*.core",
-    ]
+    @available(*, deprecated, message: "Use authorizeRead() instead")
+    static func isDenied(_ url: URL) -> Bool {
+        if case .deny = authorizeRead(url) { return true }
+        return false
+    }
 
-    /// Allowlisted paths that bypass the deny list.
-    private static let allowedGlobs: Set<String> = [
-        "**/steamapps/appmanifest_*.acf",
-        "**/steamapps/common/**",
-    ]
+    @available(*, deprecated, message: "Use authorizeRead() instead")
+    static func isAllowed(_ url: URL) -> Bool {
+        if case .deny = authorizeRead(url) { return false }
+        return true
+    }
 
-    /// Simple glob matching using `fnmatch`-style patterns.
-    /// Supports `**` for recursive directories and `*` for single-segment.
-    private static func matches(glob: String, url: URL) -> Bool {
-        let path = url.standardized.path
-        // Convert glob to regex
+    // MARK: - Private
+
+    /// Simple glob matching.
+    private static func matches(glob: String, path: String) -> Bool {
         var pattern = NSRegularExpression.escapedPattern(for: glob)
-        // Replace **/ with (.*/)?
+        // Unescape forward slashes (escapedPattern escapes / to \\/)
+        pattern = pattern.replacingOccurrences(of: "\\/", with: "/")
+        // Convert escaped glob tokens to regex
         pattern = pattern
             .replacingOccurrences(of: "\\*\\*/", with: "([^:]*/)?")
             .replacingOccurrences(of: "\\*\\*", with: ".*")
             .replacingOccurrences(of: "\\*", with: "[^/]*")
             .replacingOccurrences(of: "\\?", with: "[^/]")
         pattern = "^" + pattern + "$"
-        return range(of: pattern, in: path) != nil
-    }
-
-    private static func range(of pattern: String, in string: String) -> Range<String.Index>? {
-        try? NSRegularExpression(pattern: pattern).firstMatch(
-            in: string,
-            options: [],
-            range: NSRange(location: 0, length: string.utf16.count)
-        ).map { Range($0.range, in: string)! }
+        return (try? NSRegularExpression(pattern: pattern).firstMatch(
+            in: path, options: [],
+            range: NSRange(location: 0, length: path.utf16.count)
+        )) != nil
     }
 }

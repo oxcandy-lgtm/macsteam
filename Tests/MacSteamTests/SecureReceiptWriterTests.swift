@@ -1,90 +1,72 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import Foundation
 import Testing
 @testable import MacSteam
 
 struct SecureReceiptWriterTests {
 
-    // MARK: - Validation
+    // MARK: - Creation
 
-    @Test func testValidateRejectsUnknownKeys() {
-        let entries: [String: Any] = [
-            "operation": "steam-user-confirmation",
-            "userConfirmedLibraryVisible": true,
-            "credentialsAccessed": false,
-            "steamGuardAccessed": false,
-            "sessionFilesRead": false,
-            "accountIdentifierRecorded": false,
-            "secret_key": "should be rejected",
-        ]
-        #expect(SecureReceiptWriter.validate(entries: entries) == nil)
+    @Test func testMakeValidReceipt() {
+        let receipt = SecureReceiptWriter.make(
+            operation: .userConfirmedSteamLibrary,
+            userConfirmedLibraryVisible: true
+        )
+        #expect(receipt.operation == .userConfirmedSteamLibrary)
+        #expect(receipt.userConfirmedLibraryVisible == true)
     }
 
-    @Test func testValidateAcceptsValidReceipt() {
-        let entries: [String: Any] = [
-            "operation": "steam-user-confirmation",
-            "userConfirmedLibraryVisible": true,
-            "credentialsAccessed": false,
-            "steamGuardAccessed": false,
-            "sessionFilesRead": false,
-            "accountIdentifierRecorded": false,
-        ]
-        let receipt = SecureReceiptWriter.validate(entries: entries)
-        #expect(receipt != nil)
-        #expect(receipt?.operation == "steam-user-confirmation")
-        #expect(receipt?.userConfirmedLibraryVisible == true)
+    @Test func testAllCredentialFlagsAreFalse() {
+        let receipt = SecureReceiptWriter.make(
+            operation: .cloverPitManifestDetected,
+            userConfirmedLibraryVisible: false
+        )
+        #expect(receipt.credentialsAccessed == false)
+        #expect(receipt.steamGuardAccessed == false)
+        #expect(receipt.sessionFilesRead == false)
+        #expect(receipt.accountIdentifierRecorded == false)
     }
 
-    @Test func testValidateRejectsCredentialsAccessed() {
-        let entries: [String: Any] = [
-            "operation": "test",
-            "userConfirmedLibraryVisible": true,
-            "credentialsAccessed": true,
-            "steamGuardAccessed": false,
-            "sessionFilesRead": false,
-            "accountIdentifierRecorded": false,
-        ]
-        #expect(SecureReceiptWriter.validate(entries: entries) == nil)
-    }
+    // MARK: - No free-form strings
 
-    @Test func testValidateRejectsMissingKeys() {
-        let entries: [String: Any] = [
-            "operation": "test",
-            "userConfirmedLibraryVisible": true,
-        ]
-        #expect(SecureReceiptWriter.validate(entries: entries) == nil)
+    @Test func testNoArbitraryDictionaryAPI() {
+        // The old validate(entries:) API must not exist.
+        // Only typed SecureReceiptOperation values are accepted.
+        #expect(SecureReceiptOperation.allCases.count == 5)
     }
 
     // MARK: - Encoding
 
     @Test func testEncodeJson() {
-        let receipt = SecureReceiptWriter.Receipt(
-            operation: "test",
-            userConfirmedLibraryVisible: true,
-            credentialsAccessed: false,
-            steamGuardAccessed: false,
-            sessionFilesRead: false,
-            accountIdentifierRecorded: false
+        let receipt = SecureReceiptWriter.make(
+            operation: .userConfirmedSteamLibrary,
+            userConfirmedLibraryVisible: true
         )
         let json = SecureReceiptWriter.encode(receipt)
-        #expect(json.contains("\"operation\":\"test\""))
-        #expect(json.contains("\"userConfirmedLibraryVisible\":true"))
-        #expect(json.contains("\"credentialsAccessed\":false"))
+        #expect(json.contains("\"operation\""))
+        #expect(json.contains("\"userConfirmedLibraryVisible\""))
+        #expect(json.contains("true"))
     }
 
-    @Test func testEncodeJsonContainsOnlyAllowedKeys() {
-        let receipt = SecureReceiptWriter.Receipt(
-            operation: "steam-user-confirmation",
-            userConfirmedLibraryVisible: true,
-            credentialsAccessed: false,
-            steamGuardAccessed: false,
-            sessionFilesRead: false,
-            accountIdentifierRecorded: false
+    @Test func testEncodeDoesNotContainCredentials() {
+        let receipt = SecureReceiptWriter.make(
+            operation: .cloverPitLaunchSubmitted,
+            userConfirmedLibraryVisible: false
         )
         let json = SecureReceiptWriter.encode(receipt)
-        #expect(!json.contains("secret"))
-        #expect(!json.contains("password"))
-        #expect(!json.contains("token"))
+        #expect(json.contains("\"credentialsAccessed\":false"))
+        #expect(!json.contains("true"))
+    }
+
+    @Test func testDecodeRoundTrip() {
+        let original = SecureReceiptWriter.make(
+            operation: .cloverPitWindowConfirmed,
+            userConfirmedLibraryVisible: true
+        )
+        let json = SecureReceiptWriter.encode(original)
+        let decoded = SecureReceiptWriter.decode(json)
+        #expect(decoded != nil)
+        #expect(decoded?.operation == .cloverPitWindowConfirmed)
+        #expect(decoded?.userConfirmedLibraryVisible == true)
     }
 }

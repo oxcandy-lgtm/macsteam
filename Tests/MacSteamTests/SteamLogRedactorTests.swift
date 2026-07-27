@@ -4,104 +4,81 @@ import Foundation
 import Testing
 @testable import MacSteam
 
-struct SteamLogRedactorTests {
+struct SecureSteamLoggerTests {
 
-    // MARK: - Clean results
+    // MARK: - No free-form strings
 
-    @Test func testCleanInputReturnsClean() {
-        let result = SteamLogRedactor.redact("hello world")
-        #expect(!result.applied)
-        #expect(result.category == nil)
+    @Test func testNoFreeFormStringLoggingAPI() {
+        #expect(SteamLogRedactor.deprecated)
     }
 
-    @Test func testForceD3d11ArgIsClean() {
-        let result = SteamLogRedactor.redact("--force-d3d11")
-        #expect(!result.applied)
+    // MARK: - Logger events
+
+    @Test func testRecordEvent() async {
+        let logger = SecureSteamLogger()
+        await logger.record(.libraryVisibilityConfirmed)
+        let count = await logger.eventCount()
+        #expect(count == 1)
     }
 
-    // MARK: - Sensitive categories
-
-    @Test func testSteamGuardRejected() {
-        let result = SteamLogRedactor.redact("SteamGuard code received")
-        #expect(result.applied)
-        #expect(result.category == .steamGuard)
+    @Test func testRecordMultipleEvents() async {
+        let logger = SecureSteamLogger()
+        await logger.record(.steamProcessObserved)
+        await logger.record(.cloverPitManifestDetected)
+        await logger.record(.launchSubmitted)
+        let count = await logger.eventCount()
+        #expect(count == 3)
     }
 
-    @Test func testPasswordRejected() {
-        let result = SteamLogRedactor.redact("password entered")
-        #expect(result.applied)
-        #expect(result.category == .password)
+    @Test func testSensitiveInputRejection() async {
+        let logger = SecureSteamLogger()
+        await logger.record(.sensitiveInputRejected(.password))
+        await logger.record(.sensitiveInputRejected(.steamGuard))
+        let summary = await logger.summary()
+        #expect(summary.contains("sensitive input"))
+        #expect(summary.contains("password"))
+        #expect(summary.contains("steamGuard"))
     }
 
-    @Test func testSessionTokenRejected() {
-        let result = SteamLogRedactor.redact("session token value")
-        #expect(result.applied)
+    @Test func testResetClearsEvents() async {
+        let logger = SecureSteamLogger()
+        await logger.record(.libraryVisibilityConfirmed)
+        await logger.reset()
+        let count = await logger.eventCount()
+        #expect(count == 0)
     }
 
-    @Test func testCookieRejected() {
-        let result = SteamLogRedactor.redact("cookie data")
-        #expect(result.applied)
-        #expect(result.category == .cookie)
-    }
+    // MARK: - Path authorisation via SteamPathDenylist
 
-    @Test func testDumpFileRejected() {
-        let result = SteamLogRedactor.redact("crash.dmp")
-        #expect(result.applied)
-        #expect(result.category == .crashMemoryDump)
-    }
-
-    @Test func testSsfnRejected() {
-        let result = SteamLogRedactor.redact("ssfn_secret_file")
-        #expect(result.applied)
-        #expect(result.category == .machineAuthorization)
-    }
-
-    // MARK: - URL redaction
-
-    @Test func testLoginusersUrlRejected() {
+    @Test func testLoginusersUrlDenied() {
         let url = URL(fileURLWithPath: "/Steam/config/loginusers.vdf")
-        let result = SteamLogRedactor.redactURL(url)
-        #expect(result.applied)
+        let auth = SteamPathDenylist.authorizeRead(url)
+        #expect(auth == .deny)
     }
 
-    @Test func testAppmanifestUrlAccepted() {
+    @Test func testAppmanifestUrlAllowed() {
         let url = URL(fileURLWithPath: "/Steam/steamapps/appmanifest_3314790.acf")
-        let result = SteamLogRedactor.redactURL(url)
-        #expect(!result.applied)
+        let auth = SteamPathDenylist.authorizeRead(url)
+        if case .allowManifest = auth {
+            Bool(true)
+        } else {
+            Issue.record("Expected allowManifest, got \(auth)")
+        }
     }
 
-    @Test func testCloverpitUrlAccepted() {
+    @Test func testCloverpitExeAllowed() {
         let url = URL(fileURLWithPath: "/Steam/steamapps/common/CloverPit/CloverPit.exe")
-        let result = SteamLogRedactor.redactURL(url)
-        #expect(!result.applied)
-    }
-}
-
-// MARK: - Redaction counter
-
-struct SteamRedactionCounterTests {
-
-    @Test func testRecordIncrementsCount() async {
-        let counter = SteamRedactionCounter()
-        let result = SteamLogRedactor.redact("steamguard code")
-        await counter.record(result)
-        let snapshot = await counter.snapshot()
-        #expect(snapshot.total == 1)
+        let auth = SteamPathDenylist.authorizeRead(url)
+        if case .allowExecutableMetadata = auth {
+            Bool(true)
+        } else {
+            Issue.record("Expected allowExecutableMetadata, got \(auth)")
+        }
     }
 
-    @Test func testCleanDoesNotIncrement() async {
-        let counter = SteamRedactionCounter()
-        await counter.record(.clean)
-        let snapshot = await counter.snapshot()
-        #expect(snapshot.total == 0)
-    }
-
-    @Test func testResetClearsCount() async {
-        let counter = SteamRedactionCounter()
-        let result = SteamLogRedactor.redact("steamguard")
-        await counter.record(result)
-        await counter.reset()
-        let snapshot = await counter.snapshot()
-        #expect(snapshot.total == 0)
+    @Test func testUnknownPathDenied() {
+        let url = URL(fileURLWithPath: "/some/unknown/path")
+        let auth = SteamPathDenylist.authorizeRead(url)
+        #expect(auth == .deny)
     }
 }

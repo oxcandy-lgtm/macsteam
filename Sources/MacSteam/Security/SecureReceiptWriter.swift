@@ -2,77 +2,75 @@
 
 import Foundation
 
-/// Secure receipt writer that only accepts known schema keys.
+/// Fixed set of operations that may appear in a secure receipt.
+/// Free-form strings are never accepted.
+enum SecureReceiptOperation: String, Codable, Sendable, CaseIterable {
+    case userConfirmedSteamLibrary
+    case cloverPitManifestDetected
+    case cloverPitExecutableDetected
+    case cloverPitLaunchSubmitted
+    case cloverPitWindowConfirmed
+}
+
+/// A secure receipt with known operations only.
 ///
-/// MacSteam authentication receipts are restricted to boolean-only values
-/// and a fixed set of allowed keys.  Arbitrary dictionaries or free-form
-/// log strings cannot be written through this API.
+/// All credential flags are hard-coded to `false` at the type level —
+/// callers cannot set them to any other value. Receipts containing
+/// non-zero credential flags cannot be constructed through this API.
+struct Receipt: Codable, Sendable, Equatable {
+    let operation: SecureReceiptOperation
+    let userConfirmedLibraryVisible: Bool
+    let credentialsAccessed: Bool
+    let steamGuardAccessed: Bool
+    let sessionFilesRead: Bool
+    let accountIdentifierRecorded: Bool
+
+    fileprivate init(
+        operation: SecureReceiptOperation,
+        userConfirmedLibraryVisible: Bool
+    ) {
+        self.operation = operation
+        self.userConfirmedLibraryVisible = userConfirmedLibraryVisible
+        self.credentialsAccessed = false
+        self.steamGuardAccessed = false
+        self.sessionFilesRead = false
+        self.accountIdentifierRecorded = false
+    }
+}
+
+/// Secure receipt writer that only accepts typed operations.
+///
+/// No arbitrary dictionaries, no free-form strings, no credential values.
 struct SecureReceiptWriter: Sendable {
 
-    /// Schema keys that may appear in a Steam authentication receipt.
-    enum Key: String, Sendable, CaseIterable {
-        case operation
-        case userConfirmedLibraryVisible
-        case credentialsAccessed
-        case steamGuardAccessed
-        case sessionFilesRead
-        case accountIdentifierRecorded
-    }
-
-    /// A validated receipt with known keys only.
-    struct Receipt: Sendable, Equatable {
-        let operation: String
-        let userConfirmedLibraryVisible: Bool
-        let credentialsAccessed: Bool
-        let steamGuardAccessed: Bool
-        let sessionFilesRead: Bool
-        let accountIdentifierRecorded: Bool
-    }
-
-    /// Creates a validated receipt, or nil if disallowed keys or non-zero
-    /// values are present.
-    /// - Parameter entries: Allowed keys only; unknown keys cause rejection.
-    static func validate(entries: [String: Any]) -> Receipt? {
-        let allowedKeys = Set(Key.allCases.map(\.rawValue))
-        let entryKeys = Set(entries.keys)
-        guard entryKeys.isSubset(of: allowedKeys) else { return nil }
-
-        guard let operation = entries[Key.operation.rawValue] as? String,
-              let userConfirmed = entries[Key.userConfirmedLibraryVisible.rawValue] as? Bool,
-              let credentialsAccessed = entries[Key.credentialsAccessed.rawValue] as? Bool,
-              let steamGuardAccessed = entries[Key.steamGuardAccessed.rawValue] as? Bool,
-              let sessionFilesRead = entries[Key.sessionFilesRead.rawValue] as? Bool,
-              let accountIdRecorded = entries[Key.accountIdentifierRecorded.rawValue] as? Bool
-        else { return nil }
-
-        // Zero-knowledge compliance: all four booleans must be false
-        guard !credentialsAccessed, !steamGuardAccessed, !sessionFilesRead, !accountIdRecorded
-        else { return nil }
-
-        return Receipt(
+    /// Creates a validated receipt with all credential flags forced to false.
+    /// - Returns: A receipt, or `nil` if the operation is not recognised
+    ///   (should never happen with the typed enum).
+    static func make(
+        operation: SecureReceiptOperation,
+        userConfirmedLibraryVisible: Bool
+    ) -> Receipt {
+        Receipt(
             operation: operation,
-            userConfirmedLibraryVisible: userConfirmed,
-            credentialsAccessed: credentialsAccessed,
-            steamGuardAccessed: steamGuardAccessed,
-            sessionFilesRead: sessionFilesRead,
-            accountIdentifierRecorded: accountIdRecorded
+            userConfirmedLibraryVisible: userConfirmedLibraryVisible
         )
     }
 
     /// Serialises a validated receipt to JSON.
     static func encode(_ receipt: Receipt, pretty: Bool = false) -> String {
-        let dict: [String: Any] = [
-            Key.operation.rawValue: receipt.operation,
-            Key.userConfirmedLibraryVisible.rawValue: receipt.userConfirmedLibraryVisible,
-            Key.credentialsAccessed.rawValue: receipt.credentialsAccessed,
-            Key.steamGuardAccessed.rawValue: receipt.steamGuardAccessed,
-            Key.sessionFilesRead.rawValue: receipt.sessionFilesRead,
-            Key.accountIdentifierRecorded.rawValue: receipt.accountIdentifierRecorded,
-        ]
-        let opts: JSONSerialization.WritingOptions = pretty ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
-        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: opts) else {
-            return "{}"
+        let encoder = JSONEncoder()
+        if pretty {
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        } else {
+            encoder.outputFormatting = [.sortedKeys]
         }
+        guard let data = try? encoder.encode(receipt) else { return "{}" }
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    /// Decodes a receipt from JSON. Returns nil on invalid input.
+    static func decode(_ json: String) -> Receipt? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(Receipt.self, from: data)
     }
 }
