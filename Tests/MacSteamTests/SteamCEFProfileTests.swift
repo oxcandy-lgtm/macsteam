@@ -40,6 +40,24 @@ struct SteamUIRenderProfileTests {
         #expect(SteamUIRenderProfile.tenfoot.launchArguments == ["-tenfoot"])
     }
 
+    // MARK: - Display names
+
+    @Test func testDisplayNameAutomatic() {
+        #expect(SteamUIRenderProfile.automatic.displayName == "Automatic")
+    }
+
+    @Test func testDisplayNameCefTriple() {
+        #expect(SteamUIRenderProfile.cefTriple.displayName == "CEF compatibility")
+    }
+
+    @Test func testDisplayNameOpenGLFallback() {
+        #expect(SteamUIRenderProfile.openGLFallback.displayName == "OpenGL fallback")
+    }
+
+    @Test func testDisplayNameTenfoot() {
+        #expect(SteamUIRenderProfile.tenfoot.displayName == "Big Picture")
+    }
+
     @Test func testAllCasesCountU1R11() {
         let all = SteamUIRenderProfile.allCases
         // U1R10: 2 (automatic, cefSoftwareRendering)
@@ -60,6 +78,33 @@ struct SteamUIRenderProfileTests {
 
     @Test func testAllCasesCovered() {
         #expect(SteamUIRenderProfile.allCases.count == 5)
+    }
+
+    // MARK: - Profile persistence
+
+    @MainActor
+    @Test func testProfileDefaultsToAutomatic() {
+        // U1R12 §1: Profile must NOT persist across coordinator init
+        let coord = UltimateSetupCoordinator()
+        #expect(coord.steamUIRenderProfile == .automatic)
+    }
+
+    // MARK: - Create prefix guard
+
+    @MainActor
+    @Test func testCreatePrefixGuardRejectsDuplicate() async {
+        let coordinator = UltimateSetupCoordinator()
+        #expect(coordinator.state == .inspecting)
+        #expect(coordinator.isCreatingPrefix == false)
+
+        coordinator.isCreatingPrefix = true
+        // Call createPrefix while isCreatingPrefix is true — guard should return early
+        await coordinator.createPrefix()
+
+        // Guard prevented defer from running, and state/error untouched
+        #expect(coordinator.isCreatingPrefix == true)
+        #expect(coordinator.state == .inspecting)
+        #expect(coordinator.error == nil)
     }
 }
 

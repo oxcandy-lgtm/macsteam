@@ -12,9 +12,7 @@ struct PrefixSetupView: View {
 
     @State private var prefixPath: String = ""
     @State private var inspection: PrefixInspection?
-    @State private var isCreating = false
     @State private var isInspecting = false
-    @State private var creationError: String? = nil
 
     private let prefixManager = PrefixManager()
     private let prefixInspector = PrefixInspector()
@@ -100,7 +98,7 @@ struct PrefixSetupView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
-            if isCreating {
+            if coordinator.isCreatingPrefix {
                 HStack {
                     ProgressView()
                         .scaleEffect(0.8)
@@ -111,18 +109,24 @@ struct PrefixSetupView: View {
                 }
             }
 
-            if let error = creationError {
-                Label(error, systemImage: "xmark.octagon")
+            if let error = coordinator.error {
+                Label(error.localizedDescription, systemImage: "xmark.octagon")
                     .font(.caption)
                     .foregroundStyle(.red)
             }
 
             HStack(spacing: 8) {
                 Button("Create CloverPit Environment") {
-                    createPrefix()
+                    Task { await coordinator.createPrefix() }
                 }
                 .controlSize(.small)
-                .disabled(isCreating)
+                .disabled(coordinator.isCreatingPrefix)
+
+                if coordinator.isCreatingPrefix {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                        .controlSize(.small)
+                }
 
                 if !prefixPath.isEmpty {
                     Button("Inspect Prefix") {
@@ -182,23 +186,6 @@ struct PrefixSetupView: View {
     }
 
     // MARK: - Actions
-
-    private func createPrefix() {
-        isCreating = true
-        creationError = nil
-        Task {
-            await coordinator.createPrefix()
-            await MainActor.run {
-                isCreating = false
-                if let error = coordinator.error {
-                    creationError = error.localizedDescription
-                } else {
-                    prefixPath = coordinator.prefixInspection.map { _ in "Created" } ?? ""
-                    inspection = coordinator.prefixInspection
-                }
-            }
-        }
-    }
 
     private func inspectPrefix() {
         guard !prefixPath.isEmpty else { return }

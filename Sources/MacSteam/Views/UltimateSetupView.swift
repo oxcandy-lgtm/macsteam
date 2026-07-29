@@ -145,7 +145,7 @@ struct UltimateSetupView: View {
 
         case .runtimeReady:
             runtimeReadyView
-            nextButton("Create Prefix →", action: { Task { await coordinator.createPrefix() } })
+            nextButton("Create Prefix →", action: { coordinator.state = .prefixRequired })
 
         case .prefixRequired:
             PrefixSetupView(coordinator: coordinator)

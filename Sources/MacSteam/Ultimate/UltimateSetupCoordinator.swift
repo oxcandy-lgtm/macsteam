@@ -22,7 +22,14 @@ final class UltimateSetupCoordinator {
 
     /// U1R10: Steam UI render profile for CEF compatibility (§3).
     /// Defaults to `.automatic` — never persisted across launches.
-    var steamUIRenderProfile: SteamUIRenderProfile = .automatic
+    var steamUIRenderProfile: SteamUIRenderProfile = .automatic {
+        didSet {
+            log("Steam UI profile selected: \(steamUIRenderProfile.rawValue)")
+        }
+    }
+
+    /// Guard against concurrent `createPrefix()` calls.
+    var isCreatingPrefix = false
 
     // U1R6: Commercial runtime policy (persisted via AppStorage in SettingsView)
     var commercialPolicy: CommercialRuntimePolicy = .disabled {
@@ -176,11 +183,17 @@ final class UltimateSetupCoordinator {
 
     /// Step 2: Create the CloverPit Wine prefix.
     func createPrefix() async {
+        guard !isCreatingPrefix else {
+            log("Prefix creation already in progress — skipping duplicate")
+            return
+        }
+        isCreatingPrefix = true
+        defer { isCreatingPrefix = false }
+
         state = .prefixRequired
         error = nil
 
         log("Step 2: Creating Wine prefix…")
-        log("Prefix path: \(prefixLayout?.root.path ?? "not resolved yet")")
 
         guard let runtime = activeRuntime,
               let runtimeURL = runtimeURL else {
@@ -198,8 +211,8 @@ final class UltimateSetupCoordinator {
             if let existing = try? prefixManager.validatedLayout(for: recipe) {
                 layout = existing
                 self.prefixLayout = layout
-                log("Canonical prefix resolved: \(layout.root.path)")
-                log("Prefix signature: drive_c=\(layout.driveC.path)")
+                log("Canonical prefix resolved")
+                log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
 
                 // Check if Steam is already installed
                 log("Checking steam.exe in canonical prefix…")

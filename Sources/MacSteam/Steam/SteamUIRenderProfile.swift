@@ -37,6 +37,20 @@ enum SteamUIRenderProfile: String, Sendable, Codable, CaseIterable {
     /// Launch Steam in Big Picture (Tenfoot) mode.
     /// Corresponds to `-tenfoot`.
     case tenfoot
+    var displayName: String {
+        switch self {
+        case .automatic:
+            return "Automatic"
+        case .cefSoftwareRendering:
+            return "CEF software rendering"
+        case .cefTriple:
+            return "CEF compatibility"
+        case .openGLFallback:
+            return "OpenGL fallback"
+        case .tenfoot:
+            return "Big Picture"
+        }
+    }
 }
 
 extension SteamUIRenderProfile {

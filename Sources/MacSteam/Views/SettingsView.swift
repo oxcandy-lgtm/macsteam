@@ -55,6 +55,25 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Steam UI") {
+                Picker(
+                    "Rendering profile",
+                    selection: $coordinator.steamUIRenderProfile
+                ) {
+                    ForEach(SteamUIRenderProfile.allCases, id: \.self) { profile in
+                        Text(profile.displayName).tag(profile)
+                    }
+                }
+                .disabled(
+                    coordinator.sessionSupervisorIsRunning
+                    || coordinator.sessionSupervisorIsStopping
+                )
+
+                Text("Stop the active Steam session before changing profiles.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Verification") {
                 Button("Re-run system inspection") {
                     Task { await coordinator.inspectSystem() }
