@@ -11,116 +11,102 @@ struct AppInstanceInfo: Codable, Sendable {
     let executableFingerprint: String
 }
 
-// MARK: - Flock-based single-instance guard
+/// Outcome of attempting to acquire the single-instance lock.
+enum AcquisitionResult: Sendable, Equatable {
+    /// This process now holds the lock — proceed with UI.
+    case primary
+    /// Another live instance holds the lock — caller should activate it and exit.
+    case secondary(holderPID: Int32)
+}
 
-actor AppInstanceGuard {
-    /// Path to the lock file used for single-instance enforcement.
+// MARK: - Flock-based single-instance guard (synchronous, fail-closed)
+
+final class AppInstanceGuard {
     static let lockPath = "~/Library/Application Support/MacSteam/Locks/ui-instance.lock"
 
+    private var lockFD: Int32 = -1
     private var lockHandle: FileHandle?
 
-    // -------------------------------------------------------------------------
-    // MARK: Public API
-    // -------------------------------------------------------------------------
-
-    /// Attempt to acquire the single-instance lock.
+    /// Acquire the lock or activate the existing instance.
     ///
-    /// - Returns: `true` when this process now owns the lock; `false` when
-    ///   another live instance already holds it (caller should exit).
-    /// - Throws: `POSIXError` if the underlying file/lock operations fail.
-    func acquire(buildID: String) throws -> Bool {
+    /// Must be called before any UI is created. If the lock can't be acquired
+    /// (I/O error, permissions), throws — caller must not proceed.
+    func acquireOrActivateExisting(buildID: String) throws -> AcquisitionResult {
         let expandedPath = resolvePath()
         try ensureDirectoryExists(for: expandedPath)
 
-        let fd = open(expandedPath, O_CREAT | O_RDWR, 0o644)
+        let fd = open(expandedPath, O_CREAT | O_RDWR, 0o600)
         guard fd >= 0 else {
             throw POSIXError(.init(rawValue: errno) ?? .EIO)
         }
 
-        // --- Attempt non-blocking exclusive lock ---
+        // Attempt non-blocking exclusive lock
         if flock(fd, LOCK_EX | LOCK_NB) == 0 {
-            // Fast path: lock acquired immediately.
+            // Fast path: we own the lock
+            lockFD = fd
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-            self.lockHandle = handle
+            lockHandle = handle
             try writeLockMetadata(buildID: buildID, fd: fd, handle: handle)
-            return true
+            return .primary
         }
 
-        // Anything other than EWOULDBLOCK is a real error.
+        // Real error (not EWOULDBLOCK)
         if errno != EWOULDBLOCK {
-            let savedErrno = errno
+            let saved = errno
             close(fd)
-            throw POSIXError(.init(rawValue: savedErrno) ?? .EIO)
+            throw POSIXError(.init(rawValue: saved) ?? .EIO)
         }
 
-        // --- Lock is held by another process → check for stale lock ---
-        let stale = evaluateStaleness(at: expandedPath)
-
-        guard stale else {
-            // Another live instance holds the lock — signal the caller to exit.
-            close(fd)
-            return false
+        // Lock held by another process — check staleness
+        if evaluateStaleness(at: expandedPath) {
+            // Stale lock: block until kernel releases it, then claim
+            guard flock(fd, LOCK_EX) == 0 else {
+                let saved = errno
+                close(fd)
+                throw POSIXError(.init(rawValue: saved) ?? .EIO)
+            }
+            lockFD = fd
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            lockHandle = handle
+            try writeLockMetadata(buildID: buildID, fd: fd, handle: handle)
+            return .primary
         }
 
-        // Stale lock: block until it is released by the kernel (dead process
-        // whose fd was closed), then claim it.
-        guard flock(fd, LOCK_EX) == 0 else {
-            let savedErrno = errno
-            close(fd)
-            throw POSIXError(.init(rawValue: savedErrno) ?? .EIO)
-        }
-
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        self.lockHandle = handle
-        try writeLockMetadata(buildID: buildID, fd: fd, handle: handle)
-        return true
+        // Live lock holder — read its PID for activation
+        close(fd)
+        let holderPID = readHolderPIDFromLock(at: expandedPath)
+        return .secondary(holderPID: holderPID ?? 0)
     }
 
-    /// Release the lock and close the underlying file descriptor.
+    /// Release the lock. Must be called after cleanup completes.
     func release() {
         guard let handle = lockHandle else { return }
         flock(handle.fileDescriptor, LOCK_UN)
-        self.lockHandle = nil // closeOnDealloc closes the fd
-    }
-
-    /// Read the PID of the current lock holder from the lock file.
-    /// Returns nil if the lock file doesn't exist or can't be parsed.
-    func readHolderPID() -> Int32? {
-        let path = resolvePath()
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let info = try? JSONDecoder().decode(AppInstanceInfo.self, from: data) else {
-            return nil
-        }
-        return info.pid
+        lockHandle = nil
+        lockFD = -1
     }
 
     deinit {
         if let handle = lockHandle {
             flock(handle.fileDescriptor, LOCK_UN)
-            // closeOnDealloc handles closing the fd
         }
     }
 
-    // -------------------------------------------------------------------------
-    // MARK: Private helpers
-    // -------------------------------------------------------------------------
+    // MARK: - Private
 
-    /// Expand tilde and return the absolute lock-file path.
     private func resolvePath() -> String {
         (Self.lockPath as NSString).expandingTildeInPath
     }
 
-    /// Create the parent directory for the lock file if it does not exist.
     private func ensureDirectoryExists(for path: String) throws {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(
             atPath: dir,
             withIntermediateDirectories: true,
-            attributes: nil
+            attributes: [.posixPermissions: 0o700]
         )
     }
 
-    /// Write fresh `AppInstanceInfo` into the lock file and sync to disk.
     private func writeLockMetadata(buildID: String, fd: Int32, handle: FileHandle) throws {
         let info = AppInstanceInfo(
             pid: ProcessInfo.processInfo.processIdentifier,
@@ -129,94 +115,45 @@ actor AppInstanceGuard {
             executableFingerprint: computeExecutableFingerprint()
         )
         let data = try JSONEncoder().encode(info)
-
         ftruncate(fd, 0)
         lseek(fd, 0, SEEK_SET)
         try handle.write(contentsOf: data)
-        try handle.synchronize() // fsync — flush to backing store
+        try handle.synchronize()
     }
 
-    /// Read the raw bytes of an open file descriptor.
-    private func readAll(fd: Int32) throws -> Data {
-        var data = Data()
-        let bufSize = 4096
-        var buf = [UInt8](repeating: 0, count: bufSize)
-        while true {
-            let n = read(fd, &buf, bufSize)
-            if n < 0 { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
-            if n == 0 { break }
-            data.append(&buf, count: n)
-        }
-        return data
-    }
-
-    /// Determine whether the current lock-file content belongs to a dead
-    /// process (stale) or a live one.
-    ///
-    /// - Returns: `true` if the lock is stale and should be reclaimed.
     private func evaluateStaleness(at path: String) -> Bool {
-        let rfd = open(path, O_RDONLY)
-        guard rfd >= 0 else { return true } // can't open → unstuck by reclaim
-        defer { close(rfd) }
-
-        guard let data = try? readAll(fd: rfd), !data.isEmpty,
-              let info = try? JSONDecoder().decode(AppInstanceInfo.self, from: data)
-        else {
-            return true // empty or unparseable → stale
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let info = try? JSONDecoder().decode(AppInstanceInfo.self, from: data) else {
+            return true // can't read — assume stale
         }
-
-        // kill(pid, 0) returns 0  if the process exists and we have permission.
-        //                -1 with errno == EPERM  → exists but cannot signal.
-        //                -1 with errno == ESRCH  → process does not exist.
-        if kill(info.pid, 0) == 0 {
-            return false // alive
-        }
-        if errno == EPERM {
-            return false // alive (no signal permission, but the PID is valid)
-        }
-        return true // ESRCH or other → dead → stale
+        return kill(info.pid, 0) != 0 // process not alive
     }
 
-    /// Compute a lightweight fingerprint of the running executable.
-    ///
-    /// Uses `(file size, modification timestamp)` of the main bundle
-    /// executable. This is **not** a cryptographic hash; it is sufficient
-    /// for detecting that a competing instance was built from a different
-    /// binary at a glance during stale-lock inspection.
+    private func readHolderPIDFromLock(at path: String) -> Int32? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let info = try? JSONDecoder().decode(AppInstanceInfo.self, from: data) else {
+            return nil
+        }
+        return info.pid
+    }
+
     private func computeExecutableFingerprint() -> String {
         guard let execURL = Bundle.main.executableURL,
-              let attrs = try? FileManager.default.attributesOfItem(atPath: execURL.path)
-        else {
-            return "unknown"
+              let data = try? Data(contentsOf: execURL) else { return "unknown" }
+        var hash = [UInt8](repeating: 0, count: 32)
+        data.withUnsafeBytes { buf in
+            // Simple FNV-1a hash for the fingerprint (not crypto-grade)
+            var h: UInt64 = 14695981039346656037
+            for byte in buf.bindMemory(to: UInt8.self) {
+                h ^= UInt64(byte)
+                h &*= 1099511628211
+            }
+            withUnsafeMutableBytes(of: &hash) { hb in
+                let ptr = hb.bindMemory(to: UInt64.self)
+                ptr[0] = h
+                ptr[1] = h ^ 0x9E3779B97F4A7C15
+            }
         }
-        let size    = attrs[.size] as? UInt64 ?? 0
-        let modDate = attrs[.modificationDate] as? Date ?? Date()
-        return "\(size)-\(Int(modDate.timeIntervalSince1970))"
+        return Data(hash).base64EncodedString().prefix(16).description
     }
 }
-
-// MARK: - Activate an existing instance (AppKit)
-
-#if canImport(AppKit)
-import AppKit
-
-/// Utility to bring an already-running MacSteam instance to the foreground.
-class AppInstanceActivation {
-    /// Locate the first running MacSteam process by bundle identifier and ask
-    /// it to activate (frontmost, own menu bar, own space).
-    ///
-    /// - Returns: `true` if an existing instance was found and activation was
-    ///   attempted; `false` if no matching process was running.
-    @discardableResult
-    static func activateExistingInstance() -> Bool {
-        guard let bundleID = Bundle.main.bundleIdentifier,
-              let app = NSRunningApplication
-                .runningApplications(withBundleIdentifier: bundleID)
-                .first
-        else {
-            return false
-        }
-        return app.activate(options: .activateIgnoringOtherApps)
-    }
-}
-#endif

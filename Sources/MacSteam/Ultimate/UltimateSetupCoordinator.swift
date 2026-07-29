@@ -535,62 +535,55 @@ final class UltimateSetupCoordinator {
 
     /// Step 4: Install Windows Steam into the prefix.
     ///
-    /// U1R16: ProcessSupervisor owns installer. No detached, no sleep, no error swallowing.
+    /// U1R16-R1F2: InstallerSupervisor owns the installation lifecycle.
+    /// No detached, no sleep, no auto-verifiedComplete from steam.exe presence.
     func installSteam() async {
         state = .steamInstallationPending
         error = nil
 
         guard let installer = selectedInstaller,
-              let runtime = activeRuntime,
               let runtimeURL = runtimeURL,
-              let runtimeControl = runtime as? WineRuntimeControl else {
-            error = .steamInstallationFailed("No installer or runtime selected")
+              let prefix = prefixLayout?.root else {
+            error = .steamInstallationFailed("No installer, runtime, or prefix selected")
             state = .steamInstallerRequired
             return
         }
 
-        let layout = WineExecutableLayout.detect(from: runtimeURL)
-        let wineURL = layout.wine
-
-        steamInstallLifecycle = .installing
+        let runtimeSafeID = computeSafeID(runtimeURL.path)
+        let prefixSafeID = computeSafeID(prefix.path)
 
         do {
-            let plan = LaunchPlan(
-                runtimeExecutable: wineURL,
-                arguments: [installer.fileURL.path],
-                mode: .waitForExit,
-                environment: buildBasicEnvironment(),
-                workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
+            try await installerSupervisor.startInstaller(
+                installerURL: installer.fileURL,
+                runtimeURL: runtimeURL,
+                prefixURL: prefix,
+                runtimeSafeID: runtimeSafeID,
+                prefixSafeID: prefixSafeID
             )
 
-            let _ = try await sessionSupervisor.launch(
-                plan: plan,
-                runtimeControl: runtimeControl,
-                prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
-                recipeID: recipe.id,
-                runtimeID: runtimeSourceType ?? "unknown",
-                purpose: .steamInstaller
-            )
+            try await installerSupervisor.waitForInstallerExit()
 
-            // Post-installer: stop any auto-launched Steam
-            try await quarantineIncompleteSteamInstall()
-
-            // Verify
-            let inspection = inspectSteamInstallation()
-            self.steamInspection = inspection
-
-            if inspection.steamInstalled {
-                steamInstallLifecycle = .verifiedComplete
-                state = .steamReady
-                log("Steam installation verified complete")
-            } else {
-                steamInstallLifecycle = .installing
-                state = .steamInstallationPending
+            // Project snapshot to UI state
+            if let snapshot = await installerSupervisor.snapshot() {
+                switch snapshot.phase {
+                case .verifyingInstallation:
+                    state = .steamInstallationPending
+                    log("Installer exited — verifying installation")
+                case .failed:
+                    state = .steamInstallerVerified
+                    error = .steamInstallationFailed(snapshot.lastError ?? "Installer failed")
+                    log("Installer failed: \(snapshot.lastError ?? "unknown")")
+                case .interrupted, .cleanupRequired:
+                    state = .steamInstallerVerified
+                    error = .steamInstallationFailed("Installation interrupted")
+                default:
+                    state = .steamInstallationPending
+                }
             }
         } catch {
             self.error = .steamInstallationFailed(error.localizedDescription)
-            steamInstallLifecycle = .interrupted
             state = .steamInstallerVerified
+            log("InstallSteam error: \(error.localizedDescription)")
         }
     }
 

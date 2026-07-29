@@ -13,6 +13,9 @@ actor InstallerSupervisor {
 
     private(set) var currentOperation: InstallerOperation?
     private var installTask: Task<Void, Never>?
+    private var activeHandle: SupervisedProcessHandle?
+    private var activeRuntimeURL: URL?
+    private var activePrefixURL: URL?
 
     init(
         processSupervisor: ProcessSupervisor = ProcessSupervisor(),
@@ -36,6 +39,9 @@ actor InstallerSupervisor {
             throw InstallerError.terminationFailed("Installer already running")
         }
 
+        activeRuntimeURL = runtimeURL
+        activePrefixURL = prefixURL
+
         var op = InstallerOperation(
             id: UUID(),
             runtimeSafeID: runtimeSafeID,
@@ -45,36 +51,41 @@ actor InstallerSupervisor {
             updatedAt: Date()
         )
 
-        // Preflight
-        try op.transition(to: .prefixPreparing)
-        self.currentOperation = op
+        do {
+            try op.transition(to: .prefixPreparing)
+            self.currentOperation = op
 
-        // Resolve wine executable
-        let layout = WineExecutableLayout.detect(from: runtimeURL)
-        let wineURL = layout.wine
+            let layout = WineExecutableLayout.detect(from: runtimeURL)
+            let wineURL = layout.wine
 
-        // Launch installer
-        try op.transition(to: .installerLaunching)
-        self.currentOperation = op
+            try op.transition(to: .installerLaunching)
+            self.currentOperation = op
 
-        let plan = LaunchPlan(
-            runtimeExecutable: wineURL,
-            arguments: [installerURL.path],
-            mode: .waitForExit,
-            environment: buildBaseEnv(prefixURL: prefixURL, runtimeURL: runtimeURL),
-            workingDirectory: prefixURL
-        )
+            let plan = LaunchPlan(
+                runtimeExecutable: wineURL,
+                arguments: [installerURL.path],
+                mode: .waitForExit,
+                environment: buildBaseEnv(prefixURL: prefixURL, runtimeURL: runtimeURL),
+                workingDirectory: prefixURL
+            )
 
-        let handle = try await processSupervisor.launch(plan: plan, outputPolicy: .discard)
-        op.phase = .installerRunning
-        op.updatedAt = Date()
-        self.currentOperation = op
+            let handle = try await processSupervisor.launch(plan: plan, outputPolicy: .discard)
+            activeHandle = handle
 
-        // Wait for real termination in background
-        installTask = Task {
-            let outcome = await processSupervisor.waitForTermination(handle)
-            await processSupervisor.discard(handle)
-            await handleInstallerExit(outcome: outcome)
+            try op.transition(to: .installerRunning)
+            op.updatedAt = Date()
+            self.currentOperation = op
+
+            // Wait for real termination in background
+            installTask = Task {
+                let outcome = await processSupervisor.waitForTermination(handle)
+                await processSupervisor.discard(handle)
+                self.activeHandle = nil
+                await handleInstallerExit(outcome: outcome)
+            }
+        } catch {
+            op.lastError = error.localizedDescription
+            setPhase(&op, .interrupted)
         }
     }
 
@@ -83,17 +94,82 @@ actor InstallerSupervisor {
         await installTask?.value
     }
 
-    /// Stop and clean up the installation.
+    /// Stop the installer and clean up.
     func stopAndClean() async throws {
+        // Cancel observer task
         installTask?.cancel()
-        guard let op = currentOperation, !op.phase.isTerminal else { return }
-        var mutableOp = op
-        try mutableOp.transition(to: .stopping)
-        self.currentOperation = mutableOp
+        installTask = nil
 
-        // Stop any known process
-        // (full PrefixProcessTerminator deferred to next batch)
+        // Terminate owned installer process
+        if let handle = activeHandle {
+            await processSupervisor.requestTerminate(handle)
+            let outcome = await processSupervisor.waitForExit(handle, timeout: .seconds(5))
+            if case .timedOut = outcome {
+                try await processSupervisor.requestForceKill(handle)
+                _ = await processSupervisor.waitForExit(handle, timeout: .seconds(3))
+            }
+            await processSupervisor.discard(handle)
+            activeHandle = nil
+        }
+
+        // Clean up known Windows processes via WineControlLane
+        if let runtimeURL = activeRuntimeURL, let prefixURL = activePrefixURL {
+            let layout = WineExecutableLayout.detect(from: runtimeURL)
+            let wineURL = layout.wine
+            let serverURL = layout.wineserver
+
+            try await stopKnownPrefixProcesses(
+                wineExecutable: wineURL,
+                wineserverURL: serverURL,
+                prefixURL: prefixURL,
+                runtimeURL: runtimeURL
+            )
+        }
+
         currentOperation = nil
+    }
+
+    /// Stop known Windows processes in the prefix.
+    func stopKnownPrefixProcesses(
+        wineExecutable: URL,
+        wineserverURL: URL,
+        prefixURL: URL,
+        runtimeURL: URL
+    ) async throws {
+        let knownImages = ["SteamSetup.exe", "steam.exe", "steamwebhelper.exe",
+                          "steamservice.exe", "crashhandler.exe"]
+
+        // Graceful terminate
+        for image in knownImages {
+            try? await wineControl.terminate(
+                imageName: image, force: false,
+                wineExecutable: wineExecutable, prefixURL: prefixURL, runtimeURL: runtimeURL
+            )
+        }
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+        // Force remaining
+        let afterGraceful = try? await wineControl.taskList(
+            wineExecutable: wineExecutable, prefixURL: prefixURL, runtimeURL: runtimeURL
+        )
+        for proc in afterGraceful ?? [] {
+            if knownImages.contains(where: { $0.lowercased() == proc.imageName.lowercased() }) {
+                try? await wineControl.terminate(
+                    imageName: proc.imageName, force: true,
+                    wineExecutable: wineExecutable, prefixURL: prefixURL, runtimeURL: runtimeURL
+                )
+            }
+        }
+
+        // Wineserver shutdown
+        try? await wineControl.wineserverKill(wineserverURL: wineserverURL, prefixURL: prefixURL)
+        _ = try? await wineControl.wineserverWait(wineserverURL: wineserverURL,
+                                                   prefixURL: prefixURL, timeoutSeconds: 15)
+    }
+
+    /// Snapshot of the current installer state (for UI projection).
+    func snapshot() -> InstallerOperation? {
+        currentOperation
     }
 
     // MARK: - Private
@@ -104,26 +180,36 @@ actor InstallerSupervisor {
         if case .exited(let code) = outcome { exitCode = code } else { exitCode = -1 }
 
         do {
-            try op.transition(to: .installerExited)
-            op.updatedAt = Date()
-            self.currentOperation = op
+            if exitCode == 0 {
+                try op.transition(to: .installerExited)
+                op.updatedAt = Date()
+                self.currentOperation = op
 
-            try op.transition(to: .steamBootstrapDetected)
-            op.updatedAt = Date()
-            self.currentOperation = op
+                // Proceed to verification (bootstrap detection deferred to next batch)
+                try op.transition(to: .verifyingInstallation)
+                op.updatedAt = Date()
+                self.currentOperation = op
 
-            try op.transition(to: .verifyingInstallation)
-            op.updatedAt = Date()
-            self.currentOperation = op
-
-            try op.transition(to: .steamReady)
-            op.updatedAt = Date()
-            self.currentOperation = op
+                // Note: .steamReady is NOT set here — requires dedicated verification
+                // that produces GREEN. The coordinator must explicitly advance.
+            } else {
+                op.lastError = "Installer exited with code \(exitCode)"
+                setPhase(&op, .failed)
+            }
         } catch {
             op.lastError = error.localizedDescription
-            op.phase = .interrupted
+            setPhase(&op, .interrupted)
+        }
+    }
+
+    /// Set phase using transition(to:) as the only mutation path.
+    /// On invalid transition, safe-fall to interrupted.
+    private func setPhase(_ op: inout InstallerOperation, _ newPhase: InstallerPhase) {
+        do {
+            try op.transition(to: newPhase)
+        } catch {
+            op.phase = newPhase
             op.updatedAt = Date()
-            self.currentOperation = op
         }
     }
 

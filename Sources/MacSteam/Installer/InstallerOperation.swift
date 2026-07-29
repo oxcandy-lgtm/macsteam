@@ -25,7 +25,7 @@ let InstallerPhaseAllowedTransitions: [InstallerPhase: Set<InstallerPhase>] = [
     // ── Installer process ─────────────────────────────────────────────────
     .installerLaunching: [.installerRunning, .interrupted, .cleanupRequired, .failed],
     .installerRunning:   [.installerExited, .interrupted, .cleanupRequired, .failed],
-    .installerExited:    [.steamBootstrapDetected, .interrupted, .cleanupRequired, .failed],
+    .installerExited:    [.verifyingInstallation, .steamBootstrapDetected, .interrupted, .cleanupRequired, .failed],
 
     // ── Bootstrap ─────────────────────────────────────────────────────────
     .steamBootstrapDetected: [.bootstrapStopping, .interrupted, .cleanupRequired, .failed],

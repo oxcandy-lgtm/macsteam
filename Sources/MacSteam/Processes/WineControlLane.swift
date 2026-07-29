@@ -21,6 +21,26 @@ struct TasklistResult: Sendable {
 /// Serializes ALL short-lived Wine control commands (tasklist, taskkill,
 /// wineserver -k, wineserver -w) through an actor to prevent concurrent
 /// interference with the Wine runtime.
+enum WineControlError: Error, LocalizedError {
+    case tasklistFailed(exitCode: Int32, stderr: String)
+    case terminateFailed(image: String, exitCode: Int32)
+    case wineserverFailed(exitCode: Int32)
+    case invalidCSV(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .tasklistFailed(let code, let stderr):
+            return "tasklist failed (exit \(code)): \(stderr)"
+        case .terminateFailed(let image, let code):
+            return "taskkill \(image) failed (exit \(code))"
+        case .wineserverFailed(let code):
+            return "wineserver command failed (exit \(code))"
+        case .invalidCSV(let line):
+            return "Invalid CSV line: \(line)"
+        }
+    }
+}
+
 actor WineControlLane {
 
     private let processRunner: ProcessRunner
@@ -50,16 +70,21 @@ actor WineControlLane {
         let environment = try buildWineEnvironment(prefixURL: prefixURL, runtimeURL: runtimeURL)
         let result = try await processRunner.run(
             executable: wineExecutable,
-            arguments: ["tasklist", "/FO", "CSV"],
+            arguments: ["tasklist", "/V", "/FO", "CSV", "/NH"],
             environment: environment,
             workingDirectory: prefixURL,
             timeout: 30,
             mode: .waitForExit
         )
 
+        guard result.exitCode == 0 else {
+            throw WineControlError.tasklistFailed(exitCode: result.exitCode,
+                                                   stderr: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
         let rawLines = result.stdout
             .components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .filter { !$0.isEmpty }
 
         // Skip the CSV header ("Image Name","PID","Session Name","Session#","Mem Usage","Status")
