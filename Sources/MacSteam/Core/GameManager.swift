@@ -176,12 +176,36 @@ final class GameManager: ObservableObject, Sendable {
     private func checkGameInstallation(recipe: GameRecipe, runtime: any CompatibilityRuntime) async -> GameInspection {
         // Check for Steam manifest and executables in the prefix
         let inspector = SteamInstallationDetector()
-        return await inspector.inspect(recipe: recipe, runtime: runtime)
+        // Legacy path — use PrefixManager to resolve canonical prefix
+        let manager = PrefixManager()
+        if let layout = try? manager.validatedLayout(for: recipe) {
+            return await inspector.inspect(recipe: recipe, runtime: runtime, prefix: layout)
+        }
+        return .notReady(recipeID: recipe.id)
     }
 
     private func log(_ message: String) {
         diagnosticsStore.append(message)
     }
+}
+
+// MARK: - GameInstallState
+
+/// NX Dispatch §6: Granular installation state.
+///
+/// - `notFound`: No manifest, no files.
+/// - `manifestOnly`: A valid manifest exists, but no install directory is resolved.
+/// - `downloading`: Files exist under the Steam downloading/ area (Tier 2).
+/// - `staged`: Appears in SteamCMD or non-canonical library with complete files.
+/// - `installed`: Fully installed in the canonical Windows Steam library (Tier 1).
+/// - `inconsistent`: Files partially present in the canonical location.
+enum GameInstallState: String, Sendable, Equatable {
+    case notFound
+    case manifestOnly
+    case downloading
+    case staged
+    case installed
+    case inconsistent
 }
 
 // MARK: - Supporting types
@@ -200,12 +224,20 @@ struct GameInspection: Equatable, Sendable {
     let isReady: Bool
     let stateFlags: String?
 
+    /// NX Dispatch §6: Granular install state.
+    let installState: GameInstallState
+    let canonicalInstallPresent: Bool
+    let downloadPayloadPresent: Bool
+
     init(recipeID: String, steamPresent: Bool, isWindowsSteam: Bool,
          manifestPresent: Bool, manifestAppID: String? = nil,
          installdir: String? = nil,
          installDirectoryResolved: Bool, executablePresent: Bool,
          executableName: String? = nil, isReady: Bool,
-         stateFlags: String? = nil) {
+         stateFlags: String? = nil,
+         installState: GameInstallState = .notFound,
+         canonicalInstallPresent: Bool = false,
+         downloadPayloadPresent: Bool = false) {
         self.recipeID = recipeID
         self.steamPresent = steamPresent
         self.isWindowsSteam = isWindowsSteam
@@ -217,13 +249,16 @@ struct GameInspection: Equatable, Sendable {
         self.executableName = executableName
         self.isReady = isReady
         self.stateFlags = stateFlags
+        self.installState = installState
+        self.canonicalInstallPresent = canonicalInstallPresent
+        self.downloadPayloadPresent = downloadPayloadPresent
     }
 
     static func notReady(recipeID: String) -> GameInspection {
         GameInspection(recipeID: recipeID, steamPresent: false,
             isWindowsSteam: false, manifestPresent: false,
             installDirectoryResolved: false, executablePresent: false,
-            isReady: false)
+            isReady: false, installState: .notFound)
     }
 }
 

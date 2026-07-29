@@ -15,6 +15,10 @@ struct UltimateSetupView: View {
             header
             Divider()
             content
+            if !coordinator.installerLog.isEmpty {
+                Divider()
+                installerLogView
+            }
         }
         .frame(minWidth: 520, minHeight: 420)
         .task { await coordinator.inspectSystem() }
@@ -23,19 +27,65 @@ struct UltimateSetupView: View {
         }
     }
 
+    // MARK: - Installer Log
+
+    private var installerLogView: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text("Installer Log")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Copy Log") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(coordinator.installerLog, forType: .string)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(.horizontal)
+            .padding(.top, 6)
+
+            ScrollView {
+                Text(coordinator.installerLog)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(.horizontal)
+            }
+            .frame(maxHeight: 160)
+            .background(Color.secondary.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .padding([.horizontal, .bottom])
+        }
+    }
+
     // MARK: - Header
 
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("CloverPit Ultimate")
+                Text(AppBrand.displayName)
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("MacSteam Setup")
+                Text(AppBrand.setupTitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            // Installer session ID badge
+            if !coordinator.installerID.isEmpty {
+                Text("#\(coordinator.installerID)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+            }
             progressIndicator
             Button("Settings", systemImage: "gearshape") {
                 showingSettings = true
@@ -207,22 +257,75 @@ struct UltimateSetupView: View {
 
     private var cloverPitNotInstalledView: some View {
         VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.largeTitle)
-                .foregroundStyle(.orange)
-            Text("CloverPit not detected")
-            Text("Install CloverPit via Steam, then check again.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let inspection = coordinator.cloverPitInspection {
+                switch inspection.installState {
+                case .installed:
+                    // Should not reach here (would be .cloverPitReady)
+                    Label("CloverPit ready", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .downloading:
+                    Image(systemName: "arrowshape.down.circle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.blue)
+                    Text("CloverPit download detected")
+                        .font(.headline)
+                    Text("Steam is still preparing the game.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Finish the installation in Windows Steam, then re-check.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                case .manifestOnly:
+                    Image(systemName: "doc.text")
+                        .font(.largeTitle)
+                        .foregroundStyle(.orange)
+                    Text("CloverPit manifest found")
+                        .font(.headline)
+                    Text("The game manifest exists but the installed files are incomplete.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .staged:
+                    Image(systemName: "externaldrive.badge.exclamationmark")
+                        .font(.largeTitle)
+                        .foregroundStyle(.orange)
+                    Text("CloverPit files outside Steam library")
+                        .font(.headline)
+                    Text("Game files were found outside the active Windows Steam library.")
+                        .font(.caption)
+                    Text("MacsTeam will not launch an incomplete or unregistered copy.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                case .inconsistent:
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.orange)
+                    Text("CloverPit installation incomplete")
+                        .font(.headline)
+                    Text("Some game files are missing or incomplete.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .notFound:
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.orange)
+                    Text("CloverPit not detected")
+                    Text("Install CloverPit via Steam, then check again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.largeTitle)
+                    .foregroundStyle(.orange)
+                Text("CloverPit not detected")
+                Text("Install CloverPit via Steam, then check again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Button("Re-check") {
                 Task { await coordinator.recheckCloverPit() }
             }
             .buttonStyle(.borderedProminent)
-            Button("Open Steam Library") {
-                // User can launch Steam manually
-                Task { await coordinator.launchCloverPit() }
-            }
-            .buttonStyle(.bordered)
         }
         .frame(maxHeight: .infinity)
     }

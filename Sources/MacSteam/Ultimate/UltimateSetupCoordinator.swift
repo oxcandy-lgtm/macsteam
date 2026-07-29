@@ -55,15 +55,31 @@ final class UltimateSetupCoordinator {
     private var activeRuntime: (any CompatibilityRuntime)?
     private var runtimeURL: URL?
 
-    // Prefix root
-    private let prefixRoot: URL = {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support/MacSteam/Prefixes/cloverpit")
-    }()
-    private let prefixDir: URL = {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support/MacSteam/Prefixes/cloverpit/prefix")
-    }()
+    /// Canonical prefix layout resolved by PrefixManager (single source of truth).
+    private var prefixLayout: PrefixLayout?
+
+    // MARK: - Installer Session State
+
+    /// 5-digit installer session ID (random per view appearance).
+    var installerID = ""
+
+    /// Accumulated installer log (copy-pasteable).
+    var installerLog = ""
+
+    /// Append a timestamped line to the installer log.
+    func log(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let ts = formatter.string(from: Date())
+        let line = "[\(ts)] \(message)"
+        installerLog.append(line + "\n")
+    }
+
+    /// Generate a fresh 5-digit installer session ID.
+    func generateInstallerID() {
+        installerID = String(format: "%05d", Int.random(in: 10000...99999))
+        log("Installer session: #\(installerID)")
+    }
 
     // MARK: - Init
 
@@ -98,15 +114,19 @@ final class UltimateSetupCoordinator {
         state = .inspecting
         error = nil
 
+        log("Inspecting system for Wine runtimes…")
         let candidates = await runtimeRegistry.discover()
         guard let preferred = runtimeRegistry.selectPreferred(from: candidates)
         else {
             state = .runtimeRequired
             error = .runtimeNotFound
+            log("No Wine runtime found")
             return
         }
 
         selectCandidate(preferred)
+        log("Runtime selected: \(preferred.displayName) v\(preferred.inspection?.version ?? "?")")
+        generateInstallerID()
     }
 
     /// Apply a selected candidate as the active runtime.
@@ -155,16 +175,44 @@ final class UltimateSetupCoordinator {
         state = .prefixRequired
         error = nil
 
+        log("Step 2: Creating Wine prefix…")
+        log("Prefix path: \(prefixLayout?.root.path ?? "not resolved yet")")
+
         guard let runtime = activeRuntime,
               let runtimeURL = runtimeURL else {
             state = .runtimeRequired
             error = .runtimeNotFound
+            log("ERROR: No active runtime")
             return
         }
 
+        log("Runtime: \(runtimeURL.path)")
+
         do {
-            // Ensure MacSteam directory structure exists
-            try prefixManager.createPrefix(for: recipe)
+            // Resolve canonical prefix layout via PrefixManager (NX Dispatch §3.2)
+            let layout: PrefixLayout
+            if let existing = try? prefixManager.validatedLayout(for: recipe) {
+                layout = existing
+                self.prefixLayout = layout
+                log("Canonical prefix resolved: \(layout.root.path)")
+                log("Prefix signature: drive_c=\(layout.driveC.path)")
+            } else {
+                // Create new prefix
+                try prefixManager.createPrefix(for: recipe)
+                layout = try prefixManager.validatedLayout(for: recipe)
+                self.prefixLayout = layout
+                log("New prefix created at: \(layout.root.path)")
+            }
+            let prefixDir = layout.root
+
+            // Check if Steam is already installed (steam.exe exists in prefix)
+            log("Checking steam.exe in canonical prefix…")
+            if layout.signature().steamExePresent {
+                state = .steamReady
+                log("steam.exe FOUND in canonical prefix — advancing to Steam ready")
+                return
+            }
+            log("steam.exe NOT FOUND — proceeding with wineboot")
 
             // Run wineboot to initialize the prefix
             let winebootURL: URL
@@ -188,16 +236,23 @@ final class UltimateSetupCoordinator {
                 executable: winebootURL,
                 arguments: ["-u"],
                 environment: [
-                    "WINEPREFIX": prefixDir.path,
+                    "WINEPREFIX": prefixLayout?.root.path ?? "",
                     "WINEARCH": "win64",
                     "WINEDEBUG": "-all",
                 ],
+                workingDirectory: layout.root,
                 timeout: 120
             )
+
+            log("wineboot exit code: \(result.exitCode)")
+            if !result.stdout.isEmpty { log("wineboot stdout: \(result.stdout.prefix(200))") }
+            if !result.stderr.isEmpty { log("wineboot stderr: \(result.stderr.prefix(200))") }
 
             guard result.exitCode == 0 else {
                 state = .prefixRequired
                 error = .prefixCreationFailed("wineboot exited with code \(result.exitCode): \(result.stderr.prefix(200))")
+                log("ERROR: wineboot failed (exit \(result.exitCode))")
+                log("Full stderr:\n\(result.stderr)")
                 return
             }
 
@@ -206,6 +261,10 @@ final class UltimateSetupCoordinator {
             let driveC = prefixDir.appendingPathComponent("drive_c")
             let systemReg = prefixDir.appendingPathComponent("system.reg")
             let userReg = prefixDir.appendingPathComponent("user.reg")
+
+            log("drive_c exists: \(fm.fileExists(atPath: driveC.path))")
+            log("system.reg exists: \(fm.fileExists(atPath: systemReg.path))")
+            log("user.reg exists: \(fm.fileExists(atPath: userReg.path))")
 
             guard fm.fileExists(atPath: driveC.path),
                   fm.fileExists(atPath: systemReg.path),
@@ -300,7 +359,7 @@ final class UltimateSetupCoordinator {
                 executable: wineURL,
                 arguments: [installer.fileURL.path],
                 environment: [
-                    "WINEPREFIX": prefixDir.path,
+                    "WINEPREFIX": prefixLayout?.root.path ?? "",
                     "WINEARCH": "win64",
                     "WINEDEBUG": "-all",
                 ],
@@ -334,21 +393,45 @@ final class UltimateSetupCoordinator {
 
     /// Step 5: Re-check CloverPit installation.
     func recheckCloverPit() async {
+        // NX Dispatch §12: Clear stale state before each re-check
+        self.cloverPitInspection = nil
+        log("Step 5: Checking CloverPit installation…")
         guard let runtime = activeRuntime else {
             self.cloverPitInspection = .notReady(recipeID: recipe.id)
             state = .cloverPitNotInstalled
+            log("ERROR: No active runtime for CloverPit check")
             return
         }
 
-        let inspection = await steamDetector.inspect(recipe: recipe, runtime: runtime)
+        // NX Dispatch §4: Inspection must use the same canonical prefix as everything else
+        guard let prefix = prefixLayout else {
+            self.cloverPitInspection = .notReady(recipeID: recipe.id)
+            state = .cloverPitNotInstalled
+            log("ERROR: No canonical prefix layout resolved")
+            return
+        }
+
+        log("Running steam detector inspect with canonical prefix: \(prefix.root.path)")
+        let inspection = await steamDetector.inspect(recipe: recipe, runtime: runtime, prefix: prefix)
         self.cloverPitInspection = inspection
         state = inspection.isReady ? .cloverPitReady : .cloverPitNotInstalled
+
+        log("Steam present: \(inspection.steamPresent)")
+        log("Windows Steam: \(inspection.isWindowsSteam)")
+        log("Manifest present: \(inspection.manifestPresent)")
+        log("Install dir resolved: \(inspection.installDirectoryResolved)")
+        log("Executable present: \(inspection.executablePresent)")
+        log("Install state: \(inspection.installState.rawValue)")
+        log("Canonical install present: \(inspection.canonicalInstallPresent)")
+        log("Download payload present: \(inspection.downloadPayloadPresent)")
+        log("isReady: \(inspection.isReady)")
 
         if !inspection.isReady {
             // Check if steam is at least present
             let steamCheck = inspectSteamInstallation()
             if !steamCheck.steamInstalled {
                 state = .steamReady // user should launch Steam manually
+                log("Steam also not detected — reverting to Steam ready state")
             }
         }
     }
@@ -375,8 +458,8 @@ final class UltimateSetupCoordinator {
             wineURL = runtimeURL.appendingPathComponent("bin/wine")
         }
 
-        let steamExe1 = prefixDir.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe")
-        let steamExe2 = prefixDir.appendingPathComponent("drive_c/Program Files/Steam/steam.exe")
+        let steamExe1 = prefixLayout?.root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null")
+        let steamExe2 = prefixLayout?.root.appendingPathComponent("drive_c/Program Files/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null")
         let steamExe = FileManager.default.fileExists(atPath: steamExe1.path) ? steamExe1 : steamExe2
 
         guard FileManager.default.fileExists(atPath: steamExe.path) else {
@@ -391,17 +474,17 @@ final class UltimateSetupCoordinator {
                 arguments: [steamExe.path, "-applaunch", "3314790", "-popupwindow", "-screen-fullscreen", "0"],
                 mode: .detached,
                 environment: [
-                    "WINEPREFIX": prefixDir.path,
+                    "WINEPREFIX": prefixLayout?.root.path ?? "",
                     "WINEARCH": "win64",
                     "WINEDEBUG": "-all",
                 ],
-                workingDirectory: prefixDir
+                workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
             )
 
             let session = try await sessionSupervisor.launch(
                 plan: plan,
                 runtimeControl: runtimeControl,
-                prefixRoot: prefixDir,
+                prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
                 recipeID: recipe.id,
                 runtimeID: runtimeSourceType ?? "unknown"
             )
@@ -486,8 +569,8 @@ final class UltimateSetupCoordinator {
     private func inspectSteamInstallation() -> SteamInstallationInspection {
         let fm = FileManager.default
         let candidates = [
-            prefixDir.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe"),
-            prefixDir.appendingPathComponent("drive_c/Program Files/Steam/steam.exe"),
+            prefixLayout?.root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null"),
+            prefixLayout?.root.appendingPathComponent("drive_c/Program Files/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null"),
         ]
         for candidate in candidates {
             guard fm.fileExists(atPath: candidate.path) else { continue }

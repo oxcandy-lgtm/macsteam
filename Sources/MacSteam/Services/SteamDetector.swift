@@ -25,7 +25,7 @@ final class SteamDetector: @unchecked Sendable {
         // If this is a Wine runtime, check for Steam in expected prefix locations
         if inspection.runtimeID == "imported-wine" || inspection.runtimeID == "system-wine" || inspection.runtimeID == "managed-wine" {
             let prefixDir = URL(fileURLWithPath: NSHomeDirectory())
-                .appendingPathComponent("Library/Application Support/MacSteam/Prefixes/\(recipe.prefix.id)/prefix")
+                .appendingPathComponent("Library/Application Support/MacSteam/Prefixes/\(recipe.prefix.id)")
 
             let steamCandidates = [
                 prefixDir.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe"),

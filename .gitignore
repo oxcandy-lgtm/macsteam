@@ -58,3 +58,12 @@ RuntimeReceipts/private/
 *.dmp
 *.mdmp
 *.core
+
+# App bundle
+MacSteam.app/
+
+# SwiftPM internal state
+.swiftpm/
+
+# Scratch / build artifacts
+MacsTeamUltimate/

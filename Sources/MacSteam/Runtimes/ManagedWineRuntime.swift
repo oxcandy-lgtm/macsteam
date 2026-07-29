@@ -144,7 +144,7 @@ final class ManagedWineRuntime: @unchecked Sendable {
         guard fm.isExecutableFile(atPath: wineExe.path) else { return nil }
 
         let prefixDir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support/MacSteam/Prefixes/\(recipe.prefix.id)/prefix")
+            .appendingPathComponent("Library/Application Support/MacSteam/Prefixes/\(recipe.prefix.id)")
 
         return LaunchPlan(
             runtimeExecutable: wineExe,

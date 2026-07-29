@@ -7,7 +7,7 @@ import Testing
 struct AppBrandTests {
 
     @Test func displayNameIsCorrect() {
-        #expect(AppBrand.displayName == "MacSteam")
+        #expect(AppBrand.displayName == "MacsTeam")
     }
 
     @Test func bundleIdentifierIsReverseDNS() {

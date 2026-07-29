@@ -41,7 +41,8 @@ struct PrefixManager {
         // Create the prefix root
         try fm.createDirectory(at: url, withIntermediateDirectories: true)
 
-        // Create standard Wine prefix subdirectories
+        // Create only non‑Wine‑owned directories (wineboot creates the rest)
+        // We need dosdevices/c: so wineboot can resolve the CWD to a DOS drive.
         let subdirs = [
             "drive_c",
             "drive_c/Program Files",
@@ -56,6 +57,12 @@ struct PrefixManager {
             try fm.createDirectory(at: url.appendingPathComponent(sub), withIntermediateDirectories: true)
         }
 
+        // Create the essential dosdevices symlink: c: → ../drive_c
+        let cLink = url.appendingPathComponent("dosdevices/c:")
+        if !fm.fileExists(atPath: cLink.path) {
+            try fm.createSymbolicLink(at: cLink, withDestinationURL: url.appendingPathComponent("drive_c"))
+        }
+
         // Create a marker file so inspectors can identify this as a MacSteam prefix
         let marker = url.appendingPathComponent(".macsteam-prefix")
         try "\(recipe.prefix.id)".write(to: marker, atomically: true, encoding: .utf8)
@@ -63,7 +70,34 @@ struct PrefixManager {
 
     /// Returns the expected prefix URL for a given recipe.
     func prefixURL(for recipe: GameRecipe) -> URL {
-        prefixesRoot.appendingPathComponent(recipe.prefix.id).appendingPathComponent("prefix")
+        prefixesRoot.appendingPathComponent(recipe.prefix.id)
+    }
+
+    /// Resolves and validates the canonical prefix layout for a recipe.
+    /// - Parameter recipe: The game recipe.
+    /// - Returns: A validated `PrefixLayout`.
+    /// - Throws: `PrefixLayoutError` if no valid prefix exists.
+    func validatedLayout(for recipe: GameRecipe) throws -> PrefixLayout {
+        let resolver = PrefixResolver()
+        switch resolver.resolve(for: recipe) {
+        case .parent(let layout):
+            return layout
+        case .nested(let layout):
+            return layout
+        case .splitBrain(let parent, let nested):
+            // Dispatch: prefer the one with Steam installed, else RED.
+            let parentSig = parent.signature()
+            let nestedSig = nested.signature()
+            if parentSig.steamExePresent && !nestedSig.steamExePresent {
+                return parent
+            }
+            if nestedSig.steamExePresent && !parentSig.steamExePresent {
+                return nested
+            }
+            throw PrefixLayoutError.splitBrain(parent.root, nested.root)
+        case .notFound:
+            throw PrefixLayoutError.notFound(prefixURL(for: recipe))
+        }
     }
 
     /// Destroys a prefix directory after safety validation.
