@@ -251,6 +251,17 @@ struct UltimateSetupView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Spacer()
+            HStack {
+                Toggle("Software web rendering", isOn: .init(
+                    get: { coordinator.steamUIRenderProfile == .cefSoftwareRendering },
+                    set: { coordinator.steamUIRenderProfile = $0 ? .cefSoftwareRendering : .automatic }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                Text("(\(coordinator.steamUIRenderProfile.rawValue))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Button("Open Windows Steam") {
                 Task { await coordinator.launchWindowsSteam() }
             }

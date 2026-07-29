@@ -20,6 +20,10 @@ final class UltimateSetupCoordinator {
     var error: UltimateSetupError?
     var launchPhase: LaunchPhase?
 
+    /// U1R10: Steam UI render profile for CEF compatibility (§3).
+    /// Defaults to `.automatic` — never persisted across launches.
+    var steamUIRenderProfile: SteamUIRenderProfile = .automatic
+
     // U1R6: Commercial runtime policy (persisted via AppStorage in SettingsView)
     var commercialPolicy: CommercialRuntimePolicy = .disabled {
         didSet {
@@ -416,7 +420,7 @@ final class UltimateSetupCoordinator {
             return
         }
 
-        log("Running steam detector inspect with canonical prefix: \(prefix.root.path)")
+        log("Running Steam detector with validated canonical prefix")
         let inspection = await steamDetector.inspect(recipe: recipe, runtime: runtime, prefix: prefix)
         self.cloverPitInspection = inspection
         state = inspection.isReady ? .cloverPitReady : .cloverPitNotInstalled
@@ -478,7 +482,7 @@ final class UltimateSetupCoordinator {
         do {
             let plan = LaunchPlan(
                 runtimeExecutable: wineURL,
-                arguments: [steamExe.path],
+                arguments: [steamExe.path] + steamUIRenderProfile.launchArguments,
                 mode: .detached,
                 environment: [
                     "WINEPREFIX": prefixLayout?.root.path ?? "",
@@ -488,16 +492,16 @@ final class UltimateSetupCoordinator {
                 workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
             )
 
-            let session = try await sessionSupervisor.launch(
+            log("Windows Steam session started: purpose=steamClient, profile=\(steamUIRenderProfile.rawValue)")
+            state = .steamInstallationPending
+
+            let _ = try await sessionSupervisor.launch(
                 plan: plan,
                 runtimeControl: runtimeControl,
                 prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
                 recipeID: recipe.id,
                 runtimeID: runtimeSourceType ?? "unknown"
             )
-
-            log("Windows Steam session started: purpose=steamClient")
-            state = .steamInstallationPending
         } catch {
             self.error = .launchFailed(error.localizedDescription)
             state = .steamReady
@@ -539,7 +543,9 @@ final class UltimateSetupCoordinator {
         do {
             let plan = LaunchPlan(
                 runtimeExecutable: wineURL,
-                arguments: [steamExe.path, "-applaunch", "3314790", "-popupwindow", "-screen-fullscreen", "0"],
+                arguments: [steamExe.path]
+                    + steamUIRenderProfile.launchArguments
+                    + ["-applaunch", "3314790", "-popupwindow", "-screen-fullscreen", "0"],
                 mode: .detached,
                 environment: [
                     "WINEPREFIX": prefixLayout?.root.path ?? "",
