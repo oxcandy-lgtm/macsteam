@@ -241,6 +241,24 @@ actor ProcessSupervisor {
         }
     }
 
+    /// Wait for a process to exit, without timeout.
+    /// Blocks until termination. Use for installer where the user controls duration.
+    func waitForTermination(
+        _ handle: SupervisedProcessHandle
+    ) async -> ProcessWaitOutcome {
+        guard let process = processes[handle.token] else {
+            return .exited(0)
+        }
+        return await withCheckedContinuation { continuation in
+            if !process.isRunning {
+                continuation.resume(returning: .exited(process.terminationStatus))
+                return
+            }
+            let handler = ProcessTerminationHandler(process: process, continuation: continuation)
+            handler.install()
+        }
+    }
+
     /// Append bounded diagnostic output from a process.
     private func appendOutput(token: UUID, data: Data, maxBytes: Int) {
         var buffer = outputBuffers[token] ?? Data()

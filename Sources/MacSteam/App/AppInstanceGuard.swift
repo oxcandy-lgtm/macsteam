@@ -2,8 +2,6 @@
 
 import Foundation
 
-import Foundation
-
 // MARK: - Lock file metadata
 
 struct AppInstanceInfo: Codable, Sendable {
@@ -83,6 +81,17 @@ actor AppInstanceGuard {
         guard let handle = lockHandle else { return }
         flock(handle.fileDescriptor, LOCK_UN)
         self.lockHandle = nil // closeOnDealloc closes the fd
+    }
+
+    /// Read the PID of the current lock holder from the lock file.
+    /// Returns nil if the lock file doesn't exist or can't be parsed.
+    func readHolderPID() -> Int32? {
+        let path = resolvePath()
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let info = try? JSONDecoder().decode(AppInstanceInfo.self, from: data) else {
+            return nil
+        }
+        return info.pid
     }
 
     deinit {

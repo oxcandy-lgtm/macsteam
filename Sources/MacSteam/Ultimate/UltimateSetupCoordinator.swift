@@ -93,6 +93,9 @@ final class UltimateSetupCoordinator {
     private let prefixManager = PrefixManager()
     private let steamDetector = SteamInstallationDetector()
     private let launchCoordinator = SteamLaunchCoordinator()
+    private let installerSupervisor = InstallerSupervisor()
+    private let wineControl = WineControlLane()
+    private let bindingStore = RuntimePrefixBindingStore()
 
     private var activeRuntime: (any CompatibilityRuntime)?
     private var runtimeURL: URL?
@@ -271,6 +274,35 @@ final class UltimateSetupCoordinator {
         // Persist preferred runtime for next launch
         runtimeRegistry.preferredRuntimeID = candidate.id
         log("Runtime preference saved: \(candidate.id)")
+
+        // Save runtime-prefix binding if we have both
+        if let runtimeURL, let prefix = prefixLayout?.root {
+            let binding = RuntimePrefixBinding(
+                schemaVersion: 1,
+                runtimeEntryName: runtimeURL.lastPathComponent,
+                runtimeSafeID: computeSafeID(runtimeURL.path),
+                prefixEntryName: prefix.lastPathComponent,
+                prefixSafeID: computeSafeID(prefix.path),
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+            Task { try? await bindingStore.save(binding) }
+            log("Runtime-prefix binding saved: \(binding.runtimeEntryName) ↔ \(binding.prefixEntryName)")
+        }
+    }
+
+    /// Compute a safe ID (hash prefix) for a filesystem path.
+    private func computeSafeID(_ path: String) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["shasum", "-a", "256", path]
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = Pipe()
+        try? process.run()
+        process.waitUntilExit()
+        let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return String(output.prefix(12))
     }
 
     /// Scan Prefixes/ directory for an existing prefix with Steam installed.
@@ -1008,15 +1040,47 @@ final class UltimateSetupCoordinator {
     /// Returns true if stopped or no session; false if stop failed.
     @discardableResult
     func stopSession() async -> Bool {
-        guard sessionSupervisorIsRunning else { return true }
-        do {
-            try await sessionSupervisor.stop()
-            await completeStopCleanup()
-            return true
-        } catch {
-            self.error = .launchFailed(error.localizedDescription)
-            return false
+        var needsCleanup = false
+
+        // Stop supervised session if running
+        if sessionSupervisorIsRunning {
+            do {
+                try await sessionSupervisor.stop()
+                await completeStopCleanup()
+            } catch {
+                self.error = .launchFailed(error.localizedDescription)
+                needsCleanup = true
+            }
         }
+
+        // Always check for remaining wine processes (not just active session)
+        if await hasResidualWineProcesses() {
+            needsCleanup = true
+        }
+
+        return !needsCleanup
+    }
+
+    /// Check if there are residual Wine processes (wineserver, etc.) even without an active session.
+    private func hasResidualWineProcesses() async -> Bool {
+        guard let runtimeURL, let prefix = prefixLayout?.root else { return false }
+        let layout = WineExecutableLayout.detect(from: runtimeURL)
+        do {
+            let processes = try await wineControl.taskList(
+                wineExecutable: layout.wine,
+                prefixURL: prefix,
+                runtimeURL: runtimeURL
+            )
+            for proc in processes {
+                let name = proc.imageName.lowercased()
+                if name == "wineserver.exe" || name == "winedevice.exe" {
+                    return true
+                }
+            }
+        } catch {
+            return false // Can't determine — assume clean
+        }
+        return false
     }
 
     /// Cleanup after successful stop.
