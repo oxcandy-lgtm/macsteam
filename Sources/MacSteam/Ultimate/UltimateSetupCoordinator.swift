@@ -503,9 +503,7 @@ final class UltimateSetupCoordinator {
 
     /// Step 4: Install Windows Steam into the prefix.
     ///
-    /// U1R15: Sets `.installing` before launch. ProcessSupervisor owns the installer.
-    /// No detached mode, no 3-second sleep. After installer exits, stops any
-    /// auto-launched Steam, then transitions to `.verifiedComplete`.
+    /// U1R16: ProcessSupervisor owns installer. No detached, no sleep, no error swallowing.
     func installSteam() async {
         state = .steamInstallationPending
         error = nil
@@ -519,24 +517,21 @@ final class UltimateSetupCoordinator {
             return
         }
 
-        // Resolve wine executable using WineExecutableLayout
         let layout = WineExecutableLayout.detect(from: runtimeURL)
         let wineURL = layout.wine
 
-        // Step 1: Mark installation as in-progress BEFORE launching
         steamInstallLifecycle = .installing
 
         do {
-            // Step 2: Launch SteamSetup.exe through GameSessionSupervisor (steamInstaller purpose)
             let plan = LaunchPlan(
                 runtimeExecutable: wineURL,
                 arguments: [installer.fileURL.path],
-                mode: .detached,
+                mode: .waitForExit,
                 environment: buildBasicEnvironment(),
                 workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
             )
 
-            _ = try await sessionSupervisor.launch(
+            let _ = try await sessionSupervisor.launch(
                 plan: plan,
                 runtimeControl: runtimeControl,
                 prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
@@ -545,15 +540,10 @@ final class UltimateSetupCoordinator {
                 purpose: .steamInstaller
             )
 
-            // Step 3: Wait for installer to exit (supervisor tracks it)
-            // The user interacts with SteamSetup.exe — it exits when setup completes
-            // SteamSetup.exe may auto-launch Steam after completion
+            // Post-installer: stop any auto-launched Steam
+            try await quarantineIncompleteSteamInstall()
 
-            // Step 4: Check for auto-launched Steam and stop it
-            try await Task.sleep(nanoseconds: 2_000_000_000) // brief grace for Steam to appear
-            try? await quarantineIncompleteSteamInstall()
-
-            // Step 5: Verify installation evidence
+            // Verify
             let inspection = inspectSteamInstallation()
             self.steamInspection = inspection
 

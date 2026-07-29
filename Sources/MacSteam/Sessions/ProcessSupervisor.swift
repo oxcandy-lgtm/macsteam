@@ -58,6 +58,14 @@ enum SafeProcessEnvironment {
     }
 }
 
+/// Controls how child process stdout/stderr are handled.
+enum ProcessOutputPolicy: Sendable {
+    /// Discard all output (redirect to /dev/null).
+    case discard
+    /// Keep a bounded ring buffer for diagnostics.
+    case boundedDiagnostics(maxBytes: Int)
+}
+
 /// Owns child `Process` objects on behalf of `GameSessionSupervisor`.
 ///
 /// **U1R7:** The `Process` references live exclusively inside this actor.
@@ -67,13 +75,14 @@ actor ProcessSupervisor {
 
     private var processes: [UUID: Process] = [:]
     private var handleForPID: [Int32: UUID] = [:]
+    private var outputBuffers: [UUID: Data] = [:]
 
     // MARK: - Launch
 
     /// Launch a child process from the given plan.
     ///
     /// - Throws: `ProcessSupervisorError` on any failure.
-    func launch(plan: LaunchPlan) async throws -> SupervisedProcessHandle {
+    func launch(plan: LaunchPlan, outputPolicy: ProcessOutputPolicy = .discard) async throws -> SupervisedProcessHandle {
         // Validate plan
         guard plan.runtimeExecutable.isFileURL else {
             throw ProcessSupervisorError.invalidPlan("runtimeExecutable is not a file URL")
@@ -103,10 +112,15 @@ actor ProcessSupervisor {
             process.currentDirectoryURL = wd
         }
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
+        // Default output: discard
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        // Bounded diagnostics uses pipes
+        if case .boundedDiagnostics = outputPolicy {
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+        }
 
         // Launch
         try process.run()
@@ -115,6 +129,27 @@ actor ProcessSupervisor {
         let pid = process.processIdentifier
         guard pid > 0 else {
             throw ProcessSupervisorError.launchFailed("PID is 0 or negative")
+        }
+
+        // Configure output drainage (after launch, token is available)
+        if case .boundedDiagnostics(let maxBytes) = outputPolicy {
+            outputBuffers[token] = Data()
+            if let outPipe = process.standardOutput as? Pipe {
+                let readHandle = outPipe.fileHandleForReading
+                readHandle.readabilityHandler = { [weak self] handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty, let self else { return }
+                    Task { await self.appendOutput(token: token, data: data, maxBytes: maxBytes) }
+                }
+            }
+            if let errPipe = process.standardError as? Pipe {
+                let errHandle = errPipe.fileHandleForReading
+                errHandle.readabilityHandler = { [weak self] handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty, let self else { return }
+                    Task { await self.appendOutput(token: token, data: data, maxBytes: maxBytes) }
+                }
+            }
         }
 
         processes[token] = process
@@ -206,10 +241,28 @@ actor ProcessSupervisor {
         }
     }
 
+    /// Append bounded diagnostic output from a process.
+    private func appendOutput(token: UUID, data: Data, maxBytes: Int) {
+        var buffer = outputBuffers[token] ?? Data()
+        buffer.append(data)
+        if buffer.count > maxBytes {
+            buffer = buffer.suffix(maxBytes)
+        }
+        outputBuffers[token] = buffer
+    }
+
     /// Cleanup — remove internal bookkeeping for a completed process.
     func discard(_ handle: SupervisedProcessHandle) {
-        processes.removeValue(forKey: handle.token)
+        guard let process = processes.removeValue(forKey: handle.token) else { return }
         handleForPID.removeValue(forKey: handle.pid)
+        outputBuffers.removeValue(forKey: handle.token)
+        // Clear readability handlers to avoid leaks
+        if let out = process.standardOutput as? Pipe {
+            out.fileHandleForReading.readabilityHandler = nil
+        }
+        if let err = process.standardError as? Pipe {
+            err.fileHandleForReading.readabilityHandler = nil
+        }
     }
 }
 
