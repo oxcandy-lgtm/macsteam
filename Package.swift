@@ -13,9 +13,24 @@ let package = Package(
     ],
     dependencies: [],
     targets: [
+        .target(
+            name: "MacsTeamNavigationCore",
+            path: "Sources/MacsTeamNavigationCore",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .executableTarget(
+            name: "MacsTeamNavigationAudit",
+            dependencies: ["MacsTeamNavigationCore"],
+            path: "Sources/MacsTeamNavigationAudit",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         .executableTarget(
             name: "MacSteam",
-            dependencies: [],
+            dependencies: ["MacsTeamNavigationCore"],
             path: "Sources/MacSteam",
             resources: [
                 .copy("Resources/Recipes")
@@ -26,7 +41,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MacSteamTests",
-            dependencies: ["MacSteam"],
+            dependencies: ["MacSteam", "MacsTeamNavigationCore"],
             path: "Tests",
             swiftSettings: [
                 .swiftLanguageMode(.v6)

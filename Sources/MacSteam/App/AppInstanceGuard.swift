@@ -15,8 +15,9 @@ struct AppInstanceInfo: Codable, Sendable {
 enum AcquisitionResult: Sendable, Equatable {
     /// This process now holds the lock — proceed with UI.
     case primary
-    /// Another live instance holds the lock — caller should activate it and exit.
-    case secondary(holderPID: Int32)
+    /// Another live instance holds the lock — caller should exit.
+    /// holderPID is nil if metadata couldn't be read (still must NOT proceed).
+    case secondary(holderPID: Int32?)
 }
 
 // MARK: - Flock-based single-instance guard (synchronous, fail-closed)
@@ -57,25 +58,11 @@ final class AppInstanceGuard {
             throw POSIXError(.init(rawValue: saved) ?? .EIO)
         }
 
-        // Lock held by another process — check staleness
-        if evaluateStaleness(at: expandedPath) {
-            // Stale lock: block until kernel releases it, then claim
-            guard flock(fd, LOCK_EX) == 0 else {
-                let saved = errno
-                close(fd)
-                throw POSIXError(.init(rawValue: saved) ?? .EIO)
-            }
-            lockFD = fd
-            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-            lockHandle = handle
-            try writeLockMetadata(buildID: buildID, fd: fd, handle: handle)
-            return .primary
-        }
-
-        // Live lock holder — read its PID for activation
+        // Lock held by another process — don't try blocking wait.
+        // Best-effort read metadata for activation hint.
         close(fd)
         let holderPID = readHolderPIDFromLock(at: expandedPath)
-        return .secondary(holderPID: holderPID ?? 0)
+        return .secondary(holderPID: holderPID)
     }
 
     /// Release the lock. Must be called after cleanup completes.

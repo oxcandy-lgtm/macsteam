@@ -72,8 +72,8 @@ struct MacSteamApp: App {
                 Self.sharedContext = ctx
                 _context = State(initialValue: ctx)
             case .secondary(let holderPID):
-                if holderPID > 0, holderPID != ProcessInfo.processInfo.processIdentifier {
-                    if let existing = NSRunningApplication(processIdentifier: holderPID) {
+                if let pid = holderPID, pid > 0, pid != ProcessInfo.processInfo.processIdentifier {
+                    if let existing = NSRunningApplication(processIdentifier: pid) {
                         existing.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
                     }
                 }

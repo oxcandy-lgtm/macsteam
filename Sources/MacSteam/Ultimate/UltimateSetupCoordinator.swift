@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Foundation
+import MacsTeamNavigationCore
 
 /// Coordinates the full Ultimate U1 setup flow: runtime → prefix → Steam → CloverPit.
 ///
@@ -102,6 +103,10 @@ final class UltimateSetupCoordinator {
     private let installerSupervisor = InstallerSupervisor()
     private let wineControl = WineControlLane()
     private let bindingStore = RuntimePrefixBindingStore()
+    private let navigationReducer = InstallerNavigationReducer()
+
+    @MainActor var currentPage: InstallerPage = .runtime
+    @MainActor var lastNavigationResult: InstallerNavigationResult?
 
     private var activeRuntime: (any CompatibilityRuntime)?
     private var runtimeURL: URL?
@@ -1092,6 +1097,82 @@ final class UltimateSetupCoordinator {
     var hasActiveSteamSetupSession: Bool {
         sessionSupervisor.activeSession?.purpose == .steamSetup
         && sessionSupervisor.isRunning
+    }
+
+    /// Single navigation entry point for all UI pages.
+    func send(_ intent: InstallerNavigationIntent) async {
+        let result: InstallerNavigationResult
+
+        switch intent {
+        case .next:
+            // Update reducer's state from actual coordinator state
+            let completion = computePageCompletion()
+            for (page, complete) in completion {
+                await navigationReducer.setPageComplete(page, complete)
+            }
+            await navigationReducer.setActiveOperation(hasActiveOperation)
+            await navigationReducer.setCleanupRequired(false)
+            result = await navigationReducer.send(intent: intent)
+            if result.accepted, let newPage = result.newPage {
+                currentPage = newPage
+            }
+
+        case .back:
+            // Back with active operation requires real cleanup
+            if hasActiveOperation {
+                let outcome = await stopAllForApplicationTermination()
+                if outcome != .clean {
+                    currentPage = currentPage // stay
+                    lastNavigationResult = InstallerNavigationResult(
+                        accepted: false,
+                        newPage: nil,
+                        blocker: InstallerNavigationBlocker(
+                            code: "cleanup_required",
+                            message: "Cleanup incomplete: \(outcome)"
+                        )
+                    )
+                    return
+                }
+            }
+
+            await navigationReducer.setCleanupRequired(false)
+            result = await navigationReducer.send(intent: intent)
+            if result.accepted, let newPage = result.newPage {
+                currentPage = newPage
+            }
+
+        case .stopAndClean:
+            let outcome = await stopAllForApplicationTermination()
+            guard outcome == .clean else {
+                lastNavigationResult = InstallerNavigationResult(
+                    accepted: false,
+                    newPage: nil,
+                    blocker: InstallerNavigationBlocker(
+                        code: "cleanup_required",
+                        message: "Cleanup incomplete: \(outcome)"
+                    )
+                )
+                return
+            }
+            result = InstallerNavigationResult(accepted: true, newPage: currentPage, blocker: nil)
+        }
+
+        lastNavigationResult = result
+    }
+
+    private var hasActiveOperation: Bool {
+        sessionSupervisorIsRunning
+    }
+
+    private func computePageCompletion() -> [InstallerPage: Bool] {
+        var completion: [InstallerPage: Bool] = [:]
+        completion[.runtime] = runtimeURL != nil
+        completion[.environment] = prefixLayout?.root != nil
+        completion[.steamInstaller] = selectedInstaller != nil
+        completion[.steamClient] = false // requires verified Steam
+        completion[.cloverPit] = false   // blocked
+        completion[.diagnostics] = true
+        return completion
     }
 
     /// Stop Steam setup session for app termination.
