@@ -196,23 +196,28 @@ final class UltimateSetupCoordinator {
                 self.prefixLayout = layout
                 log("Canonical prefix resolved: \(layout.root.path)")
                 log("Prefix signature: drive_c=\(layout.driveC.path)")
+
+                // Check if Steam is already installed
+                log("Checking steam.exe in canonical prefix…")
+                if layout.signature().steamExePresent {
+                    state = .steamReady
+                    log("steam.exe FOUND in canonical prefix — advancing to Steam ready")
+                    return
+                }
+                log("steam.exe NOT FOUND — proceeding with wineboot")
             } else {
-                // Create new prefix
+                // Create new prefix root directory (wineboot will do the rest)
+                let rootURL = prefixManager.prefixURL(for: recipe)
                 try prefixManager.createPrefix(for: recipe)
-                layout = try prefixManager.validatedLayout(for: recipe)
-                self.prefixLayout = layout
-                log("New prefix created at: \(layout.root.path)")
+                log("Prefix root created at: \(rootURL.path)")
+                // Construct layout from validated root (root exists, wineboot hasn't run yet)
+                let newLayout = try PrefixLayout(validatedRoot: rootURL)
+                self.prefixLayout = newLayout
+                layout = newLayout
+                log("New prefix root prepared — will initialize with wineboot")
+                log("steam.exe not present yet — running wineboot")
             }
             let prefixDir = layout.root
-
-            // Check if Steam is already installed (steam.exe exists in prefix)
-            log("Checking steam.exe in canonical prefix…")
-            if layout.signature().steamExePresent {
-                state = .steamReady
-                log("steam.exe FOUND in canonical prefix — advancing to Steam ready")
-                return
-            }
-            log("steam.exe NOT FOUND — proceeding with wineboot")
 
             // Run wineboot to initialize the prefix
             let winebootURL: URL
