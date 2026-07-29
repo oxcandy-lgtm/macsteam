@@ -251,6 +251,10 @@ struct UltimateSetupView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Spacer()
+            Button("Open Windows Steam") {
+                Task { await coordinator.launchWindowsSteam() }
+            }
+            .buttonStyle(.borderedProminent)
         }
         .padding()
     }
@@ -275,6 +279,10 @@ struct UltimateSetupView: View {
                     Text("Finish the installation in Windows Steam, then re-check.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    Button("Open Windows Steam") {
+                        Task { await coordinator.launchWindowsSteam() }
+                    }
+                    .buttonStyle(.bordered)
                 case .manifestOnly:
                     Image(systemName: "doc.text")
                         .font(.largeTitle)

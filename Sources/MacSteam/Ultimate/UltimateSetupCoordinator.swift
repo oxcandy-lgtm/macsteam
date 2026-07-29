@@ -436,6 +436,69 @@ final class UltimateSetupCoordinator {
         }
     }
 
+    /// Step 6b: Launch Windows Steam UI (no game args) for user to install CloverPit.
+    /// NX Dispatch §4 — dedicated method, never calls launchCloverPit().
+    func launchWindowsSteam() async {
+        state = .launching
+        error = nil
+
+        guard let runtime = activeRuntime,
+              let runtimeURL = runtimeURL,
+              let runtimeControl = runtime as? WineRuntimeControl
+        else {
+            error = .launchFailed("No runtime selected or runtime lacks WineRuntimeControl")
+            state = .steamReady
+            return
+        }
+
+        let wineURL: URL
+        if runtime is SystemWineRuntime {
+            wineURL = runtimeURL.appendingPathComponent("wine")
+        } else {
+            wineURL = runtimeURL.appendingPathComponent("bin/wine")
+        }
+
+        let steamExe1 = prefixLayout?.root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null")
+        let steamExe2 = prefixLayout?.root.appendingPathComponent("drive_c/Program Files/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null")
+        let steamExe = FileManager.default.fileExists(atPath: steamExe1.path) ? steamExe1 : steamExe2
+
+        guard FileManager.default.fileExists(atPath: steamExe.path) else {
+            error = .launchFailed("Steam not installed in prefix")
+            state = .steamInstallerRequired
+            return
+        }
+
+        log("Launching Windows Steam via System Wine (no game args)…")
+
+        do {
+            let plan = LaunchPlan(
+                runtimeExecutable: wineURL,
+                arguments: [steamExe.path],
+                mode: .detached,
+                environment: [
+                    "WINEPREFIX": prefixLayout?.root.path ?? "",
+                    "WINEARCH": "win64",
+                    "WINEDEBUG": "-all",
+                ],
+                workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
+            )
+
+            let session = try await sessionSupervisor.launch(
+                plan: plan,
+                runtimeControl: runtimeControl,
+                prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
+                recipeID: recipe.id,
+                runtimeID: runtimeSourceType ?? "unknown"
+            )
+
+            log("Windows Steam session started: purpose=steamClient")
+            state = .steamInstallationPending
+        } catch {
+            self.error = .launchFailed(error.localizedDescription)
+            state = .steamReady
+        }
+    }
+
     /// Step 6: Launch CloverPit through Windows Steam via GameSessionSupervisor.
     func launchCloverPit() async {
         state = .launching
