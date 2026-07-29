@@ -6,6 +6,12 @@ import Foundation
 ///
 /// All state lives here; individual views observe a single coordinator instance
 /// through `@Bindable`.
+/// Result of application termination cleanup.
+enum CleanupResult: Sendable, Equatable {
+    case clean
+    case incomplete(String)
+}
+
 @MainActor
 @Observable
 final class UltimateSetupCoordinator {
@@ -1099,6 +1105,51 @@ final class UltimateSetupCoordinator {
             log("Failed to stop Steam setup session on termination: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// Stop all processes for application termination.
+    /// Stops: installer, game session, known prefix processes, wineserver.
+    func stopAllForApplicationTermination() async -> CleanupResult {
+        log("stopAllForApplicationTermination")
+
+        // 1. Stop InstallerSupervisor if active
+        if let op = await installerSupervisor.snapshot(), !op.phase.isTerminal {
+            try? await installerSupervisor.stopAndClean()
+        }
+
+        // 2. Stop GameSessionSupervisor if running
+        if sessionSupervisorIsRunning {
+            try? await sessionSupervisor.stop()
+        }
+
+        // 3. Stop known prefix processes
+        if let runtimeURL, let prefix = prefixLayout?.root {
+            let layout = WineExecutableLayout.detect(from: runtimeURL)
+            try? await installerSupervisor.stopKnownPrefixProcesses(
+                wineExecutable: layout.wine,
+                wineserverURL: layout.wineserver,
+                prefixURL: prefix,
+                runtimeURL: runtimeURL
+            )
+        }
+
+        // 4. Final check: residual processes?
+        if let runtimeURL, let prefix = prefixLayout?.root {
+            let layout = WineExecutableLayout.detect(from: runtimeURL)
+            if let processes = try? await wineControl.taskList(
+                wineExecutable: layout.wine, prefixURL: prefix, runtimeURL: runtimeURL
+            ) {
+                let known = ["steamsetup.exe", "steam.exe", "steamwebhelper.exe",
+                             "steamservice.exe", "crashhandler.exe", "wineserver.exe"]
+                for p in processes {
+                    if known.contains(p.imageName.lowercased()) {
+                        return .incomplete("Residual: \(p.imageName) (PID \(p.pid))")
+                    }
+                }
+            }
+        }
+
+        return .clean
     }
 
     /// Stop steam setup session if active (for back/next/close transitions).

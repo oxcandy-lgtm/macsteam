@@ -2,87 +2,95 @@
 
 import SwiftUI
 
-/// NSApplication delegate that hooks into lifecycle events for session cleanup.
+/// Shared application context — single-owner for guard and coordinator.
+@MainActor
+final class MacsTeamApplicationContext {
+    let instanceGuard: AppInstanceGuard
+    let coordinator: UltimateSetupCoordinator
+
+    init(instanceGuard: AppInstanceGuard, coordinator: UltimateSetupCoordinator) {
+        self.instanceGuard = instanceGuard
+        self.coordinator = coordinator
+    }
+}
+
+/// NSApplication delegate — lifecycle cleanup.
 @MainActor
 final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
-    weak var coordinator: UltimateSetupCoordinator?
-    let instanceGuard: AppInstanceGuard
+    static var shared: MacsTeamAppDelegate?
+    var context: MacsTeamApplicationContext?
 
     override init() {
-        self.instanceGuard = AppInstanceGuard()
         super.init()
+        Self.shared = self
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Set context from MacSteamApp's stored context
+        if let ctx = MacSteamApp.sharedContext {
+            self.context = ctx
+        }
     }
 
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        guard let coordinator else { return .terminateNow }
+        guard let context else { return .terminateNow }
 
-        if coordinator.hasActiveSteamSetupSession {
-            Task { @MainActor in
-                let success = await coordinator.stopSteamSetupForTermination()
-                // Release lock only after clean shutdown
-                self.instanceGuard.release()
-                sender.reply(toApplicationShouldTerminate: success)
+        Task { @MainActor in
+            let result = await context.coordinator.stopAllForApplicationTermination()
+            if result == .clean {
+                context.instanceGuard.release()
+                sender.reply(toApplicationShouldTerminate: true)
+            } else {
+                sender.reply(toApplicationShouldTerminate: false)
             }
-            return .terminateLater
         }
-
-        // No active session — release lock and exit
-        instanceGuard.release()
-        return .terminateNow
+        return .terminateLater
     }
 }
 
 @main
 struct MacSteamApp: App {
-    @State private var coordinator = UltimateSetupCoordinator()
+    static var sharedContext: MacsTeamApplicationContext?
+
+    @State private var context: MacsTeamApplicationContext?
 
     @NSApplicationDelegateAdaptor(MacsTeamAppDelegate.self)
     private var appDelegate
 
     init() {
-        // Acquire the single-instance lock BEFORE any UI is created.
-        // Must be synchronous — fail-closed on I/O error.
-        let guardActor = AppInstanceGuard()
         let buildID = computeBuildID()
+        let guard_ = AppInstanceGuard()
+
         do {
-            let result = try guardActor.acquireOrActivateExisting(buildID: buildID)
+            let result = try guard_.acquireOrActivateExisting(buildID: buildID)
             switch result {
             case .primary:
-                break // proceed
+                let coord = UltimateSetupCoordinator()
+                let ctx = MacsTeamApplicationContext(instanceGuard: guard_, coordinator: coord)
+                Self.sharedContext = ctx
+                _context = State(initialValue: ctx)
             case .secondary(let holderPID):
-                // Activate the existing instance and exit this one
-                let app = NSRunningApplication(processIdentifier: holderPID)
-                if holderPID > 0, holderPID != ProcessInfo.processInfo.processIdentifier,
-                   let existing = app {
-                    existing.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                if holderPID > 0, holderPID != ProcessInfo.processInfo.processIdentifier {
+                    if let existing = NSRunningApplication(processIdentifier: holderPID) {
+                        existing.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                    }
                 }
-                // Can't throw from init to exit — use fatalError for controlled exit
-                // but first let the runloop finish briefly
-                DispatchQueue.main.async {
-                    NSApplication.shared.terminate(nil)
-                }
-                // Fall through — terminate will be called on runloop
+                Darwin.exit(EXIT_SUCCESS)
             }
         } catch {
-            // Lock I/O failure — must not proceed under any circumstances
-            // Use NSLog for diagnostics before exiting
-            NSLog("MacsTeam: FATAL — lock acquisition failed: \(error.localizedDescription)")
-            // Exit via terminate to allow proper cleanup
-            DispatchQueue.main.async {
-                NSApplication.shared.terminate(nil)
-            }
+            fputs("MacsTeam: FATAL — lock acquisition failed: \(error.localizedDescription)\n", stderr)
+            Darwin.exit(EXIT_FAILURE)
         }
     }
 
     var body: some Scene {
         Window("MacsTeam", id: "main") {
-            UltimateSetupView(coordinator: coordinator)
-                .frame(minWidth: 480, minHeight: 360)
-                .onAppear {
-                    appDelegate.coordinator = coordinator
-                }
+            if let context {
+                UltimateSetupView(coordinator: context.coordinator)
+                    .frame(minWidth: 480, minHeight: 360)
+            }
         }
         .windowResizability(.contentSize)
         .windowStyle(.automatic)
@@ -97,13 +105,11 @@ struct MacSteamApp: App {
                     )
                 }
             }
-            // Remove New Window command
             CommandGroup(replacing: .newItem) { }
         }
     }
 }
 
-/// Compute a short build ID from the executable hash.
 private func computeBuildID() -> String {
     guard let execURL = Bundle.main.executableURL,
           let data = try? Data(contentsOf: execURL) else { return "unknown" }
