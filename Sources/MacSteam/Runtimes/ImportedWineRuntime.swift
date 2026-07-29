@@ -23,11 +23,18 @@ final class ImportedWineRuntime: @unchecked Sendable {
 
     /// The expected relative paths for Wine executables within the runtime root.
     private struct WinePaths {
+        /// Standard layout: <root>/bin/wine
         static let wine = "bin/wine"
         static let wineserver = "bin/wineserver"
         static let wineboot = "bin/wineboot"
         static let wine64: String? = "bin/wine64"
         static let wineprefixcreate: String? = "bin/wineprefixcreate"
+
+        /// macOS bundle layout: <root>/Contents/Resources/wine/bin/wine
+        static let bundleRoot = "Contents/Resources/wine"
+        static let bundleWine = "\(bundleRoot)/bin/wine"
+        static let bundleWineserver = "\(bundleRoot)/bin/wineserver"
+        static let bundleWineboot = "\(bundleRoot)/bin/wineboot"
     }
 
     init?(url: URL) {
@@ -39,6 +46,15 @@ final class ImportedWineRuntime: @unchecked Sendable {
             resolved = url.standardized
         }
 
+        // --- Reject CrossOver.app ancestry ---
+        var ancestor = resolved
+        while ancestor.path != "/" {
+            if ancestor.lastPathComponent == "CrossOver.app" {
+                return nil
+            }
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+
         // Must not be world-writable
         let fm = FileManager.default
         if let attrs = try? fm.attributesOfItem(atPath: resolved.path),
@@ -47,9 +63,14 @@ final class ImportedWineRuntime: @unchecked Sendable {
             return nil
         }
 
-        // Must contain wine executable
+        // Check standard layout first, then bundle layout
         let wineExe = resolved.appendingPathComponent(WinePaths.wine)
-        guard fm.isExecutableFile(atPath: wineExe.path) else { return nil }
+        let bundleWine = resolved.appendingPathComponent(WinePaths.bundleWine)
+
+        guard fm.isExecutableFile(atPath: wineExe.path)
+                || fm.isExecutableFile(atPath: bundleWine.path) else {
+            return nil
+        }
 
         self.runtimeURL = resolved
     }
@@ -59,21 +80,35 @@ final class ImportedWineRuntime: @unchecked Sendable {
     func inspect() -> RuntimeInspection {
         var failures: [RuntimeFailure] = []
 
-        // Check core executables
-        let wine = runtimeURL.appendingPathComponent(WinePaths.wine)
-        guard fm.isExecutableFile(atPath: wine.path) else {
-            failures.append(RuntimeFailure(code: .executableMissing, message: "bin/wine not found or not executable"))
+        // Determine layout: standard (bin/wine) or bundle (Contents/Resources/wine/bin/wine)
+        let layoutRoot: URL
+        let layoutPrefix: String
+        if fm.isExecutableFile(atPath: runtimeURL.appendingPathComponent(WinePaths.wine).path) {
+            layoutRoot = runtimeURL
+            layoutPrefix = ""
+        } else if fm.isExecutableFile(atPath: runtimeURL.appendingPathComponent(WinePaths.bundleWine).path) {
+            layoutRoot = runtimeURL.appendingPathComponent(WinePaths.bundleRoot)
+            layoutPrefix = WinePaths.bundleRoot + "/"
+        } else {
+            failures.append(RuntimeFailure(code: .executableMissing, message: "wine not found in standard or bundle layout"))
             return RuntimeInspection(runtimeID: Self.runtimeID, isUsable: false, failures: failures)
         }
 
-        let wineserver = runtimeURL.appendingPathComponent(WinePaths.wineserver)
-        if !fm.isExecutableFile(atPath: wineserver.path) {
-            failures.append(RuntimeFailure(code: .wineserverMissing, message: "bin/wineserver not found or not executable"))
+        // Check core executables
+        let wine = layoutRoot.appendingPathComponent("bin/wine")
+        guard fm.isExecutableFile(atPath: wine.path) else {
+            failures.append(RuntimeFailure(code: .executableMissing, message: "\(layoutPrefix)bin/wine not found or not executable"))
+            return RuntimeInspection(runtimeID: Self.runtimeID, isUsable: false, failures: failures)
         }
 
-        let wineboot = runtimeURL.appendingPathComponent(WinePaths.wineboot)
+        let wineserver = layoutRoot.appendingPathComponent("bin/wineserver")
+        if !fm.isExecutableFile(atPath: wineserver.path) {
+            failures.append(RuntimeFailure(code: .wineserverMissing, message: "\(layoutPrefix)bin/wineserver not found or not executable"))
+        }
+
+        let wineboot = layoutRoot.appendingPathComponent("bin/wineboot")
         if !fm.isExecutableFile(atPath: wineboot.path) {
-            failures.append(RuntimeFailure(code: .winebootMissing, message: "bin/wineboot not found or not executable"))
+            failures.append(RuntimeFailure(code: .winebootMissing, message: "\(layoutPrefix)bin/wineboot not found or not executable"))
         }
 
         // Check for symlink escape
@@ -106,7 +141,17 @@ final class ImportedWineRuntime: @unchecked Sendable {
     }
 
     func launchPlan(for recipe: GameRecipe) -> LaunchPlan? {
-        let wine = runtimeURL.appendingPathComponent(WinePaths.wine)
+        // Determine layout root
+        let layoutRoot: URL
+        if fm.isExecutableFile(atPath: runtimeURL.appendingPathComponent(WinePaths.wine).path) {
+            layoutRoot = runtimeURL
+        } else if fm.isExecutableFile(atPath: runtimeURL.appendingPathComponent(WinePaths.bundleWine).path) {
+            layoutRoot = runtimeURL.appendingPathComponent(WinePaths.bundleRoot)
+        } else {
+            return nil
+        }
+
+        let wine = layoutRoot.appendingPathComponent("bin/wine")
         guard fm.isExecutableFile(atPath: wine.path) else { return nil }
 
         let prefixDir = URL(fileURLWithPath: NSHomeDirectory())
@@ -210,7 +255,12 @@ extension ImportedWineRuntime: CompatibilityRuntime {
 
 extension ImportedWineRuntime: WineRuntimeControl {
     var wineserverExecutable: URL {
-        runtimeURL.appendingPathComponent("bin/wineserver")
+        // Check both layout forms
+        let standard = runtimeURL.appendingPathComponent(WinePaths.wineserver)
+        if FileManager.default.isExecutableFile(atPath: standard.path) {
+            return standard
+        }
+        return runtimeURL.appendingPathComponent(WinePaths.bundleWineserver)
     }
 
     func controlEnvironment(for prefix: URL) throws -> [String: String] {

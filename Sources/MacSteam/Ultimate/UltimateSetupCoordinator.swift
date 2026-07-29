@@ -524,7 +524,8 @@ final class UltimateSetupCoordinator {
                 runtimeControl: runtimeControl,
                 prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
                 recipeID: recipe.id,
-                runtimeID: runtimeSourceType ?? "unknown"
+                runtimeID: runtimeSourceType ?? "unknown",
+                purpose: .steamSetup
             )
         } catch {
             self.error = .launchFailed(error.localizedDescription)
@@ -584,7 +585,8 @@ final class UltimateSetupCoordinator {
                 runtimeControl: runtimeControl,
                 prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
                 recipeID: recipe.id,
-                runtimeID: runtimeSourceType ?? "unknown"
+                runtimeID: runtimeSourceType ?? "unknown",
+                purpose: .game
             )
 
             launchPhase = .processObserved
@@ -609,6 +611,31 @@ final class UltimateSetupCoordinator {
     /// Stop the active game session.
     func stopSession() async {
         try? await sessionSupervisor.stop()
+    }
+
+    /// Whether a Steam setup session is active.
+    var hasActiveSteamSetupSession: Bool {
+        sessionSupervisor.activeSession?.purpose == .steamSetup
+        && sessionSupervisor.isRunning
+    }
+
+    /// Stop Steam setup session for app termination.
+    /// Returns true if stopped or no session; false if stop failed.
+    func stopSteamSetupForTermination() async -> Bool {
+        guard hasActiveSteamSetupSession else { return true }
+        do {
+            try await sessionSupervisor.stop()
+            return true
+        } catch {
+            log("Failed to stop Steam setup session on termination: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Stop steam setup session if active (for back/next/close transitions).
+    func stopSteamSetupSessionIfNeeded() async throws {
+        guard hasActiveSteamSetupSession else { return }
+        try await sessionSupervisor.stop()
     }
 
     // MARK: - Session supervisor proxy

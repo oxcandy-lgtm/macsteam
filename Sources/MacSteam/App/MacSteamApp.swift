@@ -2,15 +2,41 @@
 
 import SwiftUI
 
+/// NSApplication delegate that hooks into lifecycle events for session cleanup.
+@MainActor
+final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
+    weak var coordinator: UltimateSetupCoordinator?
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard let coordinator, coordinator.hasActiveSteamSetupSession else {
+            return .terminateNow
+        }
+
+        Task { @MainActor in
+            let success = await coordinator.stopSteamSetupForTermination()
+            sender.reply(toApplicationShouldTerminate: success)
+        }
+
+        return .terminateLater
+    }
+}
+
 @main
 struct MacSteamApp: App {
     @State private var coordinator = UltimateSetupCoordinator()
-    @State private var gameManager = GameManager()
+
+    @NSApplicationDelegateAdaptor(MacsTeamAppDelegate.self)
+    private var appDelegate
 
     var body: some Scene {
         WindowGroup {
             UltimateSetupView(coordinator: coordinator)
                 .frame(minWidth: 480, minHeight: 360)
+                .onAppear {
+                    appDelegate.coordinator = coordinator
+                }
         }
         .windowResizability(.contentSize)
         .windowStyle(.automatic)

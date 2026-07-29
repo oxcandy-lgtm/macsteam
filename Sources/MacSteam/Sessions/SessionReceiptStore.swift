@@ -20,6 +20,43 @@ struct ActiveSessionReceipt: Codable, Sendable {
     let rootPID: Int32
     let startedAt: Date
     let state: ReceiptSessionState
+    let purpose: SessionPurpose
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID, recipeID, runtimeID, prefixID, rootPID, startedAt, state, purpose
+    }
+
+    init(
+        sessionID: UUID,
+        recipeID: String,
+        runtimeID: String,
+        prefixID: String,
+        rootPID: Int32,
+        startedAt: Date,
+        state: ReceiptSessionState,
+        purpose: SessionPurpose
+    ) {
+        self.sessionID = sessionID
+        self.recipeID = recipeID
+        self.runtimeID = runtimeID
+        self.prefixID = prefixID
+        self.rootPID = rootPID
+        self.startedAt = startedAt
+        self.state = state
+        self.purpose = purpose
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(UUID.self, forKey: .sessionID)
+        recipeID = try container.decode(String.self, forKey: .recipeID)
+        runtimeID = try container.decode(String.self, forKey: .runtimeID)
+        prefixID = try container.decode(String.self, forKey: .prefixID)
+        rootPID = try container.decode(Int32.self, forKey: .rootPID)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        state = try container.decode(ReceiptSessionState.self, forKey: .state)
+        purpose = try container.decodeIfPresent(SessionPurpose.self, forKey: .purpose) ?? .game
+    }
 }
 
 /// Errors from receipt store operations.
@@ -71,7 +108,8 @@ struct SessionReceiptStore {
             prefixID: prefixID,
             rootPID: session.rootPID,
             startedAt: session.startedAt,
-            state: state
+            state: state,
+            purpose: session.purpose
         )
 
         let encoder = JSONEncoder()

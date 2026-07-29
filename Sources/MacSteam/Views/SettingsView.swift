@@ -20,12 +20,10 @@ struct SettingsView: View {
                             ProgressView()
                                 .scaleEffect(0.8)
                                 .padding(.trailing, 4)
-                            Text("Stopping CloverPit…\nWaiting for the Wine session to exit.")
+                            Text("Stopping… waiting for the Wine session to exit.")
                                 .font(.caption)
                         } else {
-                            Button("Stop & Relaunch", role: .destructive) {
-                                Task { await coordinator.stopSession() }
-                            }
+                            stopButton
                         }
                     }
                 }
@@ -86,6 +84,20 @@ struct SettingsView: View {
     }
 
     // MARK: - Session status
+
+    /// Purpose-specific stop button.
+    @ViewBuilder
+    private var stopButton: some View {
+        if coordinator.activeSession?.purpose == .steamSetup {
+            Button("Stop Steam Setup", role: .destructive) {
+                Task { await coordinator.stopSession() }
+            }
+        } else {
+            Button("Stop CloverPit Session", role: .destructive) {
+                Task { await coordinator.stopSession() }
+            }
+        }
+    }
 
     @ViewBuilder
     private var sessionStatusView: some View {

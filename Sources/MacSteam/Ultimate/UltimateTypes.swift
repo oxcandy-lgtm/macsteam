@@ -61,10 +61,3 @@ enum LaunchPhase: String, Sendable, Equatable {
     case windowConfirmed  // User confirmed visible window
     case mainMenuConfirmed  // User confirmed main menu
 }
-
-/// Purpose of a session (NX Dispatch §5).
-enum SessionPurpose: String, Sendable, Codable {
-    case steamSetup
-    case steamClient
-    case game
-}

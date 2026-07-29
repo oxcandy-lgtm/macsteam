@@ -23,6 +23,7 @@ struct GameSession: Sendable, Equatable {
     let prefixRoot: URL
     let rootPID: Int32
     let startedAt: Date
+    let purpose: SessionPurpose
 }
 
 /// A persistent (non-codable) holder for a live session's runtime control.
@@ -102,7 +103,8 @@ final class GameSessionSupervisor {
         runtimeControl: any WineRuntimeControl,
         prefixRoot: URL,
         recipeID: String,
-        runtimeID: String
+        runtimeID: String,
+        purpose: SessionPurpose = .game
     ) async throws -> GameSession {
         guard state == .idle || state == .stopped else {
             let pid = activeSession?.rootPID ?? 0
@@ -172,7 +174,8 @@ final class GameSessionSupervisor {
             runtimeID: runtimeID,
             prefixRoot: prefixRoot,
             rootPID: handle.pid,
-            startedAt: Date()
+            startedAt: Date(),
+            purpose: purpose
         )
 
         self.activeSession = session
@@ -204,63 +207,62 @@ final class GameSessionSupervisor {
         guard let session = activeSession else { return }
         state = .stopping
 
-        defer {
-            // Only release lock after full verification
+        do {
+            // 1. Terminate owned root process
+            if let handle = activeHandle {
+                await processSupervisor.requestTerminate(handle)
+
+                // Wait up to 5 seconds
+                let outcome = await processSupervisor.waitForExit(
+                    handle,
+                    timeout: .seconds(5)
+                )
+
+                // If still alive after timeout, the stop continues with wineserver
+                if case .timedOut = outcome {
+                    // Not forcing SIGKILL — let wineserver cleanup handle it
+                }
+            }
+
+            // 2. Shutdown wineserver
+            guard let runtimeControl = activeRuntimeControl else {
+                throw SessionSupervisorError.stopFailed("No runtime control available")
+            }
+
+            do {
+                try await wineserverController.shutdownPrefix(
+                    runtime: runtimeControl.control,
+                    prefix: session.prefixRoot,
+                    waitSeconds: 10
+                )
+            } catch let error as WineServerError {
+                throw SessionSupervisorError.stopIncomplete(error.localizedDescription)
+            }
+
+            // 3. Verify complete shutdown
+            let stillRunning = try await wineserverController.isRunning(
+                prefix: session.prefixRoot,
+                runtime: runtimeControl.control
+            )
+
+            if stillRunning {
+                throw SessionSupervisorError.stopIncomplete(
+                    "wineserver is still running after shutdown request"
+                )
+            }
+
+            // 4. Success — cleanup
+            try? receiptStore.remove(prefix: session.prefixRoot)
             sessionLock?.release()
             sessionLock = nil
             activeSession = nil
             activeHandle = nil
             activeRuntimeControl = nil
             state = .stopped
+        } catch {
+            state = .recoveryRequired("Stop failed: \(error.localizedDescription)")
+            throw error
         }
-
-        // 1. Terminate owned root process
-        if let handle = activeHandle {
-            await processSupervisor.requestTerminate(handle)
-
-            // Wait up to 5 seconds
-            let outcome = await processSupervisor.waitForExit(
-                handle,
-                timeout: .seconds(5)
-            )
-
-            // If still alive after timeout, the stop continues with wineserver
-            if case .timedOut = outcome {
-                // Not forcing SIGKILL — let wineserver cleanup handle it
-            }
-        }
-
-        // 2. Shutdown wineserver
-        guard let runtimeControl = activeRuntimeControl else {
-            throw SessionSupervisorError.stopFailed("No runtime control available")
-        }
-
-        do {
-            try await wineserverController.shutdownPrefix(
-                runtime: runtimeControl.control,
-                prefix: session.prefixRoot,
-                waitSeconds: 10
-            )
-        } catch let error as WineServerError {
-            throw SessionSupervisorError.stopIncomplete(error.localizedDescription)
-        }
-
-        // 3. Verify complete shutdown
-        let stillRunning = try await wineserverController.isRunning(
-            prefix: session.prefixRoot,
-            runtime: runtimeControl.control
-        )
-
-        if stillRunning {
-            throw SessionSupervisorError.stopIncomplete(
-                "wineserver is still running after shutdown request"
-            )
-        }
-
-        // 4. Remove receipt
-        try? receiptStore.remove(prefix: session.prefixRoot)
-
-        // defer block handles lock release + cleanup
     }
 
     /// Force stop — only for UI-initiated Force Stop after normal stop fails.
@@ -270,32 +272,45 @@ final class GameSessionSupervisor {
 
         state = .stopping
 
-        // Verify PID ownership before SIGKILL
-        _ = try await processSupervisor.launch(plan: LaunchPlan(
-            runtimeExecutable: URL(fileURLWithPath: "/usr/bin/true"),
-            arguments: [],
-            mode: .detached
-        )) // dummy to validate the supervisor is operable
+        do {
+            // 1. Force kill owned root process
+            try await processSupervisor.requestForceKill(handle)
 
-        // Only force-kill if we own the handle
-        try await processSupervisor.requestForceKill(handle)
+            // 2. wineserver kill + bounded wait
+            if let runtimeControl = activeRuntimeControl {
+                try await wineserverController.shutdownPrefix(
+                    runtime: runtimeControl.control,
+                    prefix: session.prefixRoot,
+                    waitSeconds: 10
+                )
+            }
 
-        // Also request wineserver kill
-        if let runtimeControl = activeRuntimeControl {
-            try await wineserverController.requestServerKill(
-                runtime: runtimeControl.control,
-                prefix: session.prefixRoot
+            // 3. Verify complete shutdown
+            guard let runtimeControl = activeRuntimeControl else {
+                throw SessionSupervisorError.stopFailed("No runtime control available")
+            }
+            let stillRunning = try await wineserverController.isRunning(
+                prefix: session.prefixRoot,
+                runtime: runtimeControl.control
             )
-        }
 
-        // Cleanup
-        sessionLock?.release()
-        sessionLock = nil
-        activeSession = nil
-        activeHandle = nil
-        activeRuntimeControl = nil
-        try? receiptStore.remove(prefix: session.prefixRoot)
-        state = .stopped
+            guard !stillRunning else {
+                state = .recoveryRequired("The Wine session is still running.")
+                return
+            }
+
+            // 4. Success — cleanup
+            sessionLock?.release()
+            sessionLock = nil
+            activeSession = nil
+            activeHandle = nil
+            activeRuntimeControl = nil
+            try? receiptStore.remove(prefix: session.prefixRoot)
+            state = .stopped
+        } catch {
+            state = .recoveryRequired("Force stop failed: \(error.localizedDescription)")
+            throw error
+        }
     }
 
     // MARK: - Stop & Relaunch
@@ -306,7 +321,8 @@ final class GameSessionSupervisor {
         runtimeControl: any WineRuntimeControl,
         prefixRoot: URL,
         recipeID: String,
-        runtimeID: String
+        runtimeID: String,
+        purpose: SessionPurpose = .game
     ) async throws -> GameSession {
         try await stop()
         return try await launch(
@@ -314,7 +330,8 @@ final class GameSessionSupervisor {
             runtimeControl: runtimeControl,
             prefixRoot: prefixRoot,
             recipeID: recipeID,
-            runtimeID: runtimeID
+            runtimeID: runtimeID,
+            purpose: purpose
         )
     }
 
@@ -335,21 +352,45 @@ final class GameSessionSupervisor {
         )
 
         if serverRunning {
-            // Receipt exists AND server is running → adopt session
-            let lock = try SessionLock(prefix: prefix)
-            try lock.acquire()
-            self.sessionLock = lock
+            switch receipt.purpose {
+            case .steamSetup:
+                // SteamSetup: clean up — don't adopt
+                try await wineserverController.shutdownPrefix(
+                    runtime: runtimeControl,
+                    prefix: prefix,
+                    waitSeconds: 10
+                )
+                // Verify stopped
+                let stillRunning = try await wineserverController.isRunning(
+                    prefix: prefix,
+                    runtime: runtimeControl
+                )
+                if stillRunning {
+                    state = .recoveryRequired("A previous Steam setup session is still running.")
+                } else {
+                    receiptStore.remove(prefix: prefix)
+                    state = .idle
+                }
 
-            self.activeSession = GameSession(
-                sessionID: receipt.sessionID,
-                recipeID: receipt.recipeID,
-                runtimeID: receipt.runtimeID,
-                prefixRoot: prefix,
-                rootPID: receipt.rootPID,
-                startedAt: receipt.startedAt
-            )
-            self.activeRuntimeControl = LiveRuntimeControl(control: runtimeControl)
-            state = .runningUnknown
+            case .game:
+                // Game: adopt session as before
+                let lock = try SessionLock(prefix: prefix)
+                let acquired = try lock.acquire()
+                self.sessionLock = lock
+                _ = acquired // silence unused-result warning
+
+                self.activeSession = GameSession(
+                    sessionID: receipt.sessionID,
+                    recipeID: receipt.recipeID,
+                    runtimeID: receipt.runtimeID,
+                    prefixRoot: prefix,
+                    rootPID: receipt.rootPID,
+                    startedAt: receipt.startedAt,
+                    purpose: receipt.purpose
+                )
+                self.activeRuntimeControl = LiveRuntimeControl(control: runtimeControl)
+                state = .runningUnknown
+            }
         } else {
             // Receipt exists but server is stopped → stale receipt
             receiptStore.remove(prefix: prefix)

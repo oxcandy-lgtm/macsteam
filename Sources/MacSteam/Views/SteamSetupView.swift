@@ -190,7 +190,10 @@ struct SteamSetupView: View {
                     .controlSize(.small)
 
                     Button("Back") {
-                        coordinator.state = .prefixReady
+                        Task {
+                            try? await coordinator.stopSteamSetupSessionIfNeeded()
+                            coordinator.state = .prefixReady
+                        }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -247,7 +250,10 @@ struct SteamSetupView: View {
         HStack {
             if coordinator.state != .steamReady {
                 Button("Back") {
-                    coordinator.state = .prefixReady
+                    Task {
+                        try? await coordinator.stopSteamSetupSessionIfNeeded()
+                        coordinator.state = .prefixReady
+                    }
                 }
                 .controlSize(.small)
                 .disabled(isWorking)
@@ -257,7 +263,10 @@ struct SteamSetupView: View {
 
             if coordinator.state == .steamReady {
                 Button("Next: Check CloverPit →") {
-                    Task { await coordinator.recheckCloverPit() }
+                    Task {
+                        try? await coordinator.stopSteamSetupSessionIfNeeded()
+                        await coordinator.recheckCloverPit()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
