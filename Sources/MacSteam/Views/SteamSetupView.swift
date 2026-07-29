@@ -5,47 +5,41 @@ import UniformTypeIdentifiers
 
 /// View for the Windows Steam installer flow.
 ///
-/// Guides the user through four sub-steps:
-///  1. Opening the Valve download page in their browser.
-///  2. Selecting the downloaded `SteamSetup.exe` file.
-///  3. Running the installer inside the Wine prefix.
-///  4. Detecting the installed Windows Steam client.
+/// NX Dispatch U1R11 — all actions wired through ``UltimateSetupCoordinator``.
+/// No local fake timers.  Handles the full Steam lifecycle:
+///  1. Download Steam installer (open browser)
+///  2. Select & verify SteamSetup.exe
+///  3. Install via coordinator
+///  4. Re-check / detect installation
 ///
-/// References ``SteamInstallerCoordinator`` for file verification,
-/// ``SteamInstallationDetector`` for post-install detection, and
-/// Select a Windows Steam installer from the local filesystem, verify its
-/// integrity, install it into the Wine prefix, and detect the result.
-///
-/// Wires into ``UltimateSetupCoordinator`` for installer selection,
-/// verification, and launch.
+/// Back → `prefixReady`, Next → `cloverPitNotInstalled`.
 struct SteamSetupView: View {
     let coordinator: UltimateSetupCoordinator
     @State private var installerURL: URL? = nil
     @State private var fileSize: UInt64 = 0
-    @State private var sha256: String = ""
     @State private var isVerified = false
     @State private var verificationMessage: String = ""
-    @State private var isInstalling = false
-    @State private var isDetecting = false
-    @State private var steamDetected = false
-    @State private var detectionMessage: String = ""
+    @State private var isWorking = false
 
-    private let installerCoordinator = SteamInstallerCoordinator()
-    private let detector = SteamInstallationDetector()
-
-    // SteamSetup.exe download page
     private let steamDownloadURL = "https://store.steampowered.com/about/"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
             Divider()
-            stepsList
+
+            if coordinator.state == .steamReady {
+                steamReadyContent
+            } else {
+                stepsContent
+            }
+
             Spacer()
             navigationButtons
         }
         .padding(24)
         .frame(width: 500)
+        .disabled(isWorking)
     }
 
     // MARK: - Header
@@ -59,7 +53,7 @@ struct SteamSetupView: View {
                 Text("Windows Steam Setup")
                     .font(.title3)
                     .fontWeight(.semibold)
-                Text("Install Steam inside the CloverPit environment")
+                Text(statusSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -67,13 +61,63 @@ struct SteamSetupView: View {
         }
     }
 
-    // MARK: - Steps list
+    private var statusSubtitle: String {
+        switch coordinator.state {
+        case .steamReady:
+            return "Windows Steam is installed and ready"
+        case .steamInstallationPending:
+            return "Installing Steam inside the prefix"
+        case .steamInstallerVerified:
+            return "Installer selected — ready to install"
+        default:
+            return "Install Steam inside the CloverPit environment"
+        }
+    }
 
-    private var stepsList: some View {
+    // MARK: - Steam Ready
+
+    private var steamReadyContent: some View {
+        VStack(spacing: 12) {
+            Label("Windows Steam ready", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.headline)
+
+            Text("Steam is installed in the prefix.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let insp = coordinator.steamInspection, insp.steamInstalled {
+                Text("Steam executable detected")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 12) {
+                Button("Open Windows Steam") {
+                    Task { await coordinator.launchWindowsSteam() }
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Re-check") {
+                    isWorking = true
+                    Task {
+                        await coordinator.recheckSteam()
+                        isWorking = false
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding()
+    }
+
+    // MARK: - Steps (not yet installed)
+
+    private var stepsContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             stepView(
                 number: 1,
-                title: "Download SteamInstaller",
+                title: "Download Steam Installer",
                 detail: "Open the Valve download page in your browser",
                 state: installerURL == nil ? .pending : .completed,
                 action: { openDownloadPage() }
@@ -90,20 +134,134 @@ struct SteamSetupView: View {
             stepView(
                 number: 3,
                 title: "Install Windows Steam",
-                detail: isInstalling ? "Running installer…" : "Launch the installer inside the prefix",
-                state: isInstalling ? .working : (steamDetected ? .completed : .ready),
-                action: { runInstaller() }
+                detail: step3Detail,
+                state: step3State,
+                action: {
+                    isWorking = true
+                    Task {
+                        await coordinator.installSteam()
+                        isWorking = false
+                    }
+                }
             )
-            .disabled(!isVerified || isInstalling)
+            .disabled(!isVerified || coordinator.state == .steamInstallationPending)
 
             stepView(
                 number: 4,
                 title: "Detect Windows Steam",
-                detail: detectionMessage.isEmpty ? "Verify Steam was installed correctly" : detectionMessage,
-                state: isDetecting ? .working : (steamDetected ? .completed : .ready),
-                action: { detectSteam() }
+                detail: step4Detail,
+                state: step4State,
+                action: {
+                    isWorking = true
+                    Task {
+                        await coordinator.recheckSteam()
+                        isWorking = false
+                    }
+                }
             )
-            .disabled(steamDetected || isDetecting)
+            .disabled(coordinator.state != .steamInstallationPending)
+
+            // Error / crash info
+            if let error = coordinator.error {
+                Divider()
+                HStack {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text(error.localizedDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 8) {
+                    Button("Retry") {
+                        coordinator.error = nil
+                        isWorking = true
+                        Task {
+                            await coordinator.installSteam()
+                            isWorking = false
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Stop Steam") {
+                        Task { await coordinator.stopSession() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Back") {
+                        coordinator.state = .prefixReady
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    // MARK: - Step state helpers
+
+    private var step3State: StepUIState {
+        switch coordinator.state {
+        case .steamInstallationPending:
+            return .working
+        case .steamReady:
+            return .completed
+        case .steamInstallerVerified:
+            return .ready
+        default:
+            return isVerified ? .ready : .pending
+        }
+    }
+
+    private var step3Detail: String {
+        switch coordinator.state {
+        case .steamInstallationPending:
+            return "Installing… follow the Steam Setup window"
+        case .steamReady:
+            return "Steam installed successfully"
+        default:
+            return "Run SteamSetup.exe inside the prefix"
+        }
+    }
+
+    private var step4State: StepUIState {
+        switch coordinator.state {
+        case .steamReady:
+            return .completed
+        default:
+            return coordinator.state == .steamInstallationPending ? .ready : .pending
+        }
+    }
+
+    private var step4Detail: String {
+        guard let insp = coordinator.steamInspection else {
+            return "Check whether Steam was installed correctly"
+        }
+        return insp.steamInstalled ? "Windows Steam detected" : "Steam not found yet"
+    }
+
+    // MARK: - Navigation
+
+    private var navigationButtons: some View {
+        HStack {
+            if coordinator.state != .steamReady {
+                Button("Back") {
+                    coordinator.state = .prefixReady
+                }
+                .controlSize(.small)
+                .disabled(isWorking)
+            }
+
+            Spacer()
+
+            if coordinator.state == .steamReady {
+                Button("Next: Check CloverPit →") {
+                    Task { await coordinator.recheckCloverPit() }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
         }
     }
 
@@ -117,7 +275,6 @@ struct SteamSetupView: View {
         action: @escaping () -> Void
     ) -> some View {
         HStack(spacing: 12) {
-            // Status indicator
             ZStack {
                 Circle()
                     .fill(state.tint)
@@ -168,26 +325,6 @@ struct SteamSetupView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    // MARK: - Navigation
-
-    private var navigationButtons: some View {
-        HStack {
-            Button("Back") {
-                // TODO: navigate to prefix setup
-            }
-            .controlSize(.small)
-
-            Spacer()
-
-            Button("Next") {
-                // TODO: advance to CloverPit launch view
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!steamDetected)
-        }
-    }
-
     // MARK: - Actions
 
     private func openDownloadPage() {
@@ -207,56 +344,22 @@ struct SteamSetupView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         installerURL = url
-        verifyInstaller(url: url)
-    }
-
-    private func verifyInstaller(url: URL) {
         // Basic file info
         if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
            let size = attrs[.size] as? UInt64 {
             fileSize = size
         }
 
-        isVerified = installerCoordinator.verifyInstaller(url: url)
-
-        if isVerified {
-            // TODO: wire ArtifactVerifier.sha256(url:)
-            // sha256 = try? ArtifactVerifier.sha256(url: url)
-            verificationMessage = "Installer verified"
-        } else {
-            verificationMessage = "Verification failed — not a valid SteamSetup.exe"
-        }
-    }
-
-    private func runInstaller() {
-        guard installerURL != nil else { return }
-        isInstalling = true
-
-        // TODO: wire to SteamInstallerCoordinator / wine execution
-        // let prefixURL = prefixManager.prefixURL(for: recipe)
-        // let sha = installerCoordinator.recordInstallation(url: url, prefixURL: prefixURL)
-        // Launch wine with SteamSetup.exe inside the prefix
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            isInstalling = false
-            steamDetected = true
-            detectionMessage = "Steam installed successfully"
-        }
-    }
-
-    private func detectSteam() {
-        isDetecting = true
-        detectionMessage = ""
-
-        // TODO: wire to SteamInstallationDetector
-        // let result = await detector.inspect(recipe: recipe, runtime: runtime)
-        // steamDetected = result.steamPresent
-        // detectionMessage = result.steamPresent ? "Steam detected" : "Steam not found"
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            isDetecting = false
-            steamDetected = true
-            detectionMessage = "Windows Steam detected"
+        isWorking = true
+        Task {
+            await coordinator.selectSteamInstaller(url)
+            isVerified = (coordinator.error == nil)
+            if isVerified {
+                verificationMessage = "Installer verified"
+            } else {
+                verificationMessage = coordinator.error?.localizedDescription ?? "Verification failed"
+            }
+            isWorking = false
         }
     }
 
@@ -265,7 +368,7 @@ struct SteamSetupView: View {
     private var fileDetail: String {
         guard let url = installerURL else { return "No file selected" }
         let sizeStr = ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file)
-        let verifiedStr = isVerified ? "✓ Verified" : "✗ Verification failed"
+        let verifiedStr = isVerified ? "✓ Verified" : "✗ \(verificationMessage)"
         return "\(url.lastPathComponent) — \(sizeStr) — \(verifiedStr)"
     }
 }

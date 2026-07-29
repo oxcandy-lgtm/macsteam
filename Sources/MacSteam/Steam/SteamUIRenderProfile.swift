@@ -4,7 +4,7 @@ import Foundation
 
 /// Steam UI render profiles for CEF web-rendering compatibility.
 ///
-/// NX Dispatch U1R10 §3 — each profile maps to a fixed set of launch
+/// NX Dispatch U1R10 §3 / U1R11 §3 — each profile maps to a fixed set of launch
 /// arguments that are applied **only** to the Steam client process.
 /// Game launch arguments (`-applaunch`, `-popupwindow`) are never
 /// interleaved with these.
@@ -19,6 +19,24 @@ enum SteamUIRenderProfile: String, Sendable, Codable, CaseIterable {
     /// Force software rendering in Chromium Embedded Framework.
     /// Corresponds to the `-cef-disable-gpu` Steam flag.
     case cefSoftwareRendering
+
+    // MARK: - U1R11 Candidate Set 1: CEF triple flags
+
+    /// Disable GPU + disable GPU compositing + remove sandbox.
+    /// Corresponds to `-cef-disable-gpu -cef-disable-gpu-compositing -no-cef-sandbox`.
+    case cefTriple
+
+    // MARK: - U1R11 Candidate Set 2: OpenGL fallback
+
+    /// Force OpenGL rendering + remove sandbox.
+    /// Corresponds to `-opengl -no-cef-sandbox`.
+    case openGLFallback
+
+    // MARK: - U1R11 Candidate Set 3: Big Picture Mode
+
+    /// Launch Steam in Big Picture (Tenfoot) mode.
+    /// Corresponds to `-tenfoot`.
+    case tenfoot
 }
 
 extension SteamUIRenderProfile {
@@ -34,6 +52,12 @@ extension SteamUIRenderProfile {
             return []
         case .cefSoftwareRendering:
             return ["-cef-disable-gpu"]
+        case .cefTriple:
+            return ["-cef-disable-gpu", "-cef-disable-gpu-compositing", "-no-cef-sandbox"]
+        case .openGLFallback:
+            return ["-opengl", "-no-cef-sandbox"]
+        case .tenfoot:
+            return ["-tenfoot"]
         }
     }
 }

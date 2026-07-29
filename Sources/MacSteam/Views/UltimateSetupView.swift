@@ -154,19 +154,9 @@ struct UltimateSetupView: View {
             prefixReadyView
             nextButton("Select Steam Installer →", action: { coordinator.state = .steamInstallerRequired })
 
-        case .steamInstallerRequired:
+        case .steamInstallerRequired, .steamInstallerVerified,
+                .steamInstallationPending, .steamReady:
             SteamSetupView(coordinator: coordinator)
-
-        case .steamInstallerVerified:
-            steamVerifiedView
-            nextButton("Install Steam", action: { Task { await coordinator.installSteam() } })
-
-        case .steamInstallationPending:
-            steamPendingView
-
-        case .steamReady:
-            steamReadyView
-            nextButton("Re-check CloverPit →", action: { Task { await coordinator.recheckCloverPit() } })
 
         case .cloverPitNotInstalled:
             cloverPitNotInstalledView

@@ -9,7 +9,7 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "MacSteam", targets: ["MacSteam"])
+        .executable(name: "MacsTeam", targets: ["MacSteam"])
     ],
     dependencies: [],
     targets: [

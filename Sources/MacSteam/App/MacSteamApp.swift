@@ -16,7 +16,7 @@ struct MacSteamApp: App {
         .windowStyle(.automatic)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About MacSteam") {
+                Button("About \(AppBrand.displayName)") {
                     NSApplication.shared.orderFrontStandardAboutPanel(
                         options: [
                             .applicationName: AppBrand.displayName,

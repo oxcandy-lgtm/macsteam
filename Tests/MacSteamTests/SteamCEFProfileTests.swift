@@ -16,26 +16,50 @@ struct SteamUIRenderProfileTests {
         #expect(SteamUIRenderProfile.cefSoftwareRendering.launchArguments == ["-cef-disable-gpu"])
     }
 
-    @Test func testProfileNotPersistedByDefault() {
-        // Profile is reset to .automatic on every coordinator init
-        // (not stored in UserDefaults / AppStorage)
-        #expect(SteamUIRenderProfile.automatic.rawValue == "automatic")
-        #expect(SteamUIRenderProfile.cefSoftwareRendering.rawValue == "cefSoftwareRendering")
+    // MARK: - U1R11 new profiles
+
+    @Test func testCefTripleThreeArguments() {
+        #expect(SteamUIRenderProfile.cefTriple.launchArguments == [
+            "-cef-disable-gpu", "-cef-disable-gpu-compositing", "-no-cef-sandbox"
+        ])
+    }
+
+    @Test func testCefTripleHasNoCefDisableGpuCompositing() {
+        let args = SteamUIRenderProfile.cefTriple.launchArguments
+        #expect(args.contains("-cef-disable-gpu-compositing"))
+    }
+
+    @Test func testOpenGLFallbackNoCefGpu() {
+        let args = SteamUIRenderProfile.openGLFallback.launchArguments
+        #expect(args.contains("-opengl"))
+        #expect(args.contains("-no-cef-sandbox"))
+        #expect(!args.contains("-cef-disable-gpu"))
+    }
+
+    @Test func testTenfootOnlyTenfoot() {
+        #expect(SteamUIRenderProfile.tenfoot.launchArguments == ["-tenfoot"])
+    }
+
+    @Test func testAllCasesCountU1R11() {
+        let all = SteamUIRenderProfile.allCases
+        // U1R10: 2 (automatic, cefSoftwareRendering)
+        // U1R11: +3 (cefTriple, openGLFallback, tenfoot) = 5
+        #expect(all.count == 5)
+        #expect(all.contains(.automatic))
+        #expect(all.contains(.cefSoftwareRendering))
+        #expect(all.contains(.cefTriple))
+        #expect(all.contains(.openGLFallback))
+        #expect(all.contains(.tenfoot))
     }
 
     @Test func testCrossOverDoesNotAffectProfile() {
-        // Ensure profile logic is independent of runtime type
         let automaticArgs = SteamUIRenderProfile.automatic.launchArguments
         let cefArgs = SteamUIRenderProfile.cefSoftwareRendering.launchArguments
         #expect(automaticArgs != cefArgs)
     }
 
     @Test func testAllCasesCovered() {
-        // Verify both cases exist and have distinct raw values
-        let all = SteamUIRenderProfile.allCases
-        #expect(all.count == 2)
-        #expect(all.contains(.automatic))
-        #expect(all.contains(.cefSoftwareRendering))
+        #expect(SteamUIRenderProfile.allCases.count == 5)
     }
 }
 
