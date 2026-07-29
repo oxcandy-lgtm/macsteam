@@ -22,7 +22,9 @@ final class UltimateSetupCoordinator {
 
     /// U1R10: Steam UI render profile for CEF compatibility (§3).
     /// Defaults to `.automatic` — never persisted across launches.
-    var steamUIRenderProfile: SteamUIRenderProfile = .automatic {
+    /// Can be overridden at launch via `MACSTEAM_RENDER_PROFILE` env var
+    /// (value must match a `SteamUIRenderProfile` rawValue).
+    var steamUIRenderProfile: SteamUIRenderProfile {
         didSet {
             log("Steam UI profile selected: \(steamUIRenderProfile.rawValue)")
         }
@@ -95,6 +97,15 @@ final class UltimateSetupCoordinator {
     // MARK: - Init
 
     init() {
+        // Read MACSTEAM_RENDER_PROFILE env var for non-persistent profile override.
+        // didSet does not fire during init, so this is safe to set before log().
+        let env = ProcessInfo.processInfo.environment["MACSTEAM_RENDER_PROFILE"] ?? ""
+        if let profile = SteamUIRenderProfile(rawValue: env) {
+            self.steamUIRenderProfile = profile
+        } else {
+            self.steamUIRenderProfile = .automatic
+        }
+
         self.runtimeRegistry = RuntimeRegistry(commercialPolicy: .disabled)
         // Hardcoded CloverPit recipe (RecipeLoader not available in this module)
         self.recipe = GameRecipe(
