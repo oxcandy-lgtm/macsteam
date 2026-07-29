@@ -353,8 +353,8 @@ final class GameSessionSupervisor {
 
         if serverRunning {
             switch receipt.purpose {
-            case .steamSetup:
-                // SteamSetup: clean up — don't adopt
+            case .steamInstaller, .steamSetup:
+                // SteamSetup/Installer: clean up — don't adopt
                 try await wineserverController.shutdownPrefix(
                     runtime: runtimeControl,
                     prefix: prefix,

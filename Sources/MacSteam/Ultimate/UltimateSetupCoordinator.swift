@@ -33,6 +33,35 @@ final class UltimateSetupCoordinator {
     /// Guard against concurrent `createPrefix()` calls.
     var isCreatingPrefix = false
 
+    /// Guard against concurrent Steam launch.
+    var isLaunchingSteam = false
+
+    /// Independent Steam client process state.
+    var steamClientState: SteamClientState = .stopped
+
+    /// Persistent lifecycle of Steam installation in the current prefix.
+    var steamInstallLifecycle: SteamInstallLifecycle = .absent
+
+    /// Evidence about Steam installation from current disk state + lifecycle.
+    var steamInstallEvidence: SteamInstallEvidence {
+        let steamExe = prefixLayout?.root
+            .appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe")
+        let exePresent = steamExe.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        let exeSize = steamExe.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? UInt64 } ?? 0
+        return SteamInstallEvidence(
+            steamExePresent: exePresent,
+            steamExeNonEmpty: exePresent && exeSize > 0,
+            installerRunning: sessionSupervisor.activeSession?.purpose == .steamInstaller
+                && sessionSupervisor.isRunning,
+            lifecycle: steamInstallLifecycle
+        )
+    }
+
+    /// Whether Steam can be launched (convenience for UI).
+    var canLaunchSteam: Bool {
+        steamInstallEvidence.canLaunchSteam && !isLaunchingSteam
+    }
+
     // U1R6: Commercial runtime policy (persisted via AppStorage in SettingsView)
     var commercialPolicy: CommercialRuntimePolicy = .disabled {
         didSet {
@@ -137,18 +166,80 @@ final class UltimateSetupCoordinator {
         error = nil
 
         log("Inspecting system for Wine runtimes…")
+
+        // Log binary freshness
+        if let buildSHA = buildSHA {
+            log("MacsTeam build SHA: \(buildSHA)")
+        }
+        log("Runtime selection source: \(runtimeRegistry.preferredRuntimeID != nil ? "persisted" : "discovery")")
+
         let candidates = await runtimeRegistry.discover()
+
+        // Log discovered candidates
+        for c in candidates {
+            log("  Candidate: \(c.displayName) type=\(c.runtimeType.rawValue) usable=\(c.inspection?.isUsable ?? false)")
+        }
+
         guard let preferred = runtimeRegistry.selectPreferred(from: candidates)
         else {
             state = .runtimeRequired
             error = .runtimeNotFound
-            log("No Wine runtime found")
+            if runtimeRegistry.preferredRuntimeID != nil {
+                error = .runtimeInspectionFailed("Preferred runtime unavailable. Check ImportedRuntimes directory.")
+                log("Runtime unavailable: preferred runtime not found, silent fallback blocked")
+            } else {
+                log("No Wine runtime found")
+            }
             return
         }
 
         selectCandidate(preferred)
         log("Runtime selected: \(preferred.displayName) v\(preferred.inspection?.version ?? "?")")
+        log("Runtime type: \(preferred.runtimeType.rawValue)")
+        log("Runtime version: \(preferred.inspection?.version ?? "?")")
+        if let prefixID = prefixSafeID {
+            log("Prefix safe ID: \(prefixID)")
+        }
         generateInstallerID()
+    }
+
+    /// Compute build SHA for freshness proof.
+    private var buildSHA: String? {
+        guard let executable = Bundle.main.executableURL,
+              let data = try? Data(contentsOf: executable) else { return nil }
+        let hash = sha256(data)
+        return String(hash.prefix(12))
+    }
+
+    private func sha256(_ data: Data) -> String {
+        // Fallback: use shasum if CryptoKit is not imported
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("_hermes_sha_\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        guard (try? data.write(to: tempURL)) != nil else { return "unknown" }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["shasum", "-a", "256", tempURL.path]
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        try? process.run()
+        process.waitUntilExit()
+        let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return String(output.prefix(12))
+    }
+
+    /// Safe ID for the current prefix (hash, not path).
+    private var prefixSafeID: String? {
+        guard let prefix = prefixLayout?.root else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["shasum", "-a", "256", prefix.path]
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = Pipe()
+        try? process.run()
+        process.waitUntilExit()
+        let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return output.components(separatedBy: " ").first.flatMap { String($0.prefix(12)) }
     }
 
     /// Apply a selected candidate as the active runtime.
@@ -176,6 +267,39 @@ final class UltimateSetupCoordinator {
             state = .runtimeInvalid
             error = .runtimeInspectionFailed(candidate.inspection?.failures.map(\.message).joined(separator: "; ") ?? "Unknown failure")
         }
+
+        // Persist preferred runtime for next launch
+        runtimeRegistry.preferredRuntimeID = candidate.id
+        log("Runtime preference saved: \(candidate.id)")
+    }
+
+    /// Scan Prefixes/ directory for an existing prefix with Steam installed.
+    /// Returns nil if no suitable prefix found.
+    private func adoptExistingSteamPrefix() -> PrefixLayout? {
+        let prefixesDir = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/MacSteam/Prefixes")
+
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(
+            at: prefixesDir,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        ) else { return nil }
+
+        for dirURL in contents {
+            let steamExe = dirURL
+                .appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe")
+            guard fm.isExecutableFile(atPath: steamExe.path) else { continue }
+            let size = (try? fm.attributesOfItem(atPath: steamExe.path)[.size] as? UInt64) ?? 0
+            guard size > 0 else { continue }
+
+            // Found a valid Steam prefix — adopt it
+            if let layout = try? PrefixLayout(validatedRoot: dirURL) {
+                log("Found existing Steam prefix: \(dirURL.lastPathComponent)")
+                return layout
+            }
+        }
+        return nil
     }
 
     /// Step 1b: User selected a Wine runtime directory.
@@ -234,16 +358,28 @@ final class UltimateSetupCoordinator {
                 }
                 log("steam.exe NOT FOUND — proceeding with wineboot")
             } else {
-                // Create new prefix root directory (wineboot will do the rest)
-                let rootURL = prefixManager.prefixURL(for: recipe)
-                try prefixManager.createPrefix(for: recipe)
-                log("Prefix root created at: \(rootURL.path)")
-                // Construct layout from validated root (root exists, wineboot hasn't run yet)
-                let newLayout = try PrefixLayout(validatedRoot: rootURL)
-                self.prefixLayout = newLayout
-                layout = newLayout
-                log("New prefix root prepared — will initialize with wineboot")
-                log("steam.exe not present yet — running wineboot")
+                // U1R15: Scan for existing Steam prefixes before creating new ones
+                if let adopted = adoptExistingSteamPrefix() {
+                    layout = adopted
+                    self.prefixLayout = adopted
+                    log("Adopted existing prefix with Steam installation")
+                    log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
+                    if layout.signature().steamExePresent {
+                        state = .steamReady
+                        log("steam.exe FOUND in adopted prefix — advancing to Steam ready")
+                        return
+                    }
+                } else {
+                    // Create new prefix root directory (wineboot will do the rest)
+                    let rootURL = prefixManager.prefixURL(for: recipe)
+                    try prefixManager.createPrefix(for: recipe)
+                    log("Prefix root created at: \(rootURL.path)")
+                    let newLayout = try PrefixLayout(validatedRoot: rootURL)
+                    self.prefixLayout = newLayout
+                    layout = newLayout
+                    log("New prefix root prepared — will initialize with wineboot")
+                    log("steam.exe not present yet — running wineboot")
+                }
             }
             let prefixDir = layout.root
 
@@ -311,6 +447,9 @@ final class UltimateSetupCoordinator {
             let inspector = PrefixInspector()
             self.prefixInspection = inspector.inspect(url: prefixDir)
 
+            // Reconcile Steam install lifecycle from disk state
+            reconcileSteamInstallLifecycle()
+
             state = .prefixReady
         } catch let error as UltimateSetupError {
             self.error = error
@@ -363,58 +502,145 @@ final class UltimateSetupCoordinator {
     }
 
     /// Step 4: Install Windows Steam into the prefix.
+    ///
+    /// U1R15: Sets `.installing` before launch. ProcessSupervisor owns the installer.
+    /// No detached mode, no 3-second sleep. After installer exits, stops any
+    /// auto-launched Steam, then transitions to `.verifiedComplete`.
     func installSteam() async {
         state = .steamInstallationPending
         error = nil
 
         guard let installer = selectedInstaller,
               let runtime = activeRuntime,
-              let runtimeURL = runtimeURL else {
+              let runtimeURL = runtimeURL,
+              let runtimeControl = runtime as? WineRuntimeControl else {
             error = .steamInstallationFailed("No installer or runtime selected")
             state = .steamInstallerRequired
             return
         }
 
-        let wineURL: URL
-        if runtime is SystemWineRuntime {
-            wineURL = runtimeURL.appendingPathComponent("wine")
-        } else if runtime is ImportedWineRuntime {
-            wineURL = runtimeURL.appendingPathComponent("bin/wine")
-        } else {
-            error = .runtimeInspectionFailed("Unknown runtime type")
-            state = .runtimeInvalid
-            return
-        }
+        // Resolve wine executable using WineExecutableLayout
+        let layout = WineExecutableLayout.detect(from: runtimeURL)
+        let wineURL = layout.wine
+
+        // Step 1: Mark installation as in-progress BEFORE launching
+        steamInstallLifecycle = .installing
 
         do {
-            // Launch SteamSetup.exe with wine
-            let result = try await processRunner.run(
-                executable: wineURL,
+            // Step 2: Launch SteamSetup.exe through GameSessionSupervisor (steamInstaller purpose)
+            let plan = LaunchPlan(
+                runtimeExecutable: wineURL,
                 arguments: [installer.fileURL.path],
-                environment: [
-                    "WINEPREFIX": prefixLayout?.root.path ?? "",
-                    "WINEARCH": "win64",
-                    "WINEDEBUG": "-all",
-                ],
-                timeout: nil, // no timeout — user installs interactively
-                mode: .detached
+                mode: .detached,
+                environment: buildBasicEnvironment(),
+                workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
             )
 
-            // After installer completes, check for Steam installation
-            try await Task.sleep(nanoseconds: 3_000_000_000) // 3s grace
+            _ = try await sessionSupervisor.launch(
+                plan: plan,
+                runtimeControl: runtimeControl,
+                prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
+                recipeID: recipe.id,
+                runtimeID: runtimeSourceType ?? "unknown",
+                purpose: .steamInstaller
+            )
+
+            // Step 3: Wait for installer to exit (supervisor tracks it)
+            // The user interacts with SteamSetup.exe — it exits when setup completes
+            // SteamSetup.exe may auto-launch Steam after completion
+
+            // Step 4: Check for auto-launched Steam and stop it
+            try await Task.sleep(nanoseconds: 2_000_000_000) // brief grace for Steam to appear
+            try? await quarantineIncompleteSteamInstall()
+
+            // Step 5: Verify installation evidence
             let inspection = inspectSteamInstallation()
             self.steamInspection = inspection
 
             if inspection.steamInstalled {
+                steamInstallLifecycle = .verifiedComplete
                 state = .steamReady
+                log("Steam installation verified complete")
             } else {
-                // User might still be installing — stay in pending
+                steamInstallLifecycle = .installing
                 state = .steamInstallationPending
             }
         } catch {
             self.error = .steamInstallationFailed(error.localizedDescription)
+            steamInstallLifecycle = .interrupted
             state = .steamInstallerVerified
         }
+    }
+
+    /// Basic environment for Wine operations (no dependency layout needed).
+    private func buildBasicEnvironment() -> [String: String] {
+        guard let prefix = prefixLayout?.root else { return [:] }
+        return [
+            "WINEPREFIX": prefix.path,
+            "WINEARCH": "win64",
+            "WINEDEBUG": "-all",
+            "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+        ]
+    }
+
+    /// Reconcile Steam install lifecycle from disk state.
+    /// Call after prefix is configured and on app launch.
+    func reconcileSteamInstallLifecycle() {
+        guard let prefix = prefixLayout?.root else { return }
+        let fm = FileManager.default
+
+        let steamDir = prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam")
+        let steamExe = steamDir.appendingPathComponent("steam.exe")
+        let holdFile = steamDir.appendingPathComponent("steam.exe.macsteam-install-hold")
+
+        if fm.fileExists(atPath: holdFile.path) {
+            // Steam is quarantined — interrupted installation
+            steamInstallLifecycle = .interrupted
+            log("Steam installation interrupted (hold file detected)")
+        } else if fm.fileExists(atPath: steamExe.path) {
+            let attrs = try? fm.attributesOfItem(atPath: steamExe.path)
+            let size = attrs?[.size] as? UInt64 ?? 0
+            if size > 0 {
+                steamInstallLifecycle = .verifiedComplete
+                log("Steam installation verified complete (steam.exe found)")
+            }
+        } else {
+            steamInstallLifecycle = .absent
+            log("Steam not installed")
+        }
+    }
+
+    /// Verify an existing Steam installation and mark it as complete.
+    /// Called when user clicks "Verify Completed Installation".
+    func verifySteamInstallation() {
+        guard let prefix = prefixLayout?.root else { return }
+        let fm = FileManager.default
+
+        let steamDir = prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam")
+        let steamExe = steamDir.appendingPathComponent("steam.exe")
+        let holdFile = steamDir.appendingPathComponent("steam.exe.macsteam-install-hold")
+
+        // If held, restore it
+        if fm.fileExists(atPath: holdFile.path) {
+            try? fm.moveItem(at: holdFile, to: steamExe)
+            log("Restored steam.exe from quarantine")
+        }
+
+        // Verify
+        guard fm.fileExists(atPath: steamExe.path) else {
+            error = .steamInstallationFailed("steam.exe not found after restoration")
+            return
+        }
+        let attrs = try? fm.attributesOfItem(atPath: steamExe.path)
+        let size = attrs?[.size] as? UInt64 ?? 0
+        guard size > 0 else {
+            error = .steamInstallationFailed("steam.exe is empty")
+            return
+        }
+
+        steamInstallLifecycle = .verifiedComplete
+        state = .steamReady
+        log("Steam installation verified complete by user")
     }
 
     /// Re-check Steam installation status (polling).
@@ -469,11 +695,49 @@ final class UltimateSetupCoordinator {
         }
     }
 
-    /// Step 6b: Launch Windows Steam UI (no game args) for user to install CloverPit.
-    /// NX Dispatch §4 — dedicated method, never calls launchCloverPit().
+    /// Step 6b: Launch or Show Windows Steam UI (no game args).
+    ///
+    /// Idempotent: if Steam is already running, just shows the window.
+    /// If Steam is stopped, launches a new process.
     func launchWindowsSteam() async {
-        state = .launching
+        guard !isLaunchingSteam else {
+            log("Steam launch already in progress, ignoring duplicate request")
+            return
+        }
+
+        // Lifecycle guard: incomplete installation blocks launch
+        guard steamInstallLifecycle == .verifiedComplete else {
+            if steamInstallLifecycle == .installing || steamInstallLifecycle == .interrupted {
+                log("Steam installation incomplete (\(steamInstallLifecycle)), blocking launch")
+                state = .steamInstallationPending
+                error = .steamInstallationFailed(
+                    "Steam installation is incomplete. Resume or verify installation first."
+                )
+            }
+            return
+        }
+
+        isLaunchingSteam = true
+        defer { isLaunchingSteam = false }
         error = nil
+
+        // Reconcile current process state
+        await reconcileSteamClient()
+
+        // If already visible or hidden, just activate
+        switch steamClientState {
+        case .runningVisible, .runningHidden:
+            log("Steam already running, sending activation command")
+            await activateExistingSteam()
+            return
+        case .launching, .stopping:
+            log("Steam is launching/stopping, ignoring launch request")
+            return
+        case .stopped, .stale, .recoveryRequired:
+            break // proceed to launch
+        }
+
+        state = .launching
 
         guard let runtime = activeRuntime,
               let runtimeURL = runtimeURL,
@@ -484,12 +748,9 @@ final class UltimateSetupCoordinator {
             return
         }
 
-        let wineURL: URL
-        if runtime is SystemWineRuntime {
-            wineURL = runtimeURL.appendingPathComponent("wine")
-        } else {
-            wineURL = runtimeURL.appendingPathComponent("bin/wine")
-        }
+        // Resolve wine executable using WineExecutableLayout
+        let layout = WineExecutableLayout.detect(from: runtimeURL)
+        let wineURL = layout.wine
 
         let steamExe1 = prefixLayout?.root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null")
         let steamExe2 = prefixLayout?.root.appendingPathComponent("drive_c/Program Files/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null")
@@ -501,23 +762,20 @@ final class UltimateSetupCoordinator {
             return
         }
 
-        log("Launching Windows Steam via System Wine (no game args)…")
+        log("Launching Windows Steam (idempotent)…")
+        steamClientState = .launching
 
         do {
+            // Build safe environment with DYLD_LIBRARY_PATH etc.
+            let environment = buildWineEnvironment()
+
             let plan = LaunchPlan(
                 runtimeExecutable: wineURL,
                 arguments: [steamExe.path] + steamUIRenderProfile.launchArguments,
                 mode: .detached,
-                environment: [
-                    "WINEPREFIX": prefixLayout?.root.path ?? "",
-                    "WINEARCH": "win64",
-                    "WINEDEBUG": "-all",
-                ],
+                environment: environment,
                 workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
             )
-
-            log("Windows Steam session started: purpose=steamClient, profile=\(steamUIRenderProfile.rawValue)")
-            state = .steamInstallationPending
 
             let _ = try await sessionSupervisor.launch(
                 plan: plan,
@@ -527,10 +785,158 @@ final class UltimateSetupCoordinator {
                 runtimeID: runtimeSourceType ?? "unknown",
                 purpose: .steamSetup
             )
+
+            log("Windows Steam session started: purpose=steamSetup, profile=\\(steamUIRenderProfile.rawValue)")
+            steamClientState = .runningVisible
+            state = .steamInstallationPending
         } catch {
             self.error = .launchFailed(error.localizedDescription)
+            steamClientState = .stopped
             state = .steamReady
         }
+    }
+
+    /// Build safe Wine environment using WineLaunchEnvironmentBuilder.
+    private func buildWineEnvironment() -> [String: String] {
+        guard let runtimeURL = runtimeURL,
+              let prefix = prefixLayout?.root else {
+            return buildBasicEnvironment()
+        }
+
+        // Try RuntimeDependencyLayout first for DYLD_LIBRARY_PATH
+        if let depLayout = RuntimeDependencyLayout(runtimePath: runtimeURL.path) {
+            let libDir = depLayout.libDirectory()
+            let fm = FileManager.default
+            if fm.fileExists(atPath: libDir.path) {
+                // Builder may fail due to PathBoundary; try direct env construction
+                var env = buildBasicEnvironment()
+                env["DYLD_LIBRARY_PATH"] = libDir.path
+                let fcDir = depLayout.fontconfigDirectory()
+                if fm.fileExists(atPath: fcDir.path) {
+                    env["FONTCONFIG_PATH"] = fcDir.path
+                }
+                return env
+            }
+        }
+
+        log("Warning: RuntimeDependencyLayout unavailable, using basic environment")
+        return buildBasicEnvironment()
+    }
+
+    /// Activate an already-running Steam window (no new process).
+    private func activateExistingSteam() async {
+        guard let runtime = activeRuntime,
+              let runtimeURL = runtimeURL else { return }
+
+        let layout = WineExecutableLayout.detect(from: runtimeURL)
+        let wineURL = layout.wine
+
+        // Run steam://open/main via wine as a short-lived control command
+        do {
+            let environment = buildWineEnvironment()
+            _ = try await processRunner.run(
+                executable: wineURL,
+                arguments: ["steam://open/main"],
+                environment: environment,
+                workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
+                mode: .detached
+            )
+            log("Steam activation command sent (steam://open/main)")
+        } catch {
+            log("Activation command failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Reconcile steamClientState with actual process state.
+    func reconcileSteamClient() async {
+        guard let runtimeURL = runtimeURL,
+              let prefix = prefixLayout?.root else {
+            steamClientState = .stopped
+            return
+        }
+
+        let layout = WineExecutableLayout.detect(from: runtimeURL)
+        let tasklistURL = layout.wine
+
+        // Check steam.exe presence via Wine's tasklist
+        do {
+            let environment = buildWineEnvironment()
+            let result = try await processRunner.run(
+                executable: tasklistURL,
+                arguments: ["tasklist", "/FO", "CSV"],
+                environment: environment,
+                workingDirectory: prefix,
+                mode: .waitForExit
+            )
+            let output = result.stdout
+            let hasSteam = output.contains("steam.exe")
+            let hasHelper = output.contains("steamwebhelper.exe")
+
+            if hasSteam {
+                steamClientState = .runningHidden // assume hidden until proven visible
+            } else if hasHelper {
+                steamClientState = .stale
+            } else {
+                steamClientState = .stopped
+            }
+        } catch {
+            log("Reconcile failed: \(error.localizedDescription)")
+            steamClientState = .stopped
+        }
+    }
+
+    /// Quarantine incomplete Steam installation — stop all Steam processes in prefix.
+    /// Does NOT delete Steam files or prefix. Only stops processes and blocks launch paths.
+    func quarantineIncompleteSteamInstall() async throws {
+        guard let runtimeURL = runtimeURL,
+              let prefix = prefixLayout?.root else { return }
+
+        let layout = WineExecutableLayout.detect(from: runtimeURL)
+        let wineURL = layout.wine
+        let serverURL = layout.wineserver
+
+        // Kill Steam processes via taskkill (prefix-specific, no pkill/killall)
+        for process in ["SteamSetup.exe", "steam.exe", "steamwebhelper.exe", "steamservice.exe"] {
+            try? await processRunner.run(
+                executable: wineURL,
+                arguments: ["taskkill", "/F", "/IM", process],
+                environment: [
+                    "WINEPREFIX": prefix.path,
+                    "WINEARCH": "win64",
+                    "WINEDEBUG": "-all",
+                ],
+                workingDirectory: prefix,
+                mode: .detached
+            )
+        }
+
+        // Prefix-specific wineserver shutdown
+        try? await processRunner.run(
+            executable: serverURL,
+            arguments: ["-k"],
+            environment: [
+                "WINEPREFIX": prefix.path,
+                "WINEARCH": "win64",
+                "WINEDEBUG": "-all",
+            ],
+            workingDirectory: prefix,
+            mode: .detached
+        )
+        try? await processRunner.run(
+            executable: serverURL,
+            arguments: ["-w"],
+            environment: [
+                "WINEPREFIX": prefix.path,
+                "WINEARCH": "win64",
+                "WINEDEBUG": "-all",
+            ],
+            workingDirectory: prefix,
+            timeout: 10,
+            mode: .waitForExit
+        )
+
+        steamClientState = .stopped
+        log("Incomplete Steam installation quarantined")
     }
 
     /// Step 6: Launch CloverPit through Windows Steam via GameSessionSupervisor.
@@ -609,8 +1015,24 @@ final class UltimateSetupCoordinator {
     }
 
     /// Stop the active game session.
-    func stopSession() async {
-        try? await sessionSupervisor.stop()
+    /// Returns true if stopped or no session; false if stop failed.
+    @discardableResult
+    func stopSession() async -> Bool {
+        guard sessionSupervisorIsRunning else { return true }
+        do {
+            try await sessionSupervisor.stop()
+            await completeStopCleanup()
+            return true
+        } catch {
+            self.error = .launchFailed(error.localizedDescription)
+            return false
+        }
+    }
+
+    /// Cleanup after successful stop.
+    private func completeStopCleanup() {
+        steamClientState = .stopped
+        isLaunchingSteam = false
     }
 
     /// Whether a Steam setup session is active.
@@ -633,9 +1055,18 @@ final class UltimateSetupCoordinator {
     }
 
     /// Stop steam setup session if active (for back/next/close transitions).
-    func stopSteamSetupSessionIfNeeded() async throws {
-        guard hasActiveSteamSetupSession else { return }
-        try await sessionSupervisor.stop()
+    /// Returns true if stopped or no session; false if stop failed (caller should stay on screen).
+    func stopSteamSetupSessionIfNeeded() async -> Bool {
+        guard hasActiveSteamSetupSession else { return true }
+        do {
+            try await sessionSupervisor.stop()
+            await completeStopCleanup()
+            return true
+        } catch {
+            log("Failed to stop Steam setup session: \\(error.localizedDescription)")
+            self.error = .launchFailed(error.localizedDescription)
+            return false
+        }
     }
 
     // MARK: - Session supervisor proxy

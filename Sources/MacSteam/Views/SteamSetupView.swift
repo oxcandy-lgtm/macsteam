@@ -92,11 +92,15 @@ struct SteamSetupView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Installation status (interrupted/installing)
+            steamInstallStatusView
+
             HStack(spacing: 12) {
-                Button("Open Windows Steam") {
+                Button(steamButtonLabel) {
                     Task { await coordinator.launchWindowsSteam() }
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(isSteamButtonDisabled)
 
                 Button("Re-check") {
                     isWorking = true
@@ -184,15 +188,22 @@ struct SteamSetupView: View {
                     .controlSize(.small)
 
                     Button("Stop Steam") {
-                        Task { await coordinator.stopSession() }
+                        Task {
+                            let stopped = await coordinator.stopSession()
+                            if stopped {
+                                coordinator.state = .steamReady
+                            }
+                        }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
                     Button("Back") {
                         Task {
-                            try? await coordinator.stopSteamSetupSessionIfNeeded()
-                            coordinator.state = .prefixReady
+                            let stopped = await coordinator.stopSteamSetupSessionIfNeeded()
+                            if stopped {
+                                coordinator.state = .prefixReady
+                            }
                         }
                     }
                     .buttonStyle(.bordered)
@@ -383,6 +394,59 @@ struct SteamSetupView: View {
 }
 
 // MARK: - Step UI state
+
+// MARK: - Steam button state
+
+private extension SteamSetupView {
+    var steamButtonLabel: String {
+        switch coordinator.steamClientState {
+        case .runningVisible, .runningHidden: "Show Windows Steam"
+        case .launching: "Launching…"
+        case .stopping: "Stopping…"
+        case .stopped, .stale, .recoveryRequired: "Open Windows Steam"
+        }
+    }
+
+    var isSteamButtonDisabled: Bool {
+        switch coordinator.steamClientState {
+        case .launching, .stopping: true
+        case .runningVisible, .runningHidden: false
+        case .stopped, .stale, .recoveryRequired: coordinator.isLaunchingSteam
+        }
+    }
+
+    @ViewBuilder
+    var steamInstallStatusView: some View {
+        switch coordinator.steamInstallLifecycle {
+        case .interrupted:
+            VStack(spacing: 8) {
+                Label("Steam installation was interrupted", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                HStack(spacing: 12) {
+                    Button("Resume Installation") {
+                        Task { await coordinator.installSteam() }
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Verify Completed Installation") {
+                        coordinator.verifySteamInstallation()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(.vertical, 8)
+        case .installing:
+            HStack {
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text("Installing Steam…")
+                    .foregroundStyle(.secondary)
+            }
+        default:
+            EmptyView()
+        }
+    }
+}
 
 private enum StepUIState {
     case pending

@@ -39,7 +39,8 @@ enum SafeProcessEnvironment {
     static let allowlistedKeys: Set<String> = [
         "HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG",
         "LC_ALL", "LC_MESSAGES", "LC_CTYPE",
-        "WINEPREFIX", "WINEARCH", "WINEDEBUG",
+        "WINEPREFIX", "WINEARCH", "WINEDEBUG", "WINEDLLOVERRIDES",
+        "DYLD_LIBRARY_PATH", "FONTCONFIG_PATH",
         "DISPLAY", "WAYLAND_DISPLAY",
         "DXVK_HUD", "DXVK_STATE_CACHE",
         "STAGING_SHARED_MEMORY",

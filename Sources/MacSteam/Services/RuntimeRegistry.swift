@@ -79,8 +79,20 @@ final class RuntimeRegistry {
     private let fm = FileManager.default
     var commercialPolicy: CommercialRuntimePolicy
 
-    init(commercialPolicy: CommercialRuntimePolicy = .disabled) {
+    /// Persisted preferred runtime ID (set after user selection).
+    /// On startup, this runtime is restored first before fallback discovery.
+    var preferredRuntimeID: String?
+
+    /// U1 period: exclude System Wine from Steam launch/runtime selection.
+    /// Set to true until WineCX10 is the default.
+    var excludeSystemWine: Bool
+
+    init(commercialPolicy: CommercialRuntimePolicy = .disabled,
+         preferredRuntimeID: String? = nil,
+         excludeSystemWine: Bool = true) {
         self.commercialPolicy = commercialPolicy
+        self.preferredRuntimeID = preferredRuntimeID
+        self.excludeSystemWine = excludeSystemWine
     }
 
     // MARK: - Discovery
@@ -139,7 +151,22 @@ final class RuntimeRegistry {
             pool = pool.filter { $0.runtimeType.isOpenSource }
         }
 
+        // U1 period: exclude System Wine (confirmed CEF black screen)
+        if excludeSystemWine {
+            pool = pool.filter { $0.runtimeType != .systemWine }
+        }
+
         let usable = pool.filter { $0.inspection?.isUsable == true }
+
+        // If preferredRuntimeID is set and found, return it
+        if let preferredID = preferredRuntimeID {
+            if let preferred = usable.first(where: { $0.id == preferredID }) {
+                return preferred
+            }
+            // Preferred runtime not found — don't silently fallback
+            return nil
+        }
+
         return usable.min { $0.runtimeType < $1.runtimeType }
     }
 
