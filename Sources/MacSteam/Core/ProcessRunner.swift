@@ -249,7 +249,7 @@ private final class OwnedProcessTermination: @unchecked Sendable {
         // Schedule SIGKILL escalation
         let killWork = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard kill(pid, 0) == 0 else { return }
+            // Check if process is still alive via identity provider
             guard let ver = try? identityProvider.identity(forPID: pid), ver == launchedIdentity else { return }
             _ = signalSender.sendSignal(SIGKILL, to: pid)
         }
