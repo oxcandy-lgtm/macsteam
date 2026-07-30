@@ -55,6 +55,14 @@ check "try? in Processes/Installer" 'try\?' Sources/MacSteam/Processes Sources/M
 check "Navigation TODOs" 'TODO:.*navigate|TODO:.*advance|TODO:.*dismiss' Sources/MacSteam/Views
 check "Fake timers in Views" 'asyncAfter' Sources/MacSteam/Views
 
+# ProcessRunner production guards (zero tolerance)
+check "readToEnd in ProcessRunner" 'readToEnd\\(' Sources/MacSteam/Core/ProcessRunner.swift
+check "waitUntilExit in ProcessRunner" 'waitUntilExit\\(' Sources/MacSteam/Core/ProcessRunner.swift
+check "ThreadSafeData in ProcessRunner" 'ThreadSafeData' Sources/MacSteam/Core/ProcessRunner.swift
+check "startTimeSeconds: 0 fallback" 'startTimeSeconds: 0' Sources/MacSteam/Core/ProcessRunner.swift
+check "try? identityProvider" 'try\\? identityProvider' Sources/MacSteam/Core/ProcessRunner.swift
+check "try? in ProcessRunner" 'try\\? .*read' Sources/MacSteam/Core/ProcessRunner.swift
+
 # coordinator.state = detection (Python scanner, distinguishes assignment from comparison)
 echo -n "coordinator.state assignment in Views... "
 PYTHON_OUTPUT=$(python3 "$DIR/scripts/u1r16_static_audit.py" 2>&1) || true
