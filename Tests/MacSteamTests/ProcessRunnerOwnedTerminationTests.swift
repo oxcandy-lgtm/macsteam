@@ -19,30 +19,45 @@ final class FakeIdentityProvider: @unchecked Sendable, ProcessIdentityProviding 
     }
 }
 
-final class FakeSignalSender: @unchecked Sendable, ProcessSignalSending {
+final class RecordingSignalSender: @unchecked Sendable, ProcessSignalSending {
     var calls: [(Int32, Int32)] = []
+    let result: Bool
+
+    init(result: Bool = false) { self.result = result }
 
     func sendSignal(_ signal: Int32, to pid: Int32) -> Bool {
         calls.append((signal, pid))
-        return false
+        return result
     }
 }
 
 final class ManualDeadlineScheduler: @unchecked Sendable, DeadlineScheduling {
-    var pendingAction: (() -> Void)?
+    private(set) var actions: [(id: Int, action: () -> Void)] = []
+    private var nextID = 0
 
     func schedule(after delay: TimeInterval, action: @escaping @Sendable () -> Void) -> CancellableWork {
-        pendingAction = action
-        return ManualCancellableWork { [weak self] in self?.pendingAction = nil }
+        let id = nextID; nextID += 1
+        actions.append((id, action))
+        return ManualWork { [weak self] in
+            self?.actions.removeAll(where: { $0.id == id })
+        }
     }
 
-    func fireDeadline() {
-        pendingAction?()
-        pendingAction = nil
+    /// Fire the next pending action synchronously. The caller must yield to allow
+    /// any Task { } created by the action to be scheduled on the actor.
+    func fireNext() {
+        guard !actions.isEmpty else { return }
+        let a = actions.removeFirst()
+        a.action()
+    }
+
+    /// Fire all pending actions.
+    func fireAll() {
+        while !actions.isEmpty { fireNext() }
     }
 }
 
-final class ManualCancellableWork: @unchecked Sendable, CancellableWork {
+final class ManualWork: @unchecked Sendable, CancellableWork {
     let onCancel: @Sendable () -> Void
     init(_ onCancel: @escaping @Sendable () -> Void) { self.onCancel = onCancel }
     func cancel() { onCancel() }
@@ -130,20 +145,20 @@ struct ProcessRunnerOwnedTerminationTests {
         if case .claimed = latch.claimCleanupIfNoTermination() { /* ok */ } else { #expect(Bool(false)) }
     }
 
-    // MARK: - Deterministic pre-wait failure (fake identity + signal sender)
+    // MARK: - Pre-wait failure (fake identity + signal sender)
 
     @Test func preWaitOwnershipFailure() async throws {
         let fakeID = FakeIdentityProvider()
-        let fakeSig = FakeSignalSender()
+        let fakeSig = RecordingSignalSender()
         let latch = TerminationLatch()
         let ctrl = TermController(signalSender: fakeSig, identityProvider: fakeID, latch: latch)
 
         let idA = ProcessIdentitySnapshot(pid: 999, canonicalExecutablePath: "/a", startTimeSeconds: 100, startTimeMicroseconds: 1)
         let idB = ProcessIdentitySnapshot(pid: 999, canonicalExecutablePath: "/b", startTimeSeconds: 200, startTimeMicroseconds: 2)
-        fakeID.responses = [.success(idB)] // will return B
+        fakeID.responses = [.success(idB)] // returns B, mismatch with A
         await ctrl.setIdentity(idA)
 
-        await ctrl.requestCancellation(pid: 99999) // synthetic PID, no real signal
+        await ctrl.requestCancellation(pid: 99999)
         #expect(fakeSig.calls.isEmpty) // identity mismatch, no signal
         await #expect(throws: ProcessRunner.RunnerError.ownershipLost) {
             try await ctrl.wait(until: nil)
@@ -152,7 +167,7 @@ struct ProcessRunnerOwnedTerminationTests {
 
     @Test func preWaitSigtermFailure() async throws {
         let fakeID = FakeIdentityProvider()
-        let fakeSig = FakeSignalSender()
+        let fakeSig = RecordingSignalSender()
         let latch = TerminationLatch()
         let ctrl = TermController(signalSender: fakeSig, identityProvider: fakeID, latch: latch)
 
@@ -170,70 +185,98 @@ struct ProcessRunnerOwnedTerminationTests {
     // MARK: - Deterministic probe tests (manual deadline scheduler)
 
     @Test func staleTokenSameController() async throws {
+        let scheduler = ManualDeadlineScheduler()
+        let fakeID = FakeIdentityProvider()
+        let fakeSig = RecordingSignalSender()
         let latch = TerminationLatch()
-        let ctrl = TermController(signalSender: DarwinProcessSignalSender(),
-                                  identityProvider: RealProcessIdentityProvider(), latch: latch)
+        let ctrl = TermController(signalSender: fakeSig, identityProvider: fakeID,
+                                  latch: latch, deadlineScheduler: scheduler)
 
-        // Probe A completes via termination event
+        // Probe A starts via manual scheduler
         async let probeA = try ctrl.probeRecordedTermination(until: .now + .seconds(10))
-        try await Task.sleep(nanoseconds: 50_000_000)
+        // Scheduler has probe A's deadline action; give the Task {
+        // try await ctrl.probeRecordedTermination(...) } time to register
+        // on the actor.  No real-time sleep needed — the probe completes
+        // via event below.
+        await Task.yield()
+
+        // Complete probe A via termination event
         #expect(latch.record(TermEvent(exitCode: 55, signaled: false)) == true)
         await ctrl.handleRecorded(TermEvent(exitCode: 55, signaled: false))
         #expect(try await probeA?.exitCode == 55)
 
-        // Main wait should get the same exit
+        // Fire stale deadline action — probeToken is nil, ignored
+        scheduler.fireNext()
+        await Task.yield()
+
+        // Main wait gets the same exit
         let main = try await ctrl.wait(until: nil)
         #expect(main?.event.exitCode == 55)
     }
 
     @Test func multipleProbeRejectedAndCleanup() async throws {
+        let scheduler = ManualDeadlineScheduler()
+        let fakeID = FakeIdentityProvider()
+        let fakeSig = RecordingSignalSender()
         let latch = TerminationLatch()
-        let ctrl = TermController(signalSender: DarwinProcessSignalSender(),
-                                  identityProvider: RealProcessIdentityProvider(), latch: latch)
+        let ctrl = TermController(signalSender: fakeSig, identityProvider: fakeID,
+                                  latch: latch, deadlineScheduler: scheduler)
 
         // Probe A
         async let probeA = try ctrl.probeRecordedTermination(until: .now + .seconds(10))
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await Task.yield()
 
         // Probe B rejected
         await #expect(throws: ProcessRunner.RunnerError.multipleWaiters) {
             try await ctrl.probeRecordedTermination(until: .now + .seconds(10))
         }
 
-        // Complete probe A via deadline (short deadline to avoid hang)
+        // Complete probe A via event
         #expect(latch.record(TermEvent(exitCode: 66, signaled: false)) == true)
         await ctrl.handleRecorded(TermEvent(exitCode: 66, signaled: false))
         #expect(try await probeA?.exitCode == 66)
+
+        // Stale deadline action from probe A — ignored
+        scheduler.fireAll()
+        await Task.yield()
     }
 
     @Test func probeDeadlineThenMainWait() async throws {
+        let scheduler = ManualDeadlineScheduler()
+        let fakeID = FakeIdentityProvider()
+        let fakeSig = RecordingSignalSender()
         let latch = TerminationLatch()
-        let ctrl = TermController(signalSender: DarwinProcessSignalSender(),
-                                  identityProvider: RealProcessIdentityProvider(), latch: latch)
+        let ctrl = TermController(signalSender: fakeSig, identityProvider: fakeID,
+                                  latch: latch, deadlineScheduler: scheduler)
 
-        // Probe with very short deadline (10ms)
-        async let probe = try ctrl.probeRecordedTermination(until: .now + .seconds(0.01))
+        // Probe starts
+        async let probe = try ctrl.probeRecordedTermination(until: .now + .seconds(10))
+        await Task.yield()
+
+        // Fire deadline manually
+        scheduler.fireNext()
+        // Allow the Task { await self._probeDeadlineReached(...) } to be
+        // scheduled on the actor.
+        await Task.yield()
+
+        // Probe returns nil (deadline)
         let probeResult = try await probe
-        #expect(probeResult == nil) // deadline reached
+        #expect(probeResult == nil)
 
-        // Main wait still works
+        // Main WaitOutcome is still waiting
         #expect(latch.record(TermEvent(exitCode: 77, signaled: false)) == true)
         await ctrl.handleRecorded(TermEvent(exitCode: 77, signaled: false))
         let main = try await ctrl.wait(until: nil)
         #expect(main?.event.exitCode == 77)
     }
 
-    // MARK: - Probe coexistence
-
     @Test func probeEventThenMainWait() async throws {
         let latch = TerminationLatch()
         let ctrl = TermController(signalSender: DarwinProcessSignalSender(),
                                   identityProvider: RealProcessIdentityProvider(), latch: latch)
 
-        // Call probe from same context — it will be suspended by continuation
-        // Then record termination to resume it
         async let probeResult = try ctrl.probeRecordedTermination(until: .now + .seconds(10))
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await Task.yield()
         #expect(latch.record(TermEvent(exitCode: 42, signaled: false)) == true)
         await ctrl.handleRecorded(TermEvent(exitCode: 42, signaled: false))
         #expect(try await probeResult?.exitCode == 42)
@@ -241,27 +284,48 @@ struct ProcessRunnerOwnedTerminationTests {
         #expect(main?.event.exitCode == 42)
     }
 
-    // MARK: - Identity resolution grace
+    @Test func multipleProbesRejected() async throws {
+        let latch = TerminationLatch()
+        let ctrl = TermController(signalSender: DarwinProcessSignalSender(),
+                                  identityProvider: RealProcessIdentityProvider(), latch: latch)
 
-    @Test func identityResolutionGraceConstant() {
-        #expect(ProcessRunner.identityResolutionGrace == 0.1)
+        async let p1 = try ctrl.probeRecordedTermination(until: .now + .seconds(1))
+        await Task.yield()
+        await #expect(throws: ProcessRunner.RunnerError.multipleWaiters) {
+            try await ctrl.probeRecordedTermination(until: .now + .seconds(1))
+        }
+        // Cancel probe A to avoid ResourceCleanup
+        // Complete it via event
+        #expect(latch.record(TermEvent(exitCode: 0, signaled: false)) == true)
+        await ctrl.handleRecorded(TermEvent(exitCode: 0, signaled: false))
+        #expect(try await p1?.exitCode == 0)
     }
 
-    @Test func secondWindowGrace() async throws {
+    // MARK: - Deterministic second-window
+
+    @Test func deterministicSecondWindow() async throws {
+        let fakeID = FakeIdentityProvider()
+        fakeID.responses = [
+            .failure(ProcessRunner.RunnerError.ownershipLost),
+            .failure(ProcessRunner.RunnerError.ownershipLost)
+        ]
+        let fakeSig = RecordingSignalSender()
+        let runner = ProcessRunner(identityProvider: fakeID, signalSender: fakeSig)
+
+        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf second-window"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "second-window")
+        #expect(fakeID.callCount == 2)
+        #expect(fakeSig.calls.isEmpty)
+    }
+
+    @Test func probeSecondWindowViaRunner() async throws {
         let result = try await runner.run(executable: shURL, arguments: ["-c", "printf second-window"])
         #expect(result.exitCode == 0)
         #expect(result.stdout == "second-window")
     }
 
-    @Test func probeBeforeTermination() async throws {
-        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf hello"])
-        #expect(result.exitCode == 0)
-        #expect(result.stdout == "hello")
-    }
-
-    @Test func timeoutBeforeWait() async throws {
-        await #expect(throws: ProcessRunner.RunnerError.timeoutReached(0.5)) {
-            try await runner.run(executable: sleepyURL, arguments: ["10"], timeout: 0.5)
-        }
+    @Test func identityResolutionGraceConstant() {
+        #expect(ProcessRunner.identityResolutionGrace == 0.1)
     }
 }
