@@ -62,10 +62,10 @@ jobs:
         run: python3 scripts/validate-recipes.py
       - name: Run public audit
         run: bash scripts/public-audit.sh
-      - name: U1R16 lifecycle audit
-        run: bash scripts/u1r16-static-audit.sh
       - name: Test U1R16 audit
         run: bash scripts/test-u1r16-static-audit.sh
+      - name: U1R16 lifecycle audit
+        run: bash scripts/u1r16-static-audit.sh
 
   license-validation:
     name: License Validation

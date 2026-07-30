@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Foundation
+import Darwin.sys.proc
+
+// MARK: - Process identity
+
+/// Snapshot of a running process identity for ownership verification.
+struct ProcessIdentitySnapshot: Sendable, Equatable {
+    let pid: Int32
+    let executablePath: String
+    let startTimeSeconds: UInt64
+    let startTimeMicroseconds: UInt64
+}
+
+protocol ProcessIdentityProviding: Sendable {
+    func identity(forPID pid: Int32) throws -> ProcessIdentitySnapshot
+}
 
 /// Safe process execution with no shell involvement.
 actor ProcessRunner {
