@@ -74,7 +74,7 @@ actor ProcessRunner {
         ]
         if let wd = workingDirectory { process.currentDirectoryURL = wd }
 
-        // Detached mode: null device immediately, no pipes
+        // Detached mode: null device, no pipes
         if case .detached = mode {
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
@@ -82,16 +82,18 @@ actor ProcessRunner {
             return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
         }
 
-        // Discard: null device, but still goes through common lifecycle
+        // Discard or bounded capture — but both go through common lifecycle for timeout/cancellation
         let isDiscard: Bool
         let maxBytes: Int
-        var stdoutPipe: Pipe?
-        var stderrPipe: Pipe?
+        let stdoutPipe: Pipe?
+        let stderrPipe: Pipe?
 
         switch outputPolicy {
         case .discard:
             isDiscard = true
             maxBytes = 0
+            stdoutPipe = nil
+            stderrPipe = nil
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
         case .boundedCapture(let bytes):
@@ -108,14 +110,14 @@ actor ProcessRunner {
         try process.run()
         let pid = process.processIdentifier
 
-        // Close parent write-ends so EOF works (only for pipe mode)
+        // Close parent write-ends so EOF works
         stdoutPipe?.fileHandleForWriting.closeFile()
         stderrPipe?.fileHandleForWriting.closeFile()
 
-        // First-writer-wins termination intent
+        // Termination intent (first-writer-wins)
         let termIntent = TerminationIntent()
 
-        // GCD-based pipe readers (only for bounded capture)
+        // Bounded pipe readers using readToEnd on GCD (blocks GCD thread, not Swift concurrency)
         let stdoutResult = ThreadSafeData()
         let stderrResult = ThreadSafeData()
 
@@ -129,7 +131,6 @@ actor ProcessRunner {
                 stderrResult.value = d.prefix(maxBytes)
             }
         } else {
-            // Mark as done immediately for discard mode
             stdoutResult.value = Data()
             stderrResult.value = Data()
         }
@@ -156,26 +157,24 @@ actor ProcessRunner {
             }
 
             timeoutWork?.cancel()
-
-            // Poll briefly for pipe readers to finish
-            if !isDiscard {
-                let pollStart = DispatchTime.now()
-                while stdoutResult.value == nil || stderrResult.value == nil {
-                    if DispatchTime.now() > pollStart + .seconds(5) { break }
-                    try? await Task.sleep(for: .milliseconds(5))
-                }
-            }
-
             let cause = termIntent.current
 
             if cause == .cancellation {
                 throw RunnerError.cancelled
             }
 
-            let outData = stdoutResult.value ?? Data()
-            let errData = stderrResult.value ?? Data()
-            let stdout = String(data: outData, encoding: .utf8) ?? ""
-            let stderr = String(data: errData, encoding: .utf8) ?? ""
+            // Collect bounded output (poll for GCD readers to finish)
+            let pollStart = DispatchTime.now()
+            while stdoutResult.value == nil || stderrResult.value == nil {
+                if DispatchTime.now() > pollStart + .seconds(5) { break }
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+
+            let stdoutData = stdoutResult.value ?? Data()
+            let stderrData = stderrResult.value ?? Data()
+
+            let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
 
             if case .timeout = cause {
                 throw RunnerError.timeoutReached(timeout ?? 0)
@@ -199,6 +198,8 @@ actor ProcessRunner {
     }
 }
 
+
+
 // MARK: - First-writer-wins termination intent
 
 private final class TerminationIntent: @unchecked Sendable {
@@ -207,7 +208,6 @@ private final class TerminationIntent: @unchecked Sendable {
 
     var current: ProcessRunner.RequestedTermination { lock.withLock { _value } }
 
-    /// Attempt to set termination intent. Checks process is running.
     func request(_ new: ProcessRunner.RequestedTermination, process: Process? = nil) -> Bool {
         lock.withLock {
             guard _value == .none else { return false }

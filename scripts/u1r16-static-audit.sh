@@ -18,7 +18,6 @@ check() {
 
     local result_file
     result_file="$(mktemp "${TMPDIR:-/tmp}/macsteam-audit.XXXXXX")"
-    trap 'rm -f "$result_file"' RETURN
 
     set +e
     git grep -n -E -- "$pattern" -- "$@" >"$result_file" 2>&1
@@ -40,6 +39,8 @@ check() {
             exit 2
             ;;
     esac
+
+    rm -f "$result_file"
 }
 
 echo "=== U1R16-R1F8 Static Audit ==="
@@ -51,7 +52,7 @@ check "quarantineIncompleteSteamInstall" 'quarantineIncompleteSteamInstall' Sour
 check ".dropFirst( in WineControlLane" '\.dropFirst\(' Sources/MacSteam/Processes/WineControlLane.swift
 check "mode: .detached in Installer/Ultimate" 'mode: \.detached' Sources/MacSteam/Ultimate Sources/MacSteam/Installer
 check "try? in Processes/Installer" 'try\?' Sources/MacSteam/Processes Sources/MacSteam/Installer
-check "coordinator.state = in Views" 'coordinator\.state\s*=' Sources/MacSteam/Views
+check "coordinator.state = in Views" 'coordinator[.]state[[:space:]]*=' Sources/MacSteam/Views
 check "Navigation TODOs" 'TODO:.*navigate|TODO:.*advance|TODO:.*dismiss' Sources/MacSteam/Views
 check "Fake timers in Views" 'asyncAfter' Sources/MacSteam/Views
 
