@@ -101,8 +101,7 @@ with open('Sources/MacSteam/Processes/WineControlLane.swift') as f:
 # Find wineserverProbe function body
 m = re.search(r'func wineserverProbe\(.*?\{', content)
 if not m:
-    print('OK')
-    sys.exit(0)
+    sys.exit(1)
 start = m.end()
 depth = 1; i = start
 while depth > 0 and i < len(content):

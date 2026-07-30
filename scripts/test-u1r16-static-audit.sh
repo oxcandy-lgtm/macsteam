@@ -133,7 +133,12 @@ cd "$SCRIPT_DIR/.."
 mk_repo "cleanup_clean"
 add_file "cleanup_clean" "Sources/MacSteam/Installer/InstallerSupervisor.swift" 'true'
 add_file "cleanup_clean" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" 'func foo() -> Bool { return true }'
-add_file "cleanup_clean" "Sources/MacSteam/Processes/WineControlLane.swift" 'func bar() {}'
+add_file "cleanup_clean" "Sources/MacSteam/Processes/WineControlLane.swift" '
+func wineserverProbe(wineserverURL: URL, prefixURL: URL) async throws -> Bool {
+    let result = try await ProcessRunner().run(executable: wineserverURL, arguments: ["-p"], environment: ["WINEPREFIX": prefixURL.path], timeout: 5)
+    guard result.exitCode == 0 else { throw WineControlError.wineserverFailed(exitCode: result.exitCode) }
+    return !result.stdout.isEmpty
+}'
 run_audit_cleanup "cleanup_clean" "clean cleanup fixture" 0
 
 mk_repo "cleanup_tryopt"
@@ -182,6 +187,13 @@ func wineserverProbe(wineserverURL: URL, prefixURL: URL) async throws -> Bool {
     return !result.stdout.isEmpty
 }'
 run_audit_cleanup "cleanup_probe_clean" "probe exitCode guarded fixture" 0
+
+# Test: cleanup_probe_missing — wineserverProbe function absent (violation expected)
+mk_repo "cleanup_probe_missing"
+add_file "cleanup_probe_missing" "Sources/MacSteam/Processes/WineControlLane.swift" 'func unrelated() -> Bool { return true }'
+add_file "cleanup_probe_missing" "Sources/MacSteam/Installer/InstallerSupervisor.swift" ''
+add_file "cleanup_probe_missing" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" ''
+run_audit_cleanup "cleanup_probe_missing" "wineserverProbe missing fixture" 1
 
 # Test: cleanup_directpr — direct ProcessRunner() use in PrefixProcessTerminator (violation expected)
 mk_repo "cleanup_directpr"

@@ -940,7 +940,9 @@ struct PrefixProcessTerminatorTests {
         let result = await terminator.terminate(runtimeURL: fakeRuntime, prefixURL: fakePrefix)
         #expect(result != .clean)
         if case .incomplete(let reason) = result {
-            #expect(reason.contains("remaining") || reason.contains("Remaining"))
+            #expect(reason.contains("tracked process images"))
+        } else {
+            Issue.record("Expected .incomplete")
         }
     }
 }
