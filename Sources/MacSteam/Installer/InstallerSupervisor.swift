@@ -395,3 +395,20 @@ protocol ProcessSupervising: Sendable {
 }
 
 extension ProcessSupervisor: ProcessSupervising {}
+
+// MARK: - InstallerLifecycleSupervising
+
+/// Injectable protocol for installer lifecycle management, allowing
+/// ``InstallerSupervisor`` to expose installation lifecycle operations.
+protocol InstallerLifecycleSupervising: Sendable {
+    func snapshot() async -> InstallerOperation?
+    func stopAndClean() async throws
+    func stopKnownPrefixProcesses(
+        wineExecutable: URL,
+        wineserverURL: URL,
+        prefixURL: URL,
+        runtimeURL: URL
+    ) async throws
+}
+
+extension InstallerSupervisor: InstallerLifecycleSupervising {}

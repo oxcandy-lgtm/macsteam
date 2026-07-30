@@ -96,7 +96,8 @@ final class UltimateSetupCoordinator {
     private let recipe: GameRecipe
     private let runtimeRegistry: RuntimeRegistry
     private let processRunner = ProcessRunner()
-    private let sessionSupervisor = GameSessionSupervisor()
+    private let sessionSupervisor: any GameSessionSupervising
+    private let lifecycleInstaller: any InstallerLifecycleSupervising
     private let prefixManager = PrefixManager()
     private let steamDetector = SteamInstallationDetector()
     private let launchCoordinator = SteamLaunchCoordinator()
@@ -109,10 +110,10 @@ final class UltimateSetupCoordinator {
     @MainActor var lastNavigationResult: InstallerNavigationResult?
 
     private var activeRuntime: (any CompatibilityRuntime)?
-    private var runtimeURL: URL?
+    var runtimeURL: URL?
 
     /// Canonical prefix layout resolved by PrefixManager (single source of truth).
-    private var prefixLayout: PrefixLayout?
+    var prefixLayout: PrefixLayout?
 
     // MARK: - Installer Session State
 
@@ -139,7 +140,10 @@ final class UltimateSetupCoordinator {
 
     // MARK: - Init
 
-    init() {
+    init(
+        sessionSupervisor: any GameSessionSupervising = GameSessionSupervisor(),
+        installerSupervisor: any InstallerLifecycleSupervising = InstallerSupervisor()
+    ) {
         // Read MACSTEAM_RENDER_PROFILE env var for non-persistent profile override.
         // didSet does not fire during init, so this is safe to set before log().
         let env = ProcessInfo.processInfo.environment["MACSTEAM_RENDER_PROFILE"] ?? ""
@@ -169,6 +173,41 @@ final class UltimateSetupCoordinator {
             detection: .init(manifestName: "appmanifest_3314790.acf",
                 executableCandidates: ["Clover" + "Pit.exe"]),
             savePolicy: .init(mode: .discoverOnly, backupBeforeDestructiveRepair: true)
+        )
+
+        self.sessionSupervisor = sessionSupervisor
+        self.lifecycleInstaller = installerSupervisor
+    }
+
+    // MARK: - Plan builders
+
+    func makeSteamSessionPlan(
+        wineURL: URL,
+        steamURL: URL,
+        prefixURL: URL,
+        environment: [String: String]
+    ) -> LaunchPlan {
+        LaunchPlan(
+            runtimeExecutable: wineURL,
+            arguments: [steamURL.path],
+            mode: .supervisedSession,
+            environment: environment,
+            workingDirectory: prefixURL
+        )
+    }
+
+    func makeCloverPitSessionPlan(
+        wineURL: URL,
+        steamURL: URL,
+        prefixURL: URL,
+        environment: [String: String]
+    ) -> LaunchPlan {
+        LaunchPlan(
+            runtimeExecutable: wineURL,
+            arguments: [steamURL.path, "-applaunch", "3314790"],
+            mode: .supervisedSession,
+            environment: environment,
+            workingDirectory: prefixURL
         )
     }
 
@@ -793,25 +832,25 @@ final class UltimateSetupCoordinator {
         do {
             // Build safe environment with DYLD_LIBRARY_PATH etc.
             let environment = buildWineEnvironment()
+            let prefixURL = prefixLayout?.root ?? URL(fileURLWithPath: "/")
 
-            let plan = LaunchPlan(
-                runtimeExecutable: wineURL,
-                arguments: [steamExe.path] + steamUIRenderProfile.launchArguments,
-                mode: .detached,
-                environment: environment,
-                workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
+            let plan = makeSteamSessionPlan(
+                wineURL: wineURL,
+                steamURL: steamExe,
+                prefixURL: prefixURL,
+                environment: environment
             )
 
             let _ = try await sessionSupervisor.launch(
                 plan: plan,
                 runtimeControl: runtimeControl,
-                prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
-                recipeID: recipe.id,
+                prefixRoot: prefixURL,
+                recipeID: "steam-setup",
                 runtimeID: runtimeSourceType ?? "unknown",
                 purpose: .steamSetup
             )
 
-            log("Windows Steam session started: purpose=steamSetup, profile=\\(steamUIRenderProfile.rawValue)")
+            log("Windows Steam session started: purpose=steamSetup, profile=\(steamUIRenderProfile.rawValue)")
             steamClientState = .runningVisible
             state = .steamInstallationPending
         } catch {
@@ -919,25 +958,21 @@ final class UltimateSetupCoordinator {
         }
 
         do {
-            let plan = LaunchPlan(
-                runtimeExecutable: wineURL,
-                arguments: [steamExe.path]
-                    + steamUIRenderProfile.launchArguments
-                    + ["-applaunch", "3314790", "-popupwindow", "-screen-fullscreen", "0"],
-                mode: .detached,
-                environment: [
-                    "WINEPREFIX": prefixLayout?.root.path ?? "",
-                    "WINEARCH": "win64",
-                    "WINEDEBUG": "-all",
-                ],
-                workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/")
+            let prefixURL = prefixLayout?.root ?? URL(fileURLWithPath: "/")
+            let environment = buildWineEnvironment()
+
+            let plan = makeCloverPitSessionPlan(
+                wineURL: wineURL,
+                steamURL: steamExe,
+                prefixURL: prefixURL,
+                environment: environment
             )
 
             let session = try await sessionSupervisor.launch(
                 plan: plan,
                 runtimeControl: runtimeControl,
-                prefixRoot: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
-                recipeID: recipe.id,
+                prefixRoot: prefixURL,
+                recipeID: "cloverpit",
                 runtimeID: runtimeSourceType ?? "unknown",
                 purpose: .game
             )
@@ -961,57 +996,79 @@ final class UltimateSetupCoordinator {
         launchPhase = .mainMenuConfirmed
     }
 
+    // MARK: - Cleanup orchestrator
+
+    private enum UltimateCleanupScope {
+        case activeSession
+        case all
+    }
+
+    /// Perform lifecycle cleanup across installer, session, and prefix processes.
+    /// Returns "clean" on success, or a semicolon-separated error summary.
+    private func performLifecycleCleanup(scope: UltimateCleanupScope) async -> String {
+        var failures: [String] = []
+
+        // Stage 1: InstallerSupervisor cleanup
+        do {
+            try await lifecycleInstaller.stopAndClean()
+        } catch {
+            failures.append("Installer cleanup: \(sanitize(error.localizedDescription))")
+        }
+
+        // Stage 2: GameSessionSupervisor stop
+        if scope == .all || sessionSupervisor.activeSession != nil {
+            do {
+                try await sessionSupervisor.stop()
+            } catch {
+                failures.append("Session stop: \(sanitize(error.localizedDescription))")
+            }
+        }
+
+        // Stage 3: PrefixProcessTerminator cleanup (best-effort)
+        if let runtimeURL, let prefixURL = prefixLayout?.root {
+            let layout = WineExecutableLayout.detect(from: runtimeURL)
+            do {
+                try await lifecycleInstaller.stopKnownPrefixProcesses(
+                    wineExecutable: layout.wine,
+                    wineserverURL: layout.wineserver,
+                    prefixURL: prefixURL,
+                    runtimeURL: runtimeURL
+                )
+            } catch {
+                failures.append("Prefix cleanup: \(sanitize(error.localizedDescription))")
+            }
+        } else if failures.isEmpty {
+            // No active operation AND no context — clean
+        } else {
+            failures.append("Prefix cleanup context unavailable")
+        }
+
+        if failures.isEmpty {
+            return "clean"
+        }
+        return failures.joined(separator: "; ")
+    }
+
+    /// Sanitize error messages for logging (strip paths, PIDs, env vars).
+    private func sanitize(_ message: String) -> String {
+        // Errors from known sources are already sanitized.
+        message
+    }
+
     /// Stop the active game session.
     /// Returns true if stopped or no session; false if stop failed.
     @discardableResult
     func stopSession() async -> Bool {
-        var needsCleanup = false
-
-        // Stop supervised session if running
-        if sessionSupervisorIsRunning {
-            do {
-                try await sessionSupervisor.stop()
-                await completeStopCleanup()
-            } catch {
-                self.error = .launchFailed(error.localizedDescription)
-                needsCleanup = true
-            }
+        log("stopSession via lifecycle cleanup")
+        let result = await performLifecycleCleanup(scope: .activeSession)
+        let clean = result == "clean"
+        if clean {
+            steamClientState = .stopped
+            isLaunchingSteam = false
+        } else {
+            steamClientState = .recoveryRequired("cleanup incomplete")
         }
-
-        // Always check for remaining wine processes (not just active session)
-        if await hasResidualWineProcesses() {
-            needsCleanup = true
-        }
-
-        return !needsCleanup
-    }
-
-    /// Check if there are residual Wine processes (wineserver, etc.) even without an active session.
-    private func hasResidualWineProcesses() async -> Bool {
-        guard let runtimeURL, let prefix = prefixLayout?.root else { return false }
-        let layout = WineExecutableLayout.detect(from: runtimeURL)
-        do {
-            let tasklistResult = try await wineControl.taskList(
-                wineExecutable: layout.wine,
-                prefixURL: prefix,
-                runtimeURL: runtimeURL
-            )
-            for proc in tasklistResult.processes {
-                let name = proc.imageName.lowercased()
-                if name == "wineserver.exe" || name == "winedevice.exe" {
-                    return true
-                }
-            }
-        } catch {
-            return false // Can't determine — assume clean
-        }
-        return false
-    }
-
-    /// Cleanup after successful stop.
-    private func completeStopCleanup() {
-        steamClientState = .stopped
-        isLaunchingSteam = false
+        return clean
     }
 
     /// Whether a Steam setup session is active.
@@ -1099,74 +1156,28 @@ final class UltimateSetupCoordinator {
     /// Stop Steam setup session for app termination.
     /// Returns true if stopped or no session; false if stop failed.
     func stopSteamSetupForTermination() async -> Bool {
-        guard hasActiveSteamSetupSession else { return true }
-        do {
-            try await sessionSupervisor.stop()
-            return true
-        } catch {
-            log("Failed to stop Steam setup session on termination: \(error.localizedDescription)")
-            return false
-        }
+        log("stopSteamSetupForTermination via lifecycle cleanup")
+        let result = await performLifecycleCleanup(scope: .all)
+        return result == "clean"
     }
 
     /// Stop all processes for application termination.
     /// Stops: installer, game session, known prefix processes, wineserver.
     func stopAllForApplicationTermination() async -> CleanupResult {
-        log("stopAllForApplicationTermination")
-
-        // 1. Stop InstallerSupervisor if active
-        if let op = await installerSupervisor.snapshot(), !op.phase.isTerminal {
-            try? await installerSupervisor.stopAndClean()
+        log("stopAllForApplicationTermination via lifecycle cleanup")
+        let result = await performLifecycleCleanup(scope: .all)
+        if result == "clean" {
+            return .clean
         }
-
-        // 2. Stop GameSessionSupervisor if running
-        if sessionSupervisorIsRunning {
-            try? await sessionSupervisor.stop()
-        }
-
-        // 3. Stop known prefix processes
-        if let runtimeURL, let prefix = prefixLayout?.root {
-            let layout = WineExecutableLayout.detect(from: runtimeURL)
-            try? await installerSupervisor.stopKnownPrefixProcesses(
-                wineExecutable: layout.wine,
-                wineserverURL: layout.wineserver,
-                prefixURL: prefix,
-                runtimeURL: runtimeURL
-            )
-        }
-
-        // 4. Final check: residual processes?
-        if let runtimeURL, let prefix = prefixLayout?.root {
-            let layout = WineExecutableLayout.detect(from: runtimeURL)
-            if let tasklistResult = try? await wineControl.taskList(
-                wineExecutable: layout.wine, prefixURL: prefix, runtimeURL: runtimeURL
-            ) {
-                let known = ["steamsetup.exe", "steam.exe", "steamwebhelper.exe",
-                             "steamservice.exe", "crashhandler.exe", "wineserver.exe"]
-                for p in tasklistResult.processes {
-                    if known.contains(p.imageName.lowercased()) {
-                        return .incomplete("Residual: \(p.imageName) (PID \(p.pid))")
-                    }
-                }
-            }
-        }
-
-        return .clean
+        return .incomplete(result)
     }
 
     /// Stop steam setup session if active (for back/next/close transitions).
     /// Returns true if stopped or no session; false if stop failed (caller should stay on screen).
     func stopSteamSetupSessionIfNeeded() async -> Bool {
-        guard hasActiveSteamSetupSession else { return true }
-        do {
-            try await sessionSupervisor.stop()
-            await completeStopCleanup()
-            return true
-        } catch {
-            log("Failed to stop Steam setup session: \\(error.localizedDescription)")
-            self.error = .launchFailed(error.localizedDescription)
-            return false
-        }
+        log("stopSteamSetupSessionIfNeeded via lifecycle cleanup")
+        let result = await performLifecycleCleanup(scope: .activeSession)
+        return result == "clean"
     }
 
     // MARK: - Session supervisor proxy

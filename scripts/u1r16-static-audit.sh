@@ -8,9 +8,11 @@ cd "$REPO_ROOT" || exit 2
 
 PROCESS_RUNNER_ONLY=0
 CLEANUP_ONLY=0
+ULTIMATE_LIFECYCLE_ONLY=0
 for arg in "$@"; do
     [ "$arg" = "--process-runner-only" ] && PROCESS_RUNNER_ONLY=1
     [ "$arg" = "--cleanup-only" ] && CLEANUP_ONLY=1
+    [ "$arg" = "--ultimate-lifecycle-only" ] && ULTIMATE_LIFECYCLE_ONLY=1
 done
 
 VIOLATIONS=0
@@ -126,6 +128,37 @@ esac
         exit 0
     else
         echo "❌ Cleanup audit — $VIOLATIONS violation(s)"
+        exit 1
+    fi
+fi
+
+# ── Ultimate lifecycle only ──
+if [ "$ULTIMATE_LIFECYCLE_ONLY" -eq 1 ]; then
+    # ProcessRunner scope — no restrictions
+    # Cleanup scope — no restrictions
+    # Ultimate lifecycle scope checks:
+    check_mode_detached() { git grep -n -E 'mode:[[:space:]]*\.detached' -- "$@" 2>/dev/null; }
+    check_mode_detached Sources/MacSteam/Ultimate/ && echo "❌ detached Steam launch — 1 found" && VIOLATIONS=$((VIOLATIONS + 1)) || true
+    check_mode_detached Sources/MacSteam/Installer/ && echo "❌ detached installer — 1 found" && VIOLATIONS=$((VIOLATIONS + 1)) || true
+
+    check "try? installer stop" 'try\?.*installer.*stop' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
+    check "try? session stop" 'try\?.*session.*stop' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
+    check "try? prefix cleanup" 'try\?[[:space:]]*await.*prefix.*clean' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
+    check "direct wineControl.taskList in stopAll" 'wineControl\.taskList' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
+    check "PID in cleanup reason" '\[PID' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
+    # Verify GameSessionSupervisor has mode validation (invert check: 1=clean, 0=violation)
+    if git -C "$REPO_ROOT" grep -q -E 'case[[:space:]]*\.supervisedSession[[:space:]]*=[[:space:]]*plan\.mode' -- Sources/MacSteam/Sessions/GameSessionSupervisor.swift 2>/dev/null; then
+        : # validation present — clean
+    else
+        echo "❌ session launch without supervisedSession — 1 found"
+        VIOLATIONS=$((VIOLATIONS + 1))
+    fi
+
+    if [ "$VIOLATIONS" -eq 0 ]; then
+        echo "✅ Ultimate lifecycle audit PASSED — 0 violations"
+        exit 0
+    else
+        echo "❌ Ultimate lifecycle audit — $VIOLATIONS violation(s)"
         exit 1
     fi
 fi

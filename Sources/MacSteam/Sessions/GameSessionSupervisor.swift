@@ -2,6 +2,26 @@
 
 import Foundation
 
+@MainActor
+protocol GameSessionSupervising: AnyObject {
+    var state: GameSessionState { get }
+    var activeSession: GameSession? { get }
+    var isRunning: Bool { get }
+    var isStopping: Bool { get }
+    var needsRecovery: Bool { get }
+
+    func launch(
+        plan: LaunchPlan,
+        runtimeControl: any WineRuntimeControl,
+        prefixRoot: URL,
+        recipeID: String,
+        runtimeID: String,
+        purpose: SessionPurpose
+    ) async throws -> GameSession
+
+    func stop() async throws
+}
+
 /// State of a single game session.
 enum GameSessionState: Sendable, Equatable {
     case idle
@@ -106,6 +126,12 @@ final class GameSessionSupervisor {
         runtimeID: String,
         purpose: SessionPurpose = .game
     ) async throws -> GameSession {
+        guard case .supervisedSession = plan.mode else {
+            throw SessionSupervisorError.validationFailed(
+                "Session launch requires supervisedSession mode"
+            )
+        }
+
         guard state == .idle || state == .stopped else {
             let pid = activeSession?.rootPID ?? 0
             throw SessionSupervisorError.sessionAlreadyRunning(existingPID: pid)
@@ -430,4 +456,8 @@ final class GameSessionSupervisor {
         if case .recoveryRequired = state { return true }
         return false
     }
+
+    var sessionAlreadyRunning: Bool { isRunning }
 }
+
+extension GameSessionSupervisor: GameSessionSupervising {}

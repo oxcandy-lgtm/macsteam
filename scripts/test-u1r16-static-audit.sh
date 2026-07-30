@@ -50,6 +50,17 @@ run_audit_cleanup() {
     fi
 }
 
+run_audit_lifecycle() {
+    local repo="$1" label="$2" expected="$3"
+    local rc=0
+    GIT_WORK_TREE="$FIXTURE/$repo" GIT_DIR="$FIXTURE/$repo/.git" bash "$AUDIT" --ultimate-lifecycle-only >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq "$expected" ]; then
+        pass "$label"
+    else
+        fail "$label (expected exit $expected, got $rc)"
+    fi
+}
+
 # ── Fixtures ──
 
 mk_repo "clean"
@@ -201,6 +212,29 @@ add_file "cleanup_directpr" "Sources/MacSteam/Processes/PrefixProcessTerminator.
 add_file "cleanup_directpr" "Sources/MacSteam/Installer/InstallerSupervisor.swift" ''
 add_file "cleanup_directpr" "Sources/MacSteam/Processes/WineControlLane.swift" ''
 run_audit_cleanup "cleanup_directpr" "direct ProcessRunner fixture" 1
+
+# ── Ultimate lifecycle fixtures ──
+
+# clean supervised lifecycle → 0 (has supervisedSession guard → check passes)
+mk_repo "lifecycle_clean"
+add_file "lifecycle_clean" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" ''
+add_file "lifecycle_clean" "Sources/MacSteam/Sessions/GameSessionSupervisor.swift" 'actor GameSessionSupervisor { func launch(plan: LaunchPlan) { guard case .supervisedSession = plan.mode else { throw SessionSupervisorError.validationFailed("") } } }'
+run_audit_lifecycle "lifecycle_clean" "clean supervised lifecycle" 0
+
+# detached Steam launch → 1
+mk_repo "lifecycle_detached"
+add_file "lifecycle_detached" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" 'mode: .detached'
+run_audit_lifecycle "lifecycle_detached" "detached Steam launch" 1
+
+# try? session stop → 1
+mk_repo "lifecycle_trysession"
+add_file "lifecycle_trysession" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" 'try? await sessionSupervisor.stop()'
+run_audit_lifecycle "lifecycle_trysession" "try? session stop" 1
+
+# missing session mode validation → 1 (plan.mode referenced without supervisedSession guard)
+mk_repo "lifecycle_novalid"
+add_file "lifecycle_novalid" "Sources/MacSteam/Sessions/GameSessionSupervisor.swift" 'actor GameSessionSupervisor { func launch(plan: LaunchPlan) { let mode = plan.mode } }'
+run_audit_lifecycle "lifecycle_novalid" "missing session mode validation" 1
 
 # Infrastructure failure test (use fake git that exits 2)
 INFRA_DIR="$FIXTURE/infra"
