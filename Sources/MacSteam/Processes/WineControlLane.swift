@@ -228,8 +228,8 @@ actor WineControlLane {
             throw error
         } catch let error as ProcessRunner.RunnerError {
             switch error {
-            case .timeoutReached, .processTerminated, .cancelled, .pipeReadFailed:
-                throw WineControlError.wineserverFailed(exitCode: -1)
+            case .timeoutReached, .processTerminated, .cancelled, .pipeReadFailed, .ownershipLost:
+                return false
             case .executableNotFound, .executableNotRegularFile, .alreadyRunning:
                 throw error
             }
@@ -335,7 +335,6 @@ actor WineControlLane {
             }
         }
         fields.append(current)
-
         return fields
     }
 }
