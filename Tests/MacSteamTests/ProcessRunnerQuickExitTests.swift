@@ -79,4 +79,10 @@ struct ProcessRunnerQuickExitTests {
         let result = try await runner.run(executable: trueURL)
         #expect(result.exitCode == 0)
     }
+
+    @Test func quickExitGraceStdout() async throws {
+        let result = try await runner.run(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "printf grace"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "grace")
+    }
 }

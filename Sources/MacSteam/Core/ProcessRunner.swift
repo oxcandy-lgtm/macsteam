@@ -241,7 +241,7 @@ struct TermEvent: Sendable { let exitCode: Int32; let signaled: Bool }
 struct TermExit: Sendable { let event: TermEvent; let cause: TermCause }
 enum WaitOutcome: Sendable { case waiting; case exited(TermExit); case failed(ProcessRunner.RunnerError); case deadline }
 
-private actor TermController {
+actor TermController {
     private let signalSender: any ProcessSignalSending
     private let identityProvider: any ProcessIdentityProviding
     private let latch: TerminationLatch
@@ -277,6 +277,8 @@ private actor TermController {
         // Check immediate sources
         if let latched = latch.snapshot() { return latched }
         if case .exited(let e) = outcome { return e.event }
+
+        guard probeContinuation == nil else { throw ProcessRunner.RunnerError.multipleWaiters }
 
         let token = UUID(); probeToken = token
 
