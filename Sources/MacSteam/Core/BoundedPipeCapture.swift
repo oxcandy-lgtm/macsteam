@@ -44,15 +44,10 @@ final class ProcessOutputPipeBundle {
     func closeAll() { stdout.closeAll(); stderr.closeAll() }
 }
 
-/// Non-blocking bounded pipe capture. Single state authority.
+/// Non-blocking bounded pipe capture. Atomic source registration (lock held through setup).
 final class BoundedPipeCapture: @unchecked Sendable {
     enum State: Sendable {
-        case idle
-        case starting
-        case reading
-        case completed(Data)
-        case failed(ProcessRunner.RunnerError)
-        case cancelled
+        case idle; case starting; case reading; case completed(Data); case failed(ProcessRunner.RunnerError); case cancelled
     }
 
     private let readLease: FDLease
@@ -64,41 +59,25 @@ final class BoundedPipeCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var waiterSet = false
 
-    init(readLease: FDLease, limit: Int) throws {
-        _ = try readLease.borrow()
-        self.readLease = readLease; self.limit = limit
-    }
+    init(readLease: FDLease, limit: Int) throws { _ = try readLease.borrow(); self.readLease = readLease; self.limit = limit }
 
     func start(on queue: DispatchQueue = .global()) throws {
         lock.lock()
         guard case .idle = state else { lock.unlock(); throw ProcessRunner.RunnerError.alreadyRunning }
         state = .starting
-        lock.unlock()
 
         let fd: Int32
         do { fd = try readLease.borrow() }
         catch {
-            lock.withLock { state = .failed(.pipeReadFailed) }
-            resumeWaiter(throwing: .pipeReadFailed)
+            state = .failed(.pipeReadFailed)
+            let w = continuation; continuation = nil
+            lock.unlock()
+            w?.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
             throw ProcessRunner.RunnerError.pipeReadFailed
         }
 
         let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-
-        // Set cancel handler BEFORE state check (race-safe)
         src.setCancelHandler { [readLease] in readLease.closeOnce() }
-
-        lock.lock()
-        guard case .starting = state else {
-            lock.unlock()
-            src.resume() // resume then cancel ensures FD close via cancel handler
-            src.cancel()
-            throw ProcessRunner.RunnerError.pipeReadFailed
-        }
-        source = src
-        state = .reading
-        lock.unlock()
-
         src.setEventHandler { [weak self] in
             guard let self else { return }
             let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: 65536)
@@ -117,7 +96,9 @@ final class BoundedPipeCapture: @unchecked Sendable {
                 src.cancel(); complete(.failure(.pipeReadFailed)); return
             }
         }
-
+        source = src
+        state = .reading
+        lock.unlock()
         src.resume()
     }
 
