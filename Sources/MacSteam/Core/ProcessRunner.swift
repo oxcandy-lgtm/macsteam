@@ -115,16 +115,17 @@ actor ProcessRunner {
         stdoutPipe.fileHandleForWriting.closeFile()
         stderrPipe.fileHandleForWriting.closeFile()
 
-        // Launch async reader tasks
-        let stdoutTask = Task.detached { [maxBytes] in
-            let data = try? stdoutPipe.fileHandleForReading.readToEnd()
-            let capped = data?.prefix(maxBytes) ?? Data()
-            return String(data: capped, encoding: .utf8) ?? ""
+        // Launch async reader tasks on GCD (avoid blocking Swift concurrency threads)
+        let stdoutResult = ThreadSafeData()
+        let stderrResult = ThreadSafeData()
+
+        DispatchQueue.global().async { [maxBytes] in
+            let data = (try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data()
+            stdoutResult.value = data.prefix(maxBytes)
         }
-        let stderrTask = Task.detached { [maxBytes] in
-            let data = try? stderrPipe.fileHandleForReading.readToEnd()
-            let capped = data?.prefix(maxBytes) ?? Data()
-            return String(data: capped, encoding: .utf8) ?? ""
+        DispatchQueue.global().async { [maxBytes] in
+            let data = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
+            stderrResult.value = data.prefix(maxBytes)
         }
 
         // Track cancellation
@@ -132,8 +133,7 @@ actor ProcessRunner {
 
         // Start timeout timer if specified
         if let timeoutSec = timeout {
-            Task.detached {
-                try? await Task.sleep(for: .seconds(timeoutSec))
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSec) {
                 terminationIntent.set(.timeout(timeoutSec))
                 if process.isRunning {
                     process.terminate()
@@ -142,7 +142,7 @@ actor ProcessRunner {
         }
 
         return try await withTaskCancellationHandler {
-            // Wait for exit on a dedicated queue (not blocking the swift concurrency thread pool)
+            // Wait for exit on a dedicated queue
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 DispatchQueue.global().async {
                     process.waitUntilExit()
@@ -150,19 +150,21 @@ actor ProcessRunner {
                 }
             }
 
-            // Check for timeout (timer or cancellation)
             let cause = terminationIntent.current
-            var stdout = ""
-            var stderr = ""
+
+            // Wait for readers to drain (brief polling since GCD queues are concurrent)
+            let drainDeadline = DispatchTime.now() + .seconds(10)
+            while stdoutResult.value == nil || stderrResult.value == nil {
+                if DispatchTime.now() > drainDeadline { break }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
 
             if case .cancellation = cause {
-                stdoutTask.cancel()
-                stderrTask.cancel()
                 throw RunnerError.cancelled
             }
 
-            stdout = await stdoutTask.value
-            stderr = await stderrTask.value
+            let stdout = stdoutResult.value.map { String(data: $0, encoding: .utf8) ?? "" } ?? ""
+            let stderr = stderrResult.value.map { String(data: $0, encoding: .utf8) ?? "" } ?? ""
 
             let terminationReason = process.terminationReason
             let terminationStatus = process.terminationStatus
@@ -187,6 +189,17 @@ actor ProcessRunner {
                 process.terminate()
             }
         }
+    }
+}
+
+/// Thread-safe holder for pipe output data.
+private final class ThreadSafeData: @unchecked Sendable {
+    private var _value: Data?
+    private let lock = NSLock()
+
+    var value: Data? {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }
 
