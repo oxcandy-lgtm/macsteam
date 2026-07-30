@@ -7,7 +7,6 @@ import Darwin
 final class FDLease: @unchecked Sendable {
     private let lock = NSLock()
     private var fd: Int32?
-
     init(_ fd: Int32) { self.fd = fd }
     func borrow() throws -> Int32 {
         try lock.withLock { guard let f = fd else { throw ProcessRunner.RunnerError.pipeReadFailed }; return f }
@@ -48,6 +47,7 @@ final class ProcessOutputPipeBundle {
     func closeAll() { stdout.closeAll(); stderr.closeAll() }
 }
 
+/// Non-blocking bounded pipe capture using DispatchSourceRead per FD.
 final class BoundedPipeCapture: @unchecked Sendable {
     enum State: Sendable {
         case idle
@@ -60,6 +60,7 @@ final class BoundedPipeCapture: @unchecked Sendable {
     private let readLease: FDLease
     private let limit: Int
     private var state: State = .idle
+    private var started = false
     private var storage = Data()
     private var source: DispatchSourceRead?
     private var continuation: CheckedContinuation<Data, Error>?
@@ -73,16 +74,22 @@ final class BoundedPipeCapture: @unchecked Sendable {
     }
 
     func start(on queue: DispatchQueue = .global()) throws {
+        lock.lock()
+        guard !started else { lock.unlock(); throw ProcessRunner.RunnerError.alreadyRunning }
+        guard case .idle = state else { lock.unlock(); throw ProcessRunner.RunnerError.pipeReadFailed }
+        lock.unlock()
+
         let fd: Int32
         do { fd = try readLease.borrow() }
         catch {
             lock.lock(); state = .failed(.pipeReadFailed); lock.unlock()
-            resumeWaiter(throwing: ProcessRunner.RunnerError.pipeReadFailed)
+            resumeWaiter(throwing: .pipeReadFailed)
             throw ProcessRunner.RunnerError.pipeReadFailed
         }
+
         let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         source = src
-        lock.withLock { state = .reading }
+        lock.withLock { started = true; state = .reading }
 
         src.setEventHandler { [weak self] in
             guard let self else { return }
@@ -92,8 +99,7 @@ final class BoundedPipeCapture: @unchecked Sendable {
                 let n = read(fd, buf, 65536)
                 if n > 0 {
                     lock.lock(); if case .reading = state, storage.count < limit {
-                        let cap = min(n, limit - storage.count)
-                        storage.append(buf, count: cap)
+                        let cap = min(n, limit - storage.count); storage.append(buf, count: cap)
                     }; lock.unlock()
                     continue
                 }
@@ -133,8 +139,7 @@ final class BoundedPipeCapture: @unchecked Sendable {
     }
 
     private func resumeWaiter(throwing error: ProcessRunner.RunnerError) {
-        let c: CheckedContinuation<Data, Error>?
-        lock.lock(); c = continuation; continuation = nil; lock.unlock()
+        let c: CheckedContinuation<Data, Error>? = lock.withLock { let c = continuation; continuation = nil; return c }
         c?.resume(throwing: error)
     }
 
