@@ -205,9 +205,13 @@ final class TerminationLatch: @unchecked Sendable {
 
     func record(_ e: TermEvent) -> Bool {
         lock.withLock {
-            guard case .open = state else { return false }
-            state = .terminated(e)
-            return true
+            switch state {
+            case .open, .cleanupClaimed:
+                state = .terminated(e)
+                return true
+            case .terminated:
+                return false
+            }
         }
     }
 
@@ -222,8 +226,10 @@ final class TerminationLatch: @unchecked Sendable {
         lock.withLock {
             switch state {
             case .terminated(let e): return .alreadyExited(e)
-            case .open, .cleanupClaimed:
+            case .open:
                 state = .cleanupClaimed
+                return .claimed
+            case .cleanupClaimed:
                 return .claimed
             }
         }
