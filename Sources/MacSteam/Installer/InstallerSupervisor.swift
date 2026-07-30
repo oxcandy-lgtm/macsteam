@@ -22,6 +22,9 @@ actor InstallerSupervisor {
     private let prefixTerminator: any PrefixProcessTerminating
     private let deadlineScheduler: any DeadlineScheduling
     private var exitLatch: InstallerExitLatch?
+    #if DEBUG
+    var exitLatchForTesting: InstallerExitLatch? { exitLatch }
+    #endif
 
     private(set) var currentOperation: InstallerOperation?
     private var installExitTask: Task<Void, Never>?
@@ -186,6 +189,12 @@ actor InstallerSupervisor {
     /// Snapshot of the current installer state (for UI projection).
     func snapshot() -> InstallerOperation? {
         currentOperation
+    }
+
+    /// Exposes the latch waiter count for deterministic test assertions.
+    func installerExitWaiterCountForTesting() async -> Int {
+        guard let exitLatch else { return 0 }
+        return await exitLatch.registeredWaiterCount()
     }
 
     // MARK: - Private
@@ -365,6 +374,12 @@ actor InstallerExitLatch {
         waiters.removeValue(forKey: waiterID)
         w.continuation.resume(returning: nil)
     }
+
+    #if DEBUG
+    func pendingDeadlineCount() -> Int {
+        waiters.values.filter { $0.deadlineToken != nil }.count
+    }
+    #endif
 }
 
 // MARK: - ProcessSupervising

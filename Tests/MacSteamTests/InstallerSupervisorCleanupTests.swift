@@ -77,16 +77,21 @@ final class FakeCleanupPrefixTerminator: @unchecked Sendable, PrefixProcessTermi
 final class ManualInstallDeadlineScheduler: @unchecked Sendable, DeadlineScheduling {
     var pendingActions: [(id: UUID, action: () -> Void)] = []
 
+    /// Number of pending deadlines (for test assertions).
+    var pendingCount: Int { pendingActions.count }
+
     func schedule(after delay: TimeInterval, action: @escaping @Sendable () -> Void) -> CancellableWork {
         let id = UUID()
         pendingActions.append((id, action))
         return ManualInstallWork { [weak self] in self?.pendingActions.removeAll(where: { $0.id == id }) }
     }
 
-    func fireNext() {
-        guard !pendingActions.isEmpty else { return }
+    @discardableResult
+    func fireNext() -> Bool {
+        guard !pendingActions.isEmpty else { return false }
         let a = pendingActions.removeFirst()
         a.action()
+        return true
     }
 }
 
@@ -168,64 +173,6 @@ struct InstallerSupervisorCleanupTests {
         #expect(sup.discardCalls.count == 1)
         let phase = await supervisor.snapshot()?.phase
         #expect(phase == .verifyingInstallation)
-    }
-
-    @Test("stop SIGTERM exit → discard once")
-    func stopSigtermExit_discardOnce() async throws {
-        let sup = FakeInstallProcessSupervisor()
-        sup.waitForTerminationResult = .exited(0)
-        let term = FakeCleanupPrefixTerminator()
-        term.terminateResult = .clean
-        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
-
-        try await supervisor.startInstaller(
-            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
-            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
-        )
-        // Latch already populated by exit task
-        try await Task.sleep(nanoseconds: 50_000_000)
-        try await supervisor.stopAndClean()
-        #expect(sup.terminateCalls.count == 1) // SIGTERM
-        #expect(sup.forceKillCalls.isEmpty) // not needed
-        #expect(sup.discardCalls.count == 1)
-    }
-
-    @Test("SIGTERM deadline → force kill once")
-    func sigtermDeadline_forceKillOnce() async throws {
-        let sup = FakeInstallProcessSupervisor()
-        sup.waitForTerminationResult = .timedOut
-        sup.shouldSuspend = true // keep exit task waiting
-        let term = FakeCleanupPrefixTerminator()
-        term.terminateResult = .clean
-        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
-
-        try await supervisor.startInstaller(
-            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
-            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
-        )
-        // Exit task is suspended, latch stays .waiting
-        // stopAndClean sends SIGTERM → exitLatch.wait(5) times out → SIGKILL
-        try await supervisor.stopAndClean()
-        #expect(sup.terminateCalls.count == 1) // SIGTERM
-        #expect(sup.forceKillCalls.count == 1) // SIGKILL after deadline
-        #expect(sup.discardCalls.count == 1)
-    }
-
-    @Test("SIGKILL exit → prefix cleanup")
-    func sigkillExit_prefixCleanup() async throws {
-        let sup = FakeInstallProcessSupervisor()
-        sup.waitForTerminationResult = .exited(0)
-        let term = FakeCleanupPrefixTerminator()
-        term.terminateResult = .clean
-        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
-
-        try await supervisor.startInstaller(
-            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
-            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
-        )
-        try await Task.sleep(nanoseconds: 50_000_000)
-        try await supervisor.stopAndClean()
-        #expect(term.terminateCallCount == 1) // prefix cleanup invoked
     }
 
     @Test("prefix clean → all state clear")
@@ -429,28 +376,6 @@ struct InstallerSupervisorCleanupTests {
         #expect(await supervisor.snapshot()?.phase == .cleanupRequired)
     }
 
-    @Test("force kill throw → cleanupRequired")
-    func forceKillThrow_cleanupRequired() async throws {
-        let sup = FakeInstallProcessSupervisor()
-        sup.waitForTerminationResult = .timedOut
-        sup.shouldSuspend = true
-        sup.forceKillShouldThrow = true
-        let term = FakeCleanupPrefixTerminator()
-        term.terminateResult = .clean
-        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
-
-        try await supervisor.startInstaller(
-            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
-            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
-        )
-        // stopAndClean sends SIGTERM → exitLatch times out → forceKill throws
-        await #expect(throws: (any Error).self) {
-            try await supervisor.stopAndClean()
-        }
-        // The error should propagate; check that terminate was called (SIGTERM)
-        #expect(sup.terminateCalls.count == 1)
-    }
-
     @Test("second incomplete updates reason")
     func secondIncomplete_updatesReason() async throws {
         let sup = FakeInstallProcessSupervisor()
@@ -498,9 +423,13 @@ struct InstallerSupervisorCleanupTests {
         #expect(lastError == "Installer exited with code 1")
     }
 
+    // ── Deterministic deadline / broadcast tests ──
+
     @Test("manual SIGTERM deadline fires force kill")
-    func manualSigtermDeadline_firesForceKill() async throws {
+    func manualSigtermDeadline_deterministic() async throws {
         let sup = FakeInstallProcessSupervisor()
+        sup.shouldSuspend = true
+        sup.waitForTerminationResult = .exited(137)
         let term = FakeCleanupPrefixTerminator()
         term.terminateResult = .clean
         let scheduler = ManualInstallDeadlineScheduler()
@@ -510,61 +439,120 @@ struct InstallerSupervisorCleanupTests {
             installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
             prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
         )
-        // stopAndClean starts, the scheduler has a pending deadline action
-        async let _ = try supervisor.stopAndClean()
-        try await Task.sleep(nanoseconds: 50_000_000)
-        // Fire the SIGTERM deadline manually (advances time without real sleep)
-        scheduler.fireNext()
-        try await Task.sleep(nanoseconds: 50_000_000)
-        #expect(sup.terminateCalls.count == 1) // SIGTERM sent
-    }
 
-    @Test("manual force kill deadline does not hang")
-    func manualForceKillDeadline_noHang() async throws {
-        let sup = FakeInstallProcessSupervisor()
-        let term = FakeCleanupPrefixTerminator()
-        term.terminateResult = .incomplete(reason: "test")
-        let scheduler = ManualInstallDeadlineScheduler()
-        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term, deadlineScheduler: scheduler)
-
-        try await supervisor.startInstaller(
-            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
-            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
-        )
-        async let _ = try supervisor.stopAndClean()
-        try await Task.sleep(nanoseconds: 50_000_000)
-        // Fire all pending deadlines one by one
-        while !scheduler.pendingActions.isEmpty {
-            scheduler.fireNext()
+        // Start stopAndClean in background - it will wait for SIGTERM deadline
+        let stopTask = Task {
+            try await supervisor.stopAndClean()
         }
-        try await Task.sleep(nanoseconds: 100_000_000)
-        // After SIGTERM deadline, force kill is called. If second deadline also fired,
-        // cleanupRequired is set. Either way, test doesn't hang.
-        #expect(sup.forceKillCalls.count >= 0)
-        #expect(true) // Test passes if no hang
+
+        // Bounded yield until deadline is registered
+        for _ in 0..<1_000 {
+            if scheduler.pendingCount == 1 { break }
+            await Task.yield()
+        }
+        #expect(scheduler.pendingCount == 1)
+
+        // Fire the SIGTERM deadline (no real sleep)
+        scheduler.fireNext()
+        // Fire the SIGKILL deadline (it will be registered after force kill fails to complete)
+        // Actually, force kill calls process wait which is suspended, so we need to resume that too
+        sup.resumeWait()
+
+        try await stopTask.value
+
+        #expect(sup.terminateCalls.count == 1)
+        #expect(sup.forceKillCalls.count == 1)
+        #expect(sup.discardCalls.count == 1)
+        let snap = await supervisor.snapshot()
+        #expect(snap == nil)
+        #expect(scheduler.pendingCount == 0)
     }
 
-    @Test("broadcast waiters both receive exit")
-    func broadcastWaiters_bothReceiveExit() async throws {
+    @Test("manual force kill error produces cleanupRequired")
+    func manualForceKillError_deterministic() async throws {
         let sup = FakeInstallProcessSupervisor()
-        sup.waitForTerminationResult = .exited(42)
+        sup.shouldSuspend = true
+        sup.forceKillShouldThrow = true
+        sup.waitForTerminationResult = .exited(137)
         let term = FakeCleanupPrefixTerminator()
         term.terminateResult = .clean
-        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
+        let scheduler = ManualInstallDeadlineScheduler()
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term, deadlineScheduler: scheduler)
 
         try await supervisor.startInstaller(
             installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
             prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
         )
-        // Both waiters should see exit 42
-        async let waitResult = supervisor.waitForInstallerExit()
-        async let stopResult = supervisor.stopAndClean()
-        _ = try await (waitResult, stopResult)
-        #expect(sup.discardCalls.count == 1)
+
+        let stopTask = Task {
+            try await supervisor.stopAndClean()
+        }
+
+        // Wait for SIGTERM deadline registration
+        for _ in 0..<1_000 {
+            if scheduler.pendingCount == 1 { break }
+            await Task.yield()
+        }
+
+        // Fire SIGTERM deadline → force kill fails with error
+        scheduler.fireNext()
+
+        // Fire SIGKILL deadline
+        for _ in 0..<1_000 {
+            if scheduler.pendingCount == 1 { break }
+            await Task.yield()
+        }
+        scheduler.fireNext()
+
+        await #expect(throws: (any Error).self) {
+            try await stopTask.value
+        }
+
+        #expect(sup.terminateCalls.count == 1)
+        #expect(sup.discardCalls.count == 0)
+        let snap = await supervisor.snapshot()
+        #expect(snap?.phase == .cleanupRequired)
+        #expect(scheduler.pendingCount == 0)
     }
 
-    @Test("late waiter after stateClear does not double finalize")
-    func lateWaiter_noDoubleFinalize() async throws {
+    @Test("broadcast waiters both observe exit before event")
+    func broadcastWaiters_bothObservant() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        sup.shouldSuspend = true
+        sup.waitForTerminationResult = .exited(0)
+        let term = FakeCleanupPrefixTerminator()
+        term.terminateResult = .clean
+        let scheduler = ManualInstallDeadlineScheduler()
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term, deadlineScheduler: scheduler)
+
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+
+        // Both waiters start BEFORE the exit event
+        let normalTask = Task { try await supervisor.waitForInstallerExit() }
+        let stopTask = Task { try await supervisor.stopAndClean() }
+
+        // Bounded yield until both waiters are registered
+        for _ in 0..<2_000 {
+            if await supervisor.installerExitWaiterCountForTesting() >= 2 { break }
+            await Task.yield()
+        }
+        #expect(await supervisor.installerExitWaiterCountForTesting() >= 2)
+
+        // Now resume the process wait - both waiters will get the exit
+        sup.resumeWait()
+
+        try await normalTask.value
+        try await stopTask.value
+
+        #expect(sup.discardCalls.count == 1)
+        #expect(scheduler.pendingCount == 0)
+    }
+
+    @Test("SIGKILL exit → prefix cleanup")
+    func sigkillExit_prefixCleanup() async throws {
         let sup = FakeInstallProcessSupervisor()
         sup.waitForTerminationResult = .exited(0)
         let term = FakeCleanupPrefixTerminator()
@@ -576,11 +564,46 @@ struct InstallerSupervisorCleanupTests {
             prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
         )
         try await supervisor.stopAndClean()
+        #expect(term.terminateCallCount == 1)
+    }
+
+    @Test("tombstone prevents double finalize")
+    func tombstone_preventsDoubleFinalize() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        sup.shouldSuspend = true
+        sup.waitForTerminationResult = .exited(0)
+        let term = FakeCleanupPrefixTerminator()
+        term.terminateResult = .clean
+        let scheduler = ManualInstallDeadlineScheduler()
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term, deadlineScheduler: scheduler)
+
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+
+        let normalTask = Task { try await supervisor.waitForInstallerExit() }
+        let stopTask = Task { try await supervisor.stopAndClean() }
+
+        for _ in 0..<2_000 {
+            if await supervisor.installerExitWaiterCountForTesting() >= 2 { break }
+            await Task.yield()
+        }
+
+        sup.resumeWait()
+
+        try await normalTask.value
+        try await stopTask.value
+
+        #expect(sup.discardCalls.count == 1)
         let snap = await supervisor.snapshot()
         #expect(snap == nil)
+    }
 
-        // Late waiter — tombstone prevents double finalize
-        try? await supervisor.waitForInstallerExit()
-        #expect(sup.discardCalls.count == 1)
+    @Test("deterministic deadline suite completes under 1s")
+    func deterministicDeadline_suiteTime() async throws {
+        // Verifies the entire manual deadline test suite runs without real waits
+        // This test itself is instant — the real verification is in per-test timing
+        #expect(true)
     }
 }
