@@ -1,43 +1,48 @@
 #!/bin/bash
-# U1R16-R1F7 Static Audit — fail-closed, rg required
+# U1R16-R1F8 Static Audit — git grep based, zero external deps
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR" || exit 2
 
-command -v rg >/dev/null 2>&1 || {
-  echo "ERROR: rg (ripgrep) is required for U1R16 lifecycle audit"
-  exit 2
+command -v git >/dev/null 2>&1 || {
+    echo "ERROR: git is required for static audit"
+    exit 2
 }
 
-command -v rg >/dev/null 2>&1
 VIOLATIONS=0
 
 check() {
-    local desc="$1" pattern="$2"
+    local description="$1" pattern="$2"
     shift 2
 
+    local result_file
+    result_file="$(mktemp "${TMPDIR:-/tmp}/macsteam-audit.XXXXXX")"
+    trap 'rm -f "$result_file"' RETURN
+
     set +e
-    rg -n "$pattern" "$@" > /tmp/u1r16-audit-results.txt 2>/dev/null
+    git grep -n -E -- "$pattern" -- "$@" >"$result_file" 2>&1
     local status=$?
     set -e
 
-    if [ "$status" -eq 2 ]; then
-        echo "ERROR: rg invocation failed for: $desc"
-        exit 2
-    fi
-
-    if [ -s /tmp/u1r16-audit-results.txt ]; then
-        echo "❌ $desc — found:"
-        cat /tmp/u1r16-audit-results.txt
-        VIOLATIONS=$((VIOLATIONS + 1))
-    else
-        echo "✅ $desc — 0"
-    fi
-    rm -f /tmp/u1r16-audit-results.txt
+    case "$status" in
+        0)
+            echo "❌ $description — found:"
+            cat "$result_file"
+            VIOLATIONS=$((VIOLATIONS + 1))
+            ;;
+        1)
+            echo "✅ $description — 0"
+            ;;
+        *)
+            echo "ERROR: audit infrastructure failure: $description"
+            cat "$result_file"
+            exit 2
+            ;;
+    esac
 }
 
-echo "=== U1R16-R1F7 Static Audit ==="
+echo "=== U1R16-R1F8 Static Audit ==="
 echo ""
 
 check "steam://open/main" 'steam://open/main' Sources

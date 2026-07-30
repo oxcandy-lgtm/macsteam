@@ -886,60 +886,6 @@ final class UltimateSetupCoordinator {
         }
     }
 
-    /// Quarantine incomplete Steam installation — stop all Steam processes in prefix.
-    /// Does NOT delete Steam files or prefix. Only stops processes and blocks launch paths.
-    func quarantineIncompleteSteamInstall() async throws {
-        guard let runtimeURL = runtimeURL,
-              let prefix = prefixLayout?.root else { return }
-
-        let layout = WineExecutableLayout.detect(from: runtimeURL)
-        let wineURL = layout.wine
-        let serverURL = layout.wineserver
-
-        // Kill Steam processes via taskkill (prefix-specific, no pkill/killall)
-        for process in ["SteamSetup.exe", "steam.exe", "steamwebhelper.exe", "steamservice.exe"] {
-            try? await processRunner.run(
-                executable: wineURL,
-                arguments: ["taskkill", "/F", "/IM", process],
-                environment: [
-                    "WINEPREFIX": prefix.path,
-                    "WINEARCH": "win64",
-                    "WINEDEBUG": "-all",
-                ],
-                workingDirectory: prefix,
-                mode: .detached
-            )
-        }
-
-        // Prefix-specific wineserver shutdown
-        try? await processRunner.run(
-            executable: serverURL,
-            arguments: ["-k"],
-            environment: [
-                "WINEPREFIX": prefix.path,
-                "WINEARCH": "win64",
-                "WINEDEBUG": "-all",
-            ],
-            workingDirectory: prefix,
-            mode: .detached
-        )
-        try? await processRunner.run(
-            executable: serverURL,
-            arguments: ["-w"],
-            environment: [
-                "WINEPREFIX": prefix.path,
-                "WINEARCH": "win64",
-                "WINEDEBUG": "-all",
-            ],
-            workingDirectory: prefix,
-            timeout: 10,
-            mode: .waitForExit
-        )
-
-        steamClientState = .stopped
-        log("Incomplete Steam installation quarantined")
-    }
-
     /// Step 6: Launch CloverPit through Windows Steam via GameSessionSupervisor.
     func launchCloverPit() async {
         state = .launching

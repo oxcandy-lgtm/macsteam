@@ -74,7 +74,7 @@ actor ProcessRunner {
         ]
         if let wd = workingDirectory { process.currentDirectoryURL = wd }
 
-        // Detached mode: null device immediately, no pipes needed
+        // Detached mode: null device immediately, no pipes
         if case .detached = mode {
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
@@ -82,56 +82,63 @@ actor ProcessRunner {
             return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
         }
 
-        // Discard policy: null device (wait mode), no pipes
-        if case .discard = outputPolicy {
+        // Discard: null device, but still goes through common lifecycle
+        let isDiscard: Bool
+        let maxBytes: Int
+        var stdoutPipe: Pipe?
+        var stderrPipe: Pipe?
+
+        switch outputPolicy {
+        case .discard:
+            isDiscard = true
+            maxBytes = 0
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            try process.run()
-            process.waitUntilExit()
-            return ProcessResult(exitCode: process.terminationStatus, stdout: "", stderr: "", pid: process.processIdentifier)
-        }
-
-        // Bounded capture
-        let maxBytes: Int
-        if case .boundedCapture(let bytes) = outputPolicy {
+        case .boundedCapture(let bytes):
+            isDiscard = false
             maxBytes = bytes
-        } else {
-            maxBytes = 1024 * 1024
+            let soPipe = Pipe()
+            let sePipe = Pipe()
+            stdoutPipe = soPipe
+            stderrPipe = sePipe
+            process.standardOutput = soPipe
+            process.standardError = sePipe
         }
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
 
         try process.run()
         let pid = process.processIdentifier
 
-        // Close parent write-ends so EOF works
-        stdoutPipe.fileHandleForWriting.closeFile()
-        stderrPipe.fileHandleForWriting.closeFile()
+        // Close parent write-ends so EOF works (only for pipe mode)
+        stdoutPipe?.fileHandleForWriting.closeFile()
+        stderrPipe?.fileHandleForWriting.closeFile()
 
         // First-writer-wins termination intent
         let termIntent = TerminationIntent()
 
-        // GCD-based pipe readers (readToEnd blocks GCD thread, not Swift concurrency)
+        // GCD-based pipe readers (only for bounded capture)
         let stdoutResult = ThreadSafeData()
         let stderrResult = ThreadSafeData()
 
-        DispatchQueue.global().async { [maxBytes] in
-            let d = (try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data()
-            stdoutResult.value = d.prefix(maxBytes)
-        }
-        DispatchQueue.global().async { [maxBytes] in
-            let d = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
-            stderrResult.value = d.prefix(maxBytes)
+        if !isDiscard, let soHandle = stdoutPipe?.fileHandleForReading, let seHandle = stderrPipe?.fileHandleForReading {
+            DispatchQueue.global().async { [maxBytes] in
+                let d = (try? soHandle.readToEnd()) ?? Data()
+                stdoutResult.value = d.prefix(maxBytes)
+            }
+            DispatchQueue.global().async { [maxBytes] in
+                let d = (try? seHandle.readToEnd()) ?? Data()
+                stderrResult.value = d.prefix(maxBytes)
+            }
+        } else {
+            // Mark as done immediately for discard mode
+            stdoutResult.value = Data()
+            stderrResult.value = Data()
         }
 
         // Timeout work item
         var timeoutWork: DispatchWorkItem?
         if let timeoutSec = timeout {
             let work = DispatchWorkItem {
-                if termIntent.request(.timeout(timeoutSec)) {
+                if termIntent.request(.timeout(timeoutSec), process: process) {
                     process.terminate()
                 }
             }
@@ -150,11 +157,13 @@ actor ProcessRunner {
 
             timeoutWork?.cancel()
 
-            // Poll briefly for pipe readers to finish (process exit ensures EOF is coming)
-            let pollStart = DispatchTime.now()
-            while stdoutResult.value == nil || stderrResult.value == nil {
-                if DispatchTime.now() > pollStart + .seconds(5) { break }
-                try? await Task.sleep(for: .milliseconds(5))
+            // Poll briefly for pipe readers to finish
+            if !isDiscard {
+                let pollStart = DispatchTime.now()
+                while stdoutResult.value == nil || stderrResult.value == nil {
+                    if DispatchTime.now() > pollStart + .seconds(5) { break }
+                    try? await Task.sleep(for: .milliseconds(5))
+                }
             }
 
             let cause = termIntent.current
@@ -183,7 +192,7 @@ actor ProcessRunner {
                 pid: pid
             )
         } onCancel: {
-            if termIntent.request(.cancellation) {
+            if termIntent.request(.cancellation, process: process) {
                 if process.isRunning { process.terminate() }
             }
         }
@@ -198,9 +207,11 @@ private final class TerminationIntent: @unchecked Sendable {
 
     var current: ProcessRunner.RequestedTermination { lock.withLock { _value } }
 
-    func request(_ new: ProcessRunner.RequestedTermination) -> Bool {
+    /// Attempt to set termination intent. Checks process is running.
+    func request(_ new: ProcessRunner.RequestedTermination, process: Process? = nil) -> Bool {
         lock.withLock {
             guard _value == .none else { return false }
+            if let proc = process, !proc.isRunning { return false }
             _value = new
             return true
         }
