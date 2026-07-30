@@ -82,14 +82,9 @@ actor ProcessRunner {
             return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
         }
 
-        // Discard through common lifecycle
+        // Discard: null device + common lifecycle
         let isDiscard: Bool
         let maxBytes: Int
-        var stdoutCollector: BoundedStreamCollector?
-        var stderrCollector: BoundedStreamCollector?
-        var stdoutPipe: Pipe?
-        var stderrPipe: Pipe?
-
         switch outputPolicy {
         case .discard:
             isDiscard = true
@@ -99,45 +94,49 @@ actor ProcessRunner {
         case .boundedCapture(let bytes):
             isDiscard = false
             maxBytes = bytes
-            let soPipe = Pipe()
-            let sePipe = Pipe()
-            stdoutPipe = soPipe
-            stderrPipe = sePipe
-            process.standardOutput = soPipe
-            process.standardError = sePipe
-            stdoutCollector = BoundedStreamCollector(limit: bytes)
-            stderrCollector = BoundedStreamCollector(limit: bytes)
         }
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
 
         try process.run()
         let pid = process.processIdentifier
 
-        // Close parent write-ends so EOF works
-        stdoutPipe?.fileHandleForWriting.closeFile()
-        stderrPipe?.fileHandleForWriting.closeFile()
+        // Close parent write-ends so EOF works after child exits
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
 
-        // First-writer-wins termination intent
-        let termIntent = TerminationIntent()
-
-        // Start GCD pipe readers
-        if !isDiscard, let so = stdoutCollector, let se = stderrCollector,
-           let soHandle = stdoutPipe?.fileHandleForReading,
-           let seHandle = stderrPipe?.fileHandleForReading {
-            DispatchQueue.global().async { readChunks(handle: soHandle, collector: so) }
-            DispatchQueue.global().async { readChunks(handle: seHandle, collector: se) }
+        // GCD pipe readers (readToEnd blocks GCD thread, not Swift concurrency)
+        let stdoutResult = ThreadSafeData()
+        let stderrResult = ThreadSafeData()
+        DispatchQueue.global().async { [maxBytes] in
+            let d = (try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data()
+            stdoutResult.value = d.prefix(maxBytes)
+            try? stdoutPipe.fileHandleForReading.close()
         }
+        DispatchQueue.global().async { [maxBytes] in
+            let d = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
+            stderrResult.value = d.prefix(maxBytes)
+            try? stderrPipe.fileHandleForReading.close()
+        }
+
+        // First-writer-wins termination owner
+        let termOwner = ProcessTerminationOwner(identity: OwnedProcessIdentity(
+            pid: pid,
+            executablePath: executable.path,
+            processStartTime: UInt64(DispatchTime.now().uptimeNanoseconds)
+        ))
 
         // Timeout escalation
         var timeoutWork: DispatchWorkItem?
         if let timeoutSec = timeout {
-            let work = DispatchWorkItem { [process] in
-                guard termIntent.request(.timeout(timeoutSec), process: process) else { return }
-                process.terminate() // SIGTERM
-                DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [pid] in
-                    if process.isRunning {
-                        kill(pid, SIGKILL)
-                        process.waitUntilExit()
-                    }
+            let work = DispatchWorkItem { [pid] in
+                guard termOwner.request(.timeout(timeoutSec)) else { return }
+                kill(pid, SIGTERM)
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+                    if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
                 }
             }
             timeoutWork = work
@@ -153,14 +152,23 @@ actor ProcessRunner {
             }
 
             timeoutWork?.cancel()
-            let cause = termIntent.current
+            let cause = termOwner.current
 
             if cause == .cancellation {
                 throw RunnerError.cancelled
             }
 
-            let stdoutData = (try? await stdoutCollector?.waitForCompletion()) ?? Data()
-            let stderrData = (try? await stderrCollector?.waitForCompletion()) ?? Data()
+            // Wait for GCD readers with timeout
+            let deadline = DispatchTime.now() + .seconds(10)
+            while stdoutResult.value == nil || stderrResult.value == nil {
+                if DispatchTime.now() > deadline {
+                    throw RunnerError.pipeReadFailed
+                }
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+
+            let outData = stdoutResult.value ?? Data()
+            let errData = stderrResult.value ?? Data()
 
             if case .timeout = cause {
                 throw RunnerError.timeoutReached(timeout ?? 0)
@@ -172,123 +180,46 @@ actor ProcessRunner {
 
             return ProcessResult(
                 exitCode: process.terminationStatus,
-                stdout: String(data: stdoutData, encoding: .utf8) ?? "",
-                stderr: String(data: stderrData, encoding: .utf8) ?? "",
+                stdout: String(data: outData, encoding: .utf8) ?? "",
+                stderr: String(data: errData, encoding: .utf8) ?? "",
                 pid: pid
             )
         } onCancel: {
-            if termIntent.request(.cancellation, process: process) {
-                if process.isRunning { process.terminate() }
-            }
+            guard termOwner.request(.cancellation) else { return }
+            kill(pid, SIGTERM)
         }
     }
 }
 
-// MARK: - Pipe reader
+// MARK: - Process identity and termination owner
 
-private func readChunks(handle: FileHandle, collector: BoundedStreamCollector) {
-    do {
-        while true {
-            guard let chunk = try handle.read(upToCount: 65536), !chunk.isEmpty else { break }
-            collector.append(chunk)
-        }
-        collector.finish()
-    } catch {
-        collector.fail(error)
-    }
+struct OwnedProcessIdentity: Sendable {
+    let pid: Int32
+    let executablePath: String
+    let processStartTime: UInt64
 }
 
-// MARK: - Bounded stream collector
-
-final class BoundedStreamCollector: @unchecked Sendable {
-    private var data: Data
-    private let limit: Int
-    private var isFinished = false
-    private var failureError: Error?
-    private var waiter: CheckedContinuation<Data, any Error>?
-    private let lock = NSLock()
-
-    init(limit: Int) {
-        self.limit = limit
-        self.data = Data()
-    }
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        if data.count < limit {
-            let cap = min(chunk.count, limit - data.count)
-            data.append(chunk.prefix(cap))
-        }
-        lock.unlock()
-    }
-
-    func finish() {
-        let w: CheckedContinuation<Data, any Error>?
-        lock.lock()
-        isFinished = true
-        w = waiter
-        waiter = nil
-        lock.unlock()
-        w?.resume(returning: data)
-    }
-
-    func fail(_ error: Error) {
-        let w: CheckedContinuation<Data, any Error>?
-        lock.lock()
-        failureError = error
-        isFinished = true
-        w = waiter
-        waiter = nil
-        lock.unlock()
-        w?.resume(throwing: error)
-    }
-
-    func waitForCompletion() async throws -> Data {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, any Error>) in
-            lock.lock()
-            if let err = failureError {
-                lock.unlock()
-                cont.resume(throwing: err)
-                return
-            }
-            if isFinished {
-                let d = data
-                lock.unlock()
-                cont.resume(returning: d)
-                return
-            }
-            waiter = cont
-            lock.unlock()
-
-            // Safety timeout: resume with current data after 10s
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(10))
-                guard let self else { return }
-                let resumed: CheckedContinuation<Data, any Error>? = lock.withLock {
-                    guard let w = waiter else { return nil }
-                    waiter = nil
-                    return w
-                }
-                resumed?.resume(returning: lock.withLock { data })
-            }
-        }
-    }
-}
-
-// MARK: - First-writer-wins termination intent
-
-private final class TerminationIntent: @unchecked Sendable {
+private final class ProcessTerminationOwner: @unchecked Sendable {
     private var _value: ProcessRunner.RequestedTermination = .none
     private let lock = NSLock()
-
+    let identity: OwnedProcessIdentity
     var current: ProcessRunner.RequestedTermination { lock.withLock { _value } }
-
-    func request(_ new: ProcessRunner.RequestedTermination, process: Process? = nil) -> Bool {
+    init(identity: OwnedProcessIdentity) { self.identity = identity }
+    func request(_ new: ProcessRunner.RequestedTermination) -> Bool {
         lock.withLock {
             guard _value == .none else { return false }
-            if let proc = process, !proc.isRunning { return false }
-            _value = new
-            return true
+            _value = new; return true
         }
+    }
+}
+
+// MARK: - Thread-safe data holder
+
+private final class ThreadSafeData: @unchecked Sendable {
+    private var _value: Data?
+    private let lock = NSLock()
+    var value: Data? {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }

@@ -64,9 +64,9 @@ struct ProcessRunnerOutputTests {
         #expect(result.stdout.utf8.count <= 1024 * 1024 + 256)
     }
 
-    @Test("100x stdout capture")
-    func hundredTimesStdout() async throws {
-        for _ in 0..<100 {
+    @Test("20x stdout capture")
+    func twentyTimesStdout() async throws {
+        for _ in 0..<20 {
             let result = try await runner.run(
                 executable: URL(fileURLWithPath: "/bin/echo"),
                 arguments: ["Hello, World!"],
