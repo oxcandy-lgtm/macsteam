@@ -234,6 +234,28 @@ final class TerminationLatch: @unchecked Sendable {
     }
 }
 
+// MARK: - Deadline scheduling
+
+protocol CancellableWork: Sendable { func cancel() }
+
+final class DispatchCancellableWork: @unchecked Sendable, CancellableWork {
+    private let work: DispatchWorkItem
+    init(_ w: DispatchWorkItem) { self.work = w }
+    func cancel() { work.cancel() }
+}
+
+protocol DeadlineScheduling: Sendable {
+    func schedule(after delay: TimeInterval, action: @escaping @Sendable () -> Void) -> CancellableWork
+}
+
+final class DispatchDeadlineScheduler: DeadlineScheduling {
+    func schedule(after delay: TimeInterval, action: @escaping @Sendable () -> Void) -> CancellableWork {
+        let work = DispatchWorkItem(block: action)
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: work)
+        return DispatchCancellableWork(work)
+    }
+}
+
 // MARK: - TermController
 
 enum TermCause: Sendable, Equatable { case none; case timeout(TimeInterval); case cancellation }
@@ -245,6 +267,7 @@ actor TermController {
     private let signalSender: any ProcessSignalSending
     private let identityProvider: any ProcessIdentityProviding
     private let latch: TerminationLatch
+    private let deadlineScheduler: DeadlineScheduling
     private var launchedIdentity: ProcessIdentitySnapshot?
     private var outcome: WaitOutcome = .waiting
     private var waiterCont: CheckedContinuation<Void, Never>?
@@ -257,8 +280,10 @@ actor TermController {
     private var probeContinuation: CheckedContinuation<TermEvent?, Error>?
     private var probeToken: UUID?
 
-    init(signalSender: any ProcessSignalSending, identityProvider: any ProcessIdentityProviding, latch: TerminationLatch) {
+    init(signalSender: any ProcessSignalSending, identityProvider: any ProcessIdentityProviding,
+         latch: TerminationLatch, deadlineScheduler: DeadlineScheduling = DispatchDeadlineScheduler()) {
         self.signalSender = signalSender; self.identityProvider = identityProvider; self.latch = latch
+        self.deadlineScheduler = deadlineScheduler
     }
 
     func setIdentity(_ id: ProcessIdentitySnapshot) { launchedIdentity = id }
@@ -282,14 +307,12 @@ actor TermController {
 
         let token = UUID(); probeToken = token
 
-        let interval = deadline - ContinuousClock.now
-        let nanos = UInt64(max(0, interval.components.seconds * 1_000_000_000 + interval.components.attoseconds / 1_000_000_000))
-        let work = DispatchWorkItem { [weak self] in
+        let interval = max(0, Double((deadline - ContinuousClock.now).components.seconds) +
+            Double((deadline - ContinuousClock.now).components.attoseconds) / 1e18)
+        let work = deadlineScheduler.schedule(after: interval) { [weak self] in
             guard let self else { return }
             Task { await self._probeDeadlineReached(token: token) }
         }
-        if nanos > 0 { DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(nanos)), execute: work) }
-        else { work.perform() }
 
         return try await withCheckedThrowingContinuation { (c: CheckedContinuation<TermEvent?, Error>) in
             if let latched = latch.snapshot() { c.resume(returning: latched); return }

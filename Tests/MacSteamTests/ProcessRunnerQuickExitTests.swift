@@ -85,4 +85,10 @@ struct ProcessRunnerQuickExitTests {
         #expect(result.exitCode == 0)
         #expect(result.stdout == "grace")
     }
+
+    @Test func quickExitSecondWindow() async throws {
+        let result = try await runner.run(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "printf second-window"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "second-window")
+    }
 }
