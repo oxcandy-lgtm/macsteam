@@ -1,59 +1,161 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Foundation
-import Darwin
 
-/// Bounded pipe capture using blocking reads on a dedicated queue.
-/// The dedicated serial queue prevents GCD thread pool exhaustion.
+/// Event-driven pipe capture using DispatchSourceRead per FD.
+/// No shared queues, no blocking reads, no polling.
 final class BoundedPipeCapture: @unchecked Sendable {
-    private let readFd: Int32
+    enum State: Sendable {
+        case reading
+        case completed(Data)
+        case failed(ProcessRunner.RunnerError)
+    }
+
+    private let fd: Int32
     private let limit: Int
+    private var state: State = .reading
     private var storage = Data()
-    private var finished = false
+    private var source: DispatchSourceRead?
+    private var continuation: CheckedContinuation<Data, Error>?
     private let lock = NSLock()
 
-    /// Create with a raw read fd (from Pipe.fileHandleForReading.fileDescriptor).
     init(fd: Int32, limit: Int) {
-        self.readFd = fd
+        self.fd = fd
         self.limit = limit
     }
 
-    /// Start blocking reads on the capture queue.
-    func start() {
-        Self.captureQueue.async { [weak self] in
+    /// Start event-driven reading on the provided dispatch queue.
+    func start(on queue: DispatchQueue = .global()) {
+        let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        source = src
+
+        src.setEventHandler { [weak self] in
             guard let self else { return }
             let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: 65536)
-            defer { buf.deallocate(); close(self.readFd) }
+            defer { buf.deallocate() }
 
             while true {
-                let n = read(self.readFd, buf, 65536)
-                guard n > 0 else { break } // EOF (0) or error (<0)
-                self.lock.lock()
-                if self.storage.count < self.limit {
-                    let cap = min(n, self.limit - self.storage.count)
-                    self.storage.append(buf, count: cap)
+                let n = read(self.fd, buf, 65536)
+                if n > 0 {
+                    lock.lock()
+                    if case .reading = state {
+                        if storage.count < limit {
+                            let cap = min(n, limit - storage.count)
+                            storage.append(buf, count: cap)
+                        }
+                    }
+                    lock.unlock()
+                    continue
                 }
-                self.lock.unlock()
+                if n == 0 {
+                    // EOF
+                    src.cancel()
+                    finish(with: .completed(storage))
+                    return
+                }
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    if errno == EAGAIN { return } // wait for next event
+                    // Real error
+                    src.cancel()
+                    finish(with: .failed(.pipeReadFailed))
+                    return
+                }
             }
-
-            self.lock.withLock { self.finished = true }
         }
+
+        src.setCancelHandler { [weak self] in
+            guard let self else { return }
+            close(self.fd)
+        }
+
+        src.resume()
     }
 
-    /// Wait for EOF. Returns bounded data.
+    /// Cancel reading and release the FD.
+    func cancel() {
+        lock.withLock {
+            source?.cancel()
+            source = nil
+        }
+        // Source's cancel handler closes the fd
+    }
+
+    /// Wait for EOF with continuation (no polling).
     func waitForEOF() async throws -> Data {
-        let deadline = DispatchTime.now() + .seconds(10)
-        while true {
-            let (fin, dat) = lock.withLock { (finished, storage) }
-            if fin { return dat }
-            if DispatchTime.now() > deadline {
-                throw ProcessRunner.RunnerError.pipeReadFailed
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            lock.lock()
+            switch state {
+            case .reading:
+                continuation = cont
+                lock.unlock()
+            case .completed(let d):
+                lock.unlock()
+                cont.resume(returning: d)
+            case .failed(let err):
+                lock.unlock()
+                cont.resume(throwing: err)
             }
-            try? await Task.sleep(for: .milliseconds(5))
         }
     }
 
-    private static let captureQueue: DispatchQueue = {
-        DispatchQueue(label: "com.nousresearch.macsteam.bounded-capture", qos: .utility)
-    }()
+    private func finish(with result: State) {
+        let c: CheckedContinuation<Data, Error>?
+        lock.lock()
+        state = result
+        c = continuation
+        continuation = nil
+        lock.unlock()
+        switch result {
+        case .completed(let d):
+            c?.resume(returning: d)
+        case .failed(let err):
+            c?.resume(throwing: err)
+        case .reading:
+            break
+        }
+    }
+}
+
+// MARK: - Owned pipe endpoints
+
+/// RAII ownership of a pipe pair. Ensures no double-close.
+final class OwnedPipeEndpoints: @unchecked Sendable {
+    private(set) var readFD: Int32
+    private(set) var writeFD: Int32
+    private var readClosed = false
+    private var writeClosed = false
+    private let lock = NSLock()
+
+    init(readFD: Int32, writeFD: Int32) {
+        self.readFD = readFD
+        self.writeFD = writeFD
+    }
+
+    /// Transfer read FD ownership to a capture (marks as transferred).
+    func transferReadOwnership() -> Int32 {
+        lock.withLock {
+            readClosed = true // ownership transferred, we won't close it
+            return readFD
+        }
+    }
+
+    func closeWriteEnd() {
+        lock.withLock {
+            guard !writeClosed else { return }
+            writeClosed = true
+            close(writeFD)
+        }
+    }
+
+    func closeAll() {
+        lock.withLock {
+            if !readClosed { readClosed = true; close(readFD) }
+            if !writeClosed { writeClosed = true; close(writeFD) }
+        }
+    }
+
+    deinit {
+        closeAll()
+    }
 }
