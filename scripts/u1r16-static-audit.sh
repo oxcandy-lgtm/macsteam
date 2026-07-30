@@ -1,65 +1,107 @@
 #!/bin/bash
-# U1R16-R1F28 Static Audit — git grep + Python scanner
+# U1R16-R1F29 Static Audit — fail-closed git grep + optional scope
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$DIR" || exit 2
-command -v git >/dev/null 2>&1 || { echo "git required"; exit 2; }
+# Allow GIT_WORK_TREE to override the repo root (for fixture testing)
+REPO_ROOT="${GIT_WORK_TREE:-$DIR}"
+cd "$REPO_ROOT" || exit 2
 
-usage() { echo "Usage: $0 [--fix]"; exit 1; }
-FIX=0; [ "${1:-}" = "--fix" ] && FIX=1
-
-red() { printf '\e[31m%s\e[0m\n' "$1"; }
-green() { printf '\e[32m%s\e[0m\n' "$1"; }
+PROCESS_RUNNER_ONLY=0
+for arg in "$@"; do
+    [ "$arg" = "--process-runner-only" ] && PROCESS_RUNNER_ONLY=1
+done
 
 VIOLATIONS=0
+
 check() {
-    local label="$1" pattern="$2" pathspec="${3:-.}"
-    if [ "$FIX" = 1 ]; then
-        git grep -l -E -- "$pattern" -- "$pathspec" 2>/dev/null | while read -r f; do
-            sed -i '' -E "/$pattern/d" "$f"
-        done
-        return
-    fi
-    local matches
-    matches=$(git grep -c -E -- "$pattern" -- "$pathspec" 2>/dev/null || true)
-    if [ -n "$matches" ]; then
-        local count
-        count=$(echo "$matches" | awk -F: '{s+=$2}END{print s+0}')
-        if [ "$count" -gt 0 ]; then
-            red "❌ $label — found:"
-            git grep -n -E -- "$pattern" -- "$pathspec" 2>/dev/null | sed 's/^/    /'
+    local label="$1" pattern="$2"
+    shift 2
+
+    local tmpout
+    tmpout=$(mktemp /tmp/u1r16-audit.XXXXXX)
+
+    set +e
+    git grep -n -E -- "$pattern" -- "$@" >"$tmpout" 2>&1
+    local status=$?
+    set -e
+
+    case "$status" in
+        0)
+            local count
+            count=$(wc -l <"$tmpout")
+            echo "❌ $label — $count found:" >&2
+            cat "$tmpout" >&2
             VIOLATIONS=$((VIOLATIONS + count))
-        else
-            green "✅ $label — 0"
-        fi
-    else
-        green "✅ $label — 0"
-    fi
+            ;;
+        1) echo "✅ $label — 0" >&2 ;;
+        *)
+            echo "ERROR: audit infrastructure failure: $label" >&2
+            cat "$tmpout" >&2
+            exit 2
+            ;;
+    esac
+
+    rm -f "$tmpout"
 }
 
-# ── Production ProcessRunner guards ──
-check "readToEnd in ProcessRunner" 'readToEnd' Sources/MacSteam/Core/ProcessRunner.swift
-check "ThreadSafeData in ProcessRunner" 'ThreadSafeData' Sources/MacSteam/Core/ProcessRunner.swift
-check "kill in ProcessRunner" ']kill(' Sources/MacSteam/Core/ProcessRunner.swift
+# ── ProcessRunner production guards (zero tolerance) ──
+check "readToEnd" 'readToEnd\(' \
+    Sources/MacSteam/Core/ProcessRunner.swift \
+    Sources/MacSteam/Core/BoundedPipeCapture.swift
 
-# ── Existing lifecycle violations (known) ──
-check "steam://open/main" 'steam://open/main' Sources/MacSteam
-check "activateExistingSteam" 'activateExistingSteam' Sources/MacSteam
-check "quarantineIncompleteSteamInstall" 'quarantineIncompleteSteamInstall' Sources/MacSteam
-check ".dropFirst in WineControlLane" '\.dropFirst\(' Sources/MacSteam/Processes/WineControlLane.swift
-check "mode: .detached in Installer/Ultimate" 'mode: \.detached' Sources/MacSteam
-check "try? in Processes/Installer" 'try\?' Sources/MacSteam/Processes
-check "Navigation TODOs" 'TODO:.*navigate|TODO:.*advance|TODO:.*dismiss' Sources/MacSteam/Views
-check "Fake timers in Views" 'asyncAfter' Sources/MacSteam/Views
+check "waitUntilExit" 'waitUntilExit\(' \
+    Sources/MacSteam/Core
 
-# ── coordinator.state detection (Python scanner) ──
-echo -n "coordinator.state assignment in Views... "
-python3 scripts/u1r16_static_audit.py 2>&1
+check "ThreadSafeData" 'ThreadSafeData' \
+    Sources/MacSteam/Core
 
-if [ "$VIOLATIONS" -gt 0 ]; then
-    echo "💥 Static audit FAILED — $VIOLATIONS violation(s)" >&2
-    exit 1
+check "direct kill" '(^|[^[:alnum:]_])kill\(' \
+    Sources/MacSteam/Core/ProcessRunner.swift
+
+check "zero identity fallback" 'startTimeSeconds:[[:space:]]*0' \
+    Sources/MacSteam/Core/ProcessRunner.swift
+
+check "optional identity lookup" 'try\?[[:space:]]+identityProvider' \
+    Sources/MacSteam/Core/ProcessRunner.swift
+
+check "optional termination wait" 'try\?[[:space:]]+await[[:space:]]+termCtrl\.wait' \
+    Sources/MacSteam/Core/ProcessRunner.swift
+
+if [ "$PROCESS_RUNNER_ONLY" -eq 1 ]; then
+    if [ "$VIOLATIONS" -eq 0 ]; then
+        echo "✅ ProcessRunner audit PASSED — 0 violations" >&2
+        exit 0
+    else
+        echo "💥 ProcessRunner audit FAILED — $VIOLATIONS violation(s)" >&2
+        exit 1
+    fi
 fi
 
-echo "✅ Static audit PASSED — 0 violations" >&2
-exit 0
+# ── Known lifecycle violations (scoped) ──
+if [ "$PROCESS_RUNNER_ONLY" -eq 0 ]; then
+    check "steam://open/main" 'steam://open/main' Sources/MacSteam
+    check "activateExistingSteam" 'activateExistingSteam' Sources/MacSteam
+    check "quarantineIncompleteSteamInstall" 'quarantineIncompleteSteamInstall' Sources/MacSteam
+
+    check ".dropFirst in WineControlLane" '\.dropFirst\(' Sources/MacSteam/Processes/WineControlLane.swift
+
+    check "mode: .detached in Installer/Ultimate" 'mode: \.detached' \
+        Sources/MacSteam/Ultimate Sources/MacSteam/Installer
+
+    check "try? in Processes/Installer" 'try\?' \
+        Sources/MacSteam/Processes Sources/MacSteam/Installer
+
+    check "Navigation TODOs" 'TODO:.*navigate|TODO:.*advance|TODO:.*dismiss' Sources/MacSteam/Views
+    check "Fake timers in Views" 'asyncAfter' Sources/MacSteam/Views
+
+    echo -n "coordinator.state assignment in Views... "
+    python3 "$DIR/scripts/u1r16_static_audit.py" 2>&1
+
+    if [ "$VIOLATIONS" -eq 0 ]; then
+        echo "✅ Static audit PASSED — 0 violations" >&2
+        exit 0
+    else
+        echo "💥 Static audit FAILED — $VIOLATIONS violation(s)" >&2
+        exit 1
+    fi
+fi

@@ -1,58 +1,104 @@
 #!/bin/bash
-# Test U1R16 static audit scripts
+# U1R16-R1F29 Static Audit Fixture — temporary git repo
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCANNER="$SCRIPT_DIR/u1r16_static_audit.py"
-TEST_DIR="$(mktemp -d /tmp/macsteam-audit-test.XXXXXX)"
-trap 'rm -rf "$TEST_DIR"' EXIT
-
+AUDIT="$SCRIPT_DIR/u1r16-static-audit.sh"
 FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-# Helper: create a file in the fixture
-mk_swift() {
-    local dir="$1" subpath="$2" content="$3"
-    mkdir -p "$dir/Sources/MacSteam/Views"
-    echo "$content" > "$dir/Sources/MacSteam/Views/$subpath"
+# Build a temporary git repo with fixture files
+FIXTURE="$(mktemp -d /tmp/macsteam-audit-fixture.XXXXXX)"
+trap 'rm -rf "$FIXTURE"' EXIT
+
+mk_repo() {
+    local name="$1"
+    local dir="$FIXTURE/$name"
+    mkdir -p "$dir/Sources/MacSteam/Core"
+    mkdir -p "$dir/Sources/MacSteam/Processes"
+    (cd "$dir" && git init && git config user.email test@test && git config user.name test)
+    echo "$name" > "$dir/README.md"
+    (cd "$dir" && git add README.md)
 }
 
-# Test 1: clean fixture
-CLEAN="$TEST_DIR/clean"
-mk_swift "$CLEAN" "TestView.swift" 'import SwiftUI'
-mk_swift "$CLEAN" "StateView.swift" 'let x = coordinator.state'
-python3 "$SCANNER" --root "$CLEAN/Sources/MacSteam/Views" >/dev/null 2>&1 && pass "clean returns 0" || fail "clean should return 0"
+add_file() {
+    local repo="$1" path="$2" content="$3"
+    mkdir -p "$FIXTURE/$repo/$(dirname "$path")"
+    echo "$content" > "$FIXTURE/$repo/$path"
+    (cd "$FIXTURE/$repo" && git add "$path" && git commit -m "add $path" --allow-empty)
+}
 
-# Test 2: assignment detected
-ASSN1="$TEST_DIR/assn1"
-mk_swift "$ASSN1" "TestView.swift" 'coordinator.state = .steamReady'
-python3 "$SCANNER" --root "$ASSN1/Sources/MacSteam/Views" >/dev/null 2>&1 && fail "assignment should be 1" || pass "assignment detected"
+run_audit() {
+    local repo="$1" label="$2" expected="$3"
+    local rc=0
+    GIT_WORK_TREE="$FIXTURE/$repo" GIT_DIR="$FIXTURE/$repo/.git" bash "$AUDIT" --process-runner-only >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq "$expected" ]; then
+        pass "$label"
+    else
+        fail "$label (expected exit $expected, got $rc)"
+    fi
+}
 
-# Test 3: multi-space assignment
-ASSN2="$TEST_DIR/assn2"
-mk_swift "$ASSN2" "TestView.swift" 'coordinator.state     = .steamReady'
-python3 "$SCANNER" --root "$ASSN2/Sources/MacSteam/Views" >/dev/null 2>&1 && fail "multi-space assign should be 1" || pass "multi-space detected"
+# ── Fixtures ──
 
-# Test 4: equality comparison
-EQ="$TEST_DIR/eq"
-mk_swift "$EQ" "TestView.swift" 'if coordinator.state == .steamReady'
-python3 "$SCANNER" --root "$EQ/Sources/MacSteam/Views" >/dev/null 2>&1 && pass "== returns 0" || fail "== should return 0"
+mk_repo "clean"
+add_file "clean" "Sources/MacSteam/Core/ProcessRunner.swift" '
+import Foundation
+actor ProcessRunner { func run() {} }
+'
+add_file "clean" "Sources/MacSteam/Core/BoundedPipeCapture.swift" '
+final class BoundedPipeCapture {}
+'
+run_audit "clean" "clean fixture" 0
 
-# Test 5: inequality comparison
-NEQ="$TEST_DIR/neq"
-mk_swift "$NEQ" "TestView.swift" 'if coordinator.state != .steamReady'
-python3 "$SCANNER" --root "$NEQ/Sources/MacSteam/Views" >/dev/null 2>&1 && pass "!= returns 0" || fail "!= should return 0"
+mk_repo "readToEnd"
+add_file "readToEnd" "Sources/MacSteam/Core/ProcessRunner.swift" '
+let x = readToEnd()
+'
+add_file "readToEnd" "Sources/MacSteam/Core/BoundedPipeCapture.swift" ''
+run_audit "readToEnd" "readToEnd fixture" 1
 
-# Test 6: missing root
-python3 "$SCANNER" --root "$TEST_DIR/nonexistent" >/dev/null 2>&1 && fail "missing root should be exit 2" || pass "missing root exits 2"
+mk_repo "waitUntilExit"
+add_file "waitUntilExit" "Sources/MacSteam/Core/ProcessRunner.swift" '
+p.waitUntilExit()
+'
+add_file "waitUntilExit" "Sources/MacSteam/Core/BoundedPipeCapture.swift" ''
+run_audit "waitUntilExit" "waitUntilExit fixture" 1
 
-# Test 7: run full audit script
-AUDIT="$SCRIPT_DIR/u1r16-static-audit.sh"
-cd "$SCRIPT_DIR/.."
-bash "$AUDIT" >/dev/null 2>&1 && rc=$? || rc=$?
-# Audit should find violations in existing code
-[ "$rc" -eq 1 ] && pass "full audit exits 1 (expected violations)" || fail "full audit should exit 1"
+mk_repo "threadSafeData"
+add_file "threadSafeData" "Sources/MacSteam/Core/ProcessRunner.swift" '
+let d = ThreadSafeData()
+'
+add_file "threadSafeData" "Sources/MacSteam/Core/BoundedPipeCapture.swift" ''
+run_audit "threadSafeData" "ThreadSafeData fixture" 1
+
+mk_repo "directKill"
+add_file "directKill" "Sources/MacSteam/Core/ProcessRunner.swift" '
+kill(pid, SIGTERM)
+'
+add_file "directKill" "Sources/MacSteam/Core/BoundedPipeCapture.swift" ''
+run_audit "directKill" "direct kill fixture" 1
+
+mk_repo "optionalIdentity"
+add_file "optionalIdentity" "Sources/MacSteam/Core/ProcessRunner.swift" '
+let x = try? identityProvider.identity(forPID: 0)
+'
+add_file "optionalIdentity" "Sources/MacSteam/Core/BoundedPipeCapture.swift" ''
+run_audit "optionalIdentity" "try? identityProvider fixture" 1
+
+mk_repo "optionalWait"
+add_file "optionalWait" "Sources/MacSteam/Core/ProcessRunner.swift" '
+let x = try? await termCtrl.wait(until: nil)
+'
+add_file "optionalWait" "Sources/MacSteam/Core/BoundedPipeCapture.swift" ''
+run_audit "optionalWait" "try? termCtrl.wait fixture" 1
+
+mk_repo "ordinaryTry"
+add_file "ordinaryTry" "Sources/MacSteam/Core/ProcessRunner.swift" '
+do { let x = try something() } catch {}
+'
+add_file "ordinaryTry" "Sources/MacSteam/Core/BoundedPipeCapture.swift" ''
+run_audit "ordinaryTry" "ordinary try fixture (should be 0)" 0
 
 echo ""
 if [ "$FAILURES" -eq 0 ]; then
