@@ -3,6 +3,31 @@
 import Foundation
 
 // ---------------------------------------------------------------------------
+// MARK: - Protocols and outcome types
+// ---------------------------------------------------------------------------
+
+/// Public interface for terminating processes inside a Wine prefix.
+protocol PrefixProcessTerminating: Sendable {
+    func terminate(runtimeURL: URL, prefixURL: URL) async -> PrefixCleanupResult
+}
+extension PrefixProcessTerminator: PrefixProcessTerminating {}
+
+/// The outcome of a single poll-for-exit loop.
+enum PrefixPollOutcome: Sendable, Equatable {
+    /// All tracked processes exited before the deadline.
+    case exited
+    /// The deadline was reached with some processes still running.
+    case deadline(remaining: Set<String>)
+    /// An error occurred during polling.
+    case failed(reason: String)
+}
+
+/// Injectable sleep primitive so polling can be controlled in tests.
+protocol PrefixCleanupSleeping: Sendable {
+    func sleep(for duration: Duration) async throws
+}
+
+// ---------------------------------------------------------------------------
 // MARK: - Known image names
 // ---------------------------------------------------------------------------
 
@@ -20,6 +45,16 @@ private enum KnownProcessImage: String, CaseIterable, Sendable {
 }
 
 // ---------------------------------------------------------------------------
+// MARK: - DefaultSleeper
+// ---------------------------------------------------------------------------
+
+private struct DefaultSleeper: PrefixCleanupSleeping {
+    func sleep(for duration: Duration) async throws {
+        try await Task.sleep(for: duration)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MARK: - PrefixProcessTerminator
 // ---------------------------------------------------------------------------
 
@@ -34,22 +69,31 @@ private enum KnownProcessImage: String, CaseIterable, Sendable {
 /// 6. `wineserver -k`, then `wineserver -w`
 /// 7. Final census
 /// 8. Return ``PrefixCleanupResult/clean`` only when zero known processes,
-///    wineserver is stopped, **and** no scan errors were recorded.
+///    wineserver is stopped, **all** processes are gone, no scan errors,
+///    and no parse errors were recorded.
 actor PrefixProcessTerminator {
 
     // MARK: - Dependencies
 
-    private let wineControl: WineControlLane
+    private let wineControl: any WineControlServicing
     private let processSupervisor: ProcessSupervisor
+    private let sleeper: any PrefixCleanupSleeping
 
-    // MARK: - Init
+    // MARK: - State
+
+    /// Accumulated count of CSV parse errors across all censuses (initial,
+    /// poll iterations, final).  Any non-zero count prevents a ``.clean``
+    /// result.
+    private var censusParseErrors: Int = 0
 
     init(
-        wineControl: WineControlLane = WineControlLane(),
-        processSupervisor: ProcessSupervisor = ProcessSupervisor()
+        wineControl: any WineControlServicing = WineControlLane(),
+        processSupervisor: ProcessSupervisor = ProcessSupervisor(),
+        sleeper: any PrefixCleanupSleeping = DefaultSleeper()
     ) {
         self.wineControl = wineControl
         self.processSupervisor = processSupervisor
+        self.sleeper = sleeper
     }
 
     // MARK: - Terminate
@@ -62,12 +106,14 @@ actor PrefixProcessTerminator {
     ///   - prefixURL: The ``WINEPREFIX`` directory whose processes should be
     ///     cleaned up.
     /// - Returns: ``PrefixCleanupResult/clean`` iff all known processes and
-    ///   wineserver were stopped without errors.
+    ///   wineserver were stopped without errors, no unknown processes remain,
+    ///   and no census parse errors were encountered.
     func terminate(runtimeURL: URL, prefixURL: URL) async -> PrefixCleanupResult {
         let layout = WineExecutableLayout.detect(from: runtimeURL)
         let wineURL = layout.wine
         let wineserverURL = layout.wineserver
         var scanErrors: [String] = []
+        censusParseErrors = 0
 
         // ---------------------------------------------------------------
         // Step 1 – census
@@ -85,6 +131,8 @@ actor PrefixProcessTerminator {
             return .incomplete(reason: msg)
         }
 
+        censusParseErrors += initialCensus.parseErrors.count
+
         let initialKnown = initialCensus.processes.filter {
             KnownProcessImage.allLowercased.contains($0.imageName.lowercased())
         }
@@ -97,6 +145,7 @@ actor PrefixProcessTerminator {
                 prefixURL: prefixURL,
                 runtimeURL: runtimeURL,
                 wineURL: wineURL,
+                remaining: remaining,
                 scanErrors: scanErrors
             )
         }
@@ -121,13 +170,21 @@ actor PrefixProcessTerminator {
         // ---------------------------------------------------------------
         // Step 3 – poll 5 s (1 s intervals)
         // ---------------------------------------------------------------
-        await pollForExit(
+        switch await pollForExit(
             wineURL: wineURL,
             prefixURL: prefixURL,
             runtimeURL: runtimeURL,
-            remaining: &remaining,
+            remaining: remaining,
             duration: .seconds(5)
-        )
+        ) {
+        case .exited:
+            remaining = []
+        case .deadline(let rem):
+            remaining = rem
+        case .failed(let reason):
+            scanErrors.append("Poll after graceful kill failed: \(reason)")
+            // fail-closed: assume nothing exited; proceed to force kill
+        }
 
         // ---------------------------------------------------------------
         // Step 4 – force taskkill on remaining
@@ -149,22 +206,30 @@ actor PrefixProcessTerminator {
         // ---------------------------------------------------------------
         // Step 5 – poll 5 s (1 s intervals)
         // ---------------------------------------------------------------
-        await pollForExit(
+        switch await pollForExit(
             wineURL: wineURL,
             prefixURL: prefixURL,
             runtimeURL: runtimeURL,
-            remaining: &remaining,
+            remaining: remaining,
             duration: .seconds(5)
-        )
+        ) {
+        case .exited:
+            remaining = []
+        case .deadline(let rem):
+            remaining = rem
+        case .failed(let reason):
+            scanErrors.append("Poll after force kill failed: \(reason)")
+        }
 
         // ---------------------------------------------------------------
-        // Step 6 – wineserver teardown
+        // Step 6, 7, 8 – wineserver teardown, final census, result
         // ---------------------------------------------------------------
         return await finishWithWineserverTeardown(
             wineserverURL: wineserverURL,
             prefixURL: prefixURL,
             runtimeURL: runtimeURL,
             wineURL: wineURL,
+            remaining: remaining,
             scanErrors: scanErrors
         )
     }
@@ -205,21 +270,34 @@ actor PrefixProcessTerminator {
                 other: 0,
                 total: 0
             )
-            return PrefixProcessSnapshot(
-                windowsProcesses: summary,
-                wineserverRunning: await isWineserverRunning(
+            let wineserverRunning: Bool
+            do {
+                wineserverRunning = try await isWineserverRunning(
                     wineserverURL: wineserverURL,
                     prefixURL: prefixURL
-                ),
+                )
+            } catch {
+                scanErrors.append("wineserver check failed: \(error.localizedDescription)")
+                wineserverRunning = true
+            }
+            return PrefixProcessSnapshot(
+                windowsProcesses: summary,
+                wineserverRunning: wineserverRunning,
                 scanErrors: scanErrors,
                 timestamp: Date()
             )
         }
 
-        let wineserverRunning = await isWineserverRunning(
-            wineserverURL: wineserverURL,
-            prefixURL: prefixURL
-        )
+        let wineserverRunning: Bool
+        do {
+            wineserverRunning = try await isWineserverRunning(
+                wineserverURL: wineserverURL,
+                prefixURL: prefixURL
+            )
+        } catch {
+            scanErrors.append("wineserver check failed: \(error.localizedDescription)")
+            wineserverRunning = true
+        }
 
         let summary = categorizeProcesses(censusResult.processes)
 
@@ -234,38 +312,68 @@ actor PrefixProcessTerminator {
     // MARK: - Private Helpers
 
     /// Poll `tasklist` at 1 s intervals (up to ``duration`` seconds) until no
-    /// known processes remain, updating `remaining` in place.
+    /// known processes remain.
+    ///
+    /// - Returns: ``PrefixPollOutcome/exited`` when all known processes have
+    ///   vanished; ``PrefixPollOutcome/deadline`` when the deadline is reached
+    ///   with a (possibly empty) set of survivors; ``PrefixPollOutcome/failed``
+    ///   when any individual census call throws or produces parse errors
+    ///   (fail-closed – we treat unreliable data as a failure).
     private func pollForExit(
         wineURL: URL,
         prefixURL: URL,
         runtimeURL: URL,
-        remaining: inout Set<String>,
+        remaining: Set<String>,
         duration: Duration
-    ) async {
+    ) async -> PrefixPollOutcome {
         let deadline = ContinuousClock.now + duration
-        while ContinuousClock.now < deadline, !remaining.isEmpty {
-            try? await Task.sleep(for: .seconds(1))
-            guard let current = try? await wineControl.taskList(
-                wineExecutable: wineURL,
-                prefixURL: prefixURL,
-                runtimeURL: runtimeURL
-            ) else {
-                continue
+        var stillRemaining = remaining
+
+        while ContinuousClock.now < deadline, !stillRemaining.isEmpty {
+            do {
+                try await sleeper.sleep(for: .seconds(1))
+                let current = try await wineControl.taskList(
+                    wineExecutable: wineURL,
+                    prefixURL: prefixURL,
+                    runtimeURL: runtimeURL
+                )
+
+                // Census parse errors → unreliable data → fail-closed
+                if !current.parseErrors.isEmpty {
+                    censusParseErrors += current.parseErrors.count
+                    return .failed(reason: "Poll census produced \(current.parseErrors.count) parse error(s)")
+                }
+
+                let known = current.processes.filter {
+                    KnownProcessImage.allLowercased.contains($0.imageName.lowercased())
+                }
+                stillRemaining = Set(known.map { $0.imageName.lowercased() })
+            } catch {
+                return .failed(reason: "Poll census failed: \(error.localizedDescription)")
             }
-            let known = current.processes.filter {
-                KnownProcessImage.allLowercased.contains($0.imageName.lowercased())
-            }
-            remaining = Set(known.map { $0.imageName.lowercased() })
         }
+
+        if stillRemaining.isEmpty {
+            return .exited
+        }
+        return .deadline(remaining: stillRemaining)
     }
 
     /// Perform the wineserver teardown (step 6), final census (step 7), and
     /// determine the result (step 8).
+    ///
+    /// ``.clean`` is returned only when:
+    /// - No known processes remain in the final census
+    /// - **All** processes (not just known ones) are gone
+    /// - Wineserver is not running
+    /// - No scan errors were recorded
+    /// - No census parse errors occurred (initial, poll, or final)
     private func finishWithWineserverTeardown(
         wineserverURL: URL,
         prefixURL: URL,
         runtimeURL: URL,
         wineURL: URL,
+        remaining: Set<String>,
         scanErrors: [String]
     ) async -> PrefixCleanupResult {
         var errors = scanErrors
@@ -301,23 +409,39 @@ actor PrefixProcessTerminator {
             return .incomplete(reason: "Final census failed: \(error.localizedDescription)")
         }
 
+        censusParseErrors += finalCensus.parseErrors.count
+
         let finalKnown = finalCensus.processes.filter {
             KnownProcessImage.allLowercased.contains($0.imageName.lowercased())
         }
-        let wineserverRunning = await isWineserverRunning(
-            wineserverURL: wineserverURL,
-            prefixURL: prefixURL
-        )
 
-        // Step 8 – clean only if nothing is left and no errors
-        if finalKnown.isEmpty, !wineserverRunning, errors.isEmpty {
+        let wineserverRunning: Bool
+        do {
+            wineserverRunning = try await wineControl.wineserverProbe(
+                wineserverURL: wineserverURL,
+                prefixURL: prefixURL
+            )
+        } catch {
+            errors.append("wineserver check failed: \(error.localizedDescription)")
+            wineserverRunning = true
+        }
+
+        // Step 8 – clean only when nothing is left and no errors
+        if finalKnown.isEmpty,
+           !wineserverRunning,
+           errors.isEmpty,
+           finalCensus.processes.isEmpty,
+           censusParseErrors == 0 {
             return .clean
         }
 
         var reasons: [String] = []
         if !finalKnown.isEmpty {
             let images = Set(finalKnown.map(\.imageName)).sorted()
-            reasons.append("Remaining processes: \(images.joined(separator: ", "))")
+            reasons.append("Remaining known processes: \(images.joined(separator: ", "))")
+        }
+        if !finalCensus.processes.isEmpty {
+            reasons.append("\(finalCensus.processes.count) process(es) still running")
         }
         if wineserverRunning {
             reasons.append("wineserver still running")
@@ -325,28 +449,25 @@ actor PrefixProcessTerminator {
         if !errors.isEmpty {
             reasons.append("Errors: \(errors.joined(separator: "; "))")
         }
+        if censusParseErrors > 0 {
+            reasons.append("\(censusParseErrors) census parse error(s)")
+        }
         return .incomplete(reason: reasons.joined(separator: "; "))
     }
 
     /// Check whether `wineserver` is running for the given prefix by invoking
     /// `wineserver -p` (which prints the PID when running).
-    private nonisolated func isWineserverRunning(
+    ///
+    /// - Throws: ``ProcessRunner/RunnerError`` or any other error from the
+    ///   underlying process invocation.
+    private func isWineserverRunning(
         wineserverURL: URL,
         prefixURL: URL
-    ) async -> Bool {
-        let runner = ProcessRunner()
-        let result = try? await runner.run(
-            executable: wineserverURL,
-            arguments: ["-p"],
-            environment: [
-                "WINEPREFIX": prefixURL.path,
-                "WINEDEBUG": "-all",
-            ],
-            timeout: 5
+    ) async throws -> Bool {
+        try await wineControl.wineserverProbe(
+            wineserverURL: wineserverURL,
+            prefixURL: prefixURL
         )
-        guard let result else { return false }
-        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !output.isEmpty
     }
 
     /// Categorise a raw process list into a ``PrefixWindowsProcessSummary``.

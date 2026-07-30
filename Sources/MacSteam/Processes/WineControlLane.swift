@@ -48,6 +48,24 @@ enum WineControlError: Error, LocalizedError {
     }
 }
 
+/// Interface for serializing Wine control commands (tasklist, terminate,
+/// wineserver kill/wait) through a serial executor to prevent concurrent
+/// interference with the Wine runtime.
+protocol WineControlServicing: Sendable {
+    /// Run `wine tasklist` and parse the output.
+    func taskList(wineExecutable: URL, prefixURL: URL, runtimeURL: URL) async throws -> TasklistResult
+
+    /// Terminate a Windows process by image name.
+    func terminate(imageName: String, force: Bool, wineExecutable: URL, prefixURL: URL, runtimeURL: URL) async throws
+
+    /// Kill the wineserver process for the given prefix.
+    func wineserverKill(wineserverURL: URL, prefixURL: URL) async throws
+
+    /// Wait for the wineserver to shut down.
+    func wineserverWait(wineserverURL: URL, prefixURL: URL, timeoutSeconds: Int) async throws -> Bool
+    func wineserverProbe(wineserverURL: URL, prefixURL: URL) async throws -> Bool
+}
+
 actor WineControlLane {
 
     private let processRunner: ProcessRunner
@@ -236,6 +254,22 @@ actor WineControlLane {
         }
     }
 
+    // MARK: - wineserver probe
+
+    func wineserverProbe(wineserverURL: URL, prefixURL: URL) async throws -> Bool {
+        let environment = buildBasicWineEnvironment(prefixURL: prefixURL)
+        let result = try await processRunner.run(
+            executable: wineserverURL,
+            arguments: ["-p"],
+            environment: environment,
+            workingDirectory: prefixURL,
+            timeout: 5,
+            mode: .waitForExit
+        )
+        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !output.isEmpty
+    }
+
     // MARK: - Environment
     ///
     /// Falls back to a basic environment when `RuntimeDependencyLayout`
@@ -336,3 +370,5 @@ actor WineControlLane {
         return fields
     }
 }
+
+extension WineControlLane: WineControlServicing {}

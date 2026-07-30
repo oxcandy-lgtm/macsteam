@@ -7,22 +7,31 @@ import Foundation
 /// Owns the installer process through ProcessSupervisor directly (not
 /// GameSessionSupervisor). Transitions through InstallerPhase via the
 /// InstallerOperation state machine. All phase transitions are validated.
+///
+/// ## Single-wait authority
+///
+/// The ``installExitTask`` is the **only** task that waits for the installer
+/// process to exit. Both the normal-exit path (``waitForInstallerExit()``) and
+/// the stop path (``stopAndClean()``) read from this single task, guaranteeing
+/// that the exit event is observed exactly once.
 actor InstallerSupervisor {
     private let processSupervisor: ProcessSupervisor
-    private let wineControl: WineControlLane
+    private let prefixTerminator: any PrefixProcessTerminating
 
     private(set) var currentOperation: InstallerOperation?
-    private var installTask: Task<Void, Never>?
+    private var installExitTask: Task<ProcessWaitOutcome, Never>?
     private var activeHandle: SupervisedProcessHandle?
     private var activeRuntimeURL: URL?
     private var activePrefixURL: URL?
+    private var stopRequested = false
+    private var finalizedHandleToken: UUID?
 
     init(
         processSupervisor: ProcessSupervisor = ProcessSupervisor(),
-        wineControl: WineControlLane = WineControlLane()
+        prefixTerminator: any PrefixProcessTerminating = PrefixProcessTerminator()
     ) {
         self.processSupervisor = processSupervisor
-        self.wineControl = wineControl
+        self.prefixTerminator = prefixTerminator
     }
 
     // MARK: - Public API
@@ -76,95 +85,64 @@ actor InstallerSupervisor {
             op.updatedAt = Date()
             self.currentOperation = op
 
-            // Wait for real termination in background
-            installTask = Task {
-                let outcome = await processSupervisor.waitForTermination(handle)
-                await processSupervisor.discard(handle)
-                self.activeHandle = nil
-                await handleInstallerExit(outcome: outcome)
+            // Single-wait authority: the exit task only waits — cleanup happens
+            // in finalizeInstallerHandle called by stopAndClean or waitForInstallerExit.
+            installExitTask = Task { [processSupervisor] in
+                await processSupervisor.waitForTermination(handle)
             }
         } catch {
             op.lastError = error.localizedDescription
-            setPhase(&op, .interrupted)
+            try? op.transition(to: .interrupted)
+            self.currentOperation = op
+            throw error
         }
     }
 
     /// Wait for the installer to finish.
+    ///
+    /// Blocks until the installer exits naturally, then finalises the handle
+    /// and transitions the state machine via ``handleInstallerExit``.
     func waitForInstallerExit() async throws {
-        await installTask?.value
+        guard let handle = activeHandle, let task = installExitTask else { return }
+        let outcome = await task.value
+        try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: false)
     }
 
-    /// Stop the installer and clean up.
+    /// Stop the installer and clean up. Fail-closed: if the installer process
+    /// does not exit after SIGKILL, state is NOT cleared and an error is thrown.
     func stopAndClean() async throws {
-        // Cancel observer task
-        installTask?.cancel()
-        installTask = nil
+        stopRequested = true
+
+        guard let handle = activeHandle else { return }
 
         // Terminate owned installer process
-        if let handle = activeHandle {
-            await processSupervisor.requestTerminate(handle)
-            let outcome = await processSupervisor.waitForExit(handle, timeout: .seconds(5))
-            if case .timedOut = outcome {
-                try await processSupervisor.requestForceKill(handle)
-                _ = await processSupervisor.waitForExit(handle, timeout: .seconds(3))
-            }
-            await processSupervisor.discard(handle)
-            activeHandle = nil
-        }
+        await processSupervisor.requestTerminate(handle)
 
-        // Clean up known Windows processes via WineControlLane
-        if let runtimeURL = activeRuntimeURL, let prefixURL = activePrefixURL {
-            let layout = WineExecutableLayout.detect(from: runtimeURL)
-            let wineURL = layout.wine
-            let serverURL = layout.wineserver
-
-            try await stopKnownPrefixProcesses(
-                wineExecutable: wineURL,
-                wineserverURL: serverURL,
-                prefixURL: prefixURL,
-                runtimeURL: runtimeURL
-            )
-        }
-
-        currentOperation = nil
-    }
-
-    /// Stop known Windows processes in the prefix.
-    func stopKnownPrefixProcesses(
-        wineExecutable: URL,
-        wineserverURL: URL,
-        prefixURL: URL,
-        runtimeURL: URL
-    ) async throws {
-        let knownImages = ["SteamSetup.exe", "steam.exe", "steamwebhelper.exe",
-                          "steamservice.exe", "crashhandler.exe"]
-
-        // Graceful terminate
-        for image in knownImages {
-            try? await wineControl.terminate(
-                imageName: image, force: false,
-                wineExecutable: wineExecutable, prefixURL: prefixURL, runtimeURL: runtimeURL
-            )
-        }
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-
-        // Force remaining
-        let afterTasklist = try? await wineControl.taskList(
-            wineExecutable: wineExecutable, prefixURL: prefixURL, runtimeURL: runtimeURL
-        )
-        for proc in afterTasklist?.processes ?? [] {
-            if knownImages.contains(where: { $0.lowercased() == proc.imageName.lowercased() }) {
-                try? await wineControl.terminate(
-                    imageName: proc.imageName, force: true,
-                    wineExecutable: wineExecutable, prefixURL: prefixURL, runtimeURL: runtimeURL
-                )
+        // Single wait authority — wait for existing exit task
+        if let outcome = try? await waitForExitTask(timeout: 5) {
+            try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: true)
+        } else {
+            // Timeout — force kill
+            try await processSupervisor.requestForceKill(handle)
+            if let outcome = try? await waitForExitTask(timeout: 3) {
+                // Exited after SIGKILL
+                try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: true)
+            } else {
+                // Still not confirmed — must NOT clear state
+                throw InstallerError.terminationFailed("Installer did not exit after SIGKILL")
             }
         }
 
-        // Wineserver shutdown
-        try? await wineControl.wineserverKill(wineserverURL: wineserverURL, prefixURL: prefixURL)
-        _ = try? await wineControl.wineserverWait(wineserverURL: wineserverURL,
-                                                   prefixURL: prefixURL, timeoutSeconds: 15)
+        // Clean up prefix
+        guard let runtimeURL = activeRuntimeURL, let prefixURL = activePrefixURL else { return }
+        let result = await prefixTerminator.terminate(runtimeURL: runtimeURL, prefixURL: prefixURL)
+
+        switch result {
+        case .clean:
+            stateClear()
+        case .incomplete(let reason):
+            throw InstallerError.terminationFailed("Prefix cleanup incomplete: \(reason)")
+        }
     }
 
     /// Snapshot of the current installer state (for UI projection).
@@ -174,7 +152,56 @@ actor InstallerSupervisor {
 
     // MARK: - Private
 
+    /// Finalize an installer handle: discard the process, clear activeHandle,
+    /// and call ``handleInstallerExit`` unless this was an intentional stop (in
+    /// which case the state machine transition is handled by ``stopAndClean``).
+    private func finalizeInstallerHandle(
+        handle: SupervisedProcessHandle,
+        outcome: ProcessWaitOutcome,
+        intentionalStop: Bool
+    ) async throws {
+        defer {
+            if finalizedHandleToken == handle.token {
+                finalizedHandleToken = nil
+            }
+        }
+        // Guard against double-finalization
+        if finalizedHandleToken == handle.token { return }
+        finalizedHandleToken = handle.token
+
+        await processSupervisor.discard(handle)
+        activeHandle = nil
+
+        if !intentionalStop {
+            await handleInstallerExit(outcome: outcome)
+        }
+    }
+
+    /// Wait for the existing exit task to complete, with a timeout.
+    private func waitForExitTask(timeout: TimeInterval) async throws -> ProcessWaitOutcome {
+        let task = installExitTask
+        guard let task else {
+            throw TimeoutError()
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            Task {
+                // Race between exit and timeout
+                let timeoutTask = Task {
+                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    continuation.resume(throwing: TimeoutError())
+                }
+                let outcome = await task.value
+                timeoutTask.cancel()
+                continuation.resume(returning: outcome)
+            }
+        }
+    }
+
     private func handleInstallerExit(outcome: ProcessWaitOutcome) async {
+        // If stop was requested, save the exit event and return without
+        // transitioning — stopAndClean handles cleanup via finalizeInstallerHandle.
+        if stopRequested { return }
+
         guard var op = currentOperation else { return }
         let exitCode: Int32
         if case .exited(let code) = outcome { exitCode = code } else { exitCode = -1 }
@@ -194,23 +221,29 @@ actor InstallerSupervisor {
                 // that produces GREEN. The coordinator must explicitly advance.
             } else {
                 op.lastError = "Installer exited with code \(exitCode)"
-                setPhase(&op, .failed)
+                try setPhase(&op, .failed)
             }
         } catch {
             op.lastError = error.localizedDescription
-            setPhase(&op, .interrupted)
+            try? setPhase(&op, .interrupted)
         }
     }
 
     /// Set phase using transition(to:) as the only mutation path.
-    /// On invalid transition, safe-fall to interrupted.
-    private func setPhase(_ op: inout InstallerOperation, _ newPhase: InstallerPhase) {
-        do {
-            try op.transition(to: newPhase)
-        } catch {
-            op.phase = newPhase
-            op.updatedAt = Date()
-        }
+    /// On invalid transition, throws.
+    private func setPhase(_ op: inout InstallerOperation, _ newPhase: InstallerPhase) throws {
+        try op.transition(to: newPhase)
+        op.updatedAt = Date()
+    }
+
+    /// Clear ALL state atomically — only called when cleanup is fully successful.
+    private func stateClear() {
+        currentOperation = nil
+        activeRuntimeURL = nil
+        activePrefixURL = nil
+        activeHandle = nil
+        installExitTask = nil
+        stopRequested = false
     }
 
     private func buildBaseEnv(prefixURL: URL, runtimeURL: URL) -> [String: String] {
@@ -229,3 +262,6 @@ actor InstallerSupervisor {
         return env
     }
 }
+
+/// Timeout error used internally by ``InstallerSupervisor/waitForExitTask(timeout:)``.
+private struct TimeoutError: Error {}
