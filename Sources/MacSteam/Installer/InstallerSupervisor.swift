@@ -104,7 +104,10 @@ actor InstallerSupervisor {
         } catch {
             op.lastError = error.localizedDescription
             // Silently fall back if the phase is already terminal
-            do { try op.transition(to: .interrupted) } catch {}
+            do { try op.transition(to: .interrupted) }
+            catch let transitionError {
+                op.lastError = "\(error.localizedDescription); state transition failed: \(transitionError.localizedDescription)"
+            }
             self.currentOperation = op
             throw error
         }
@@ -263,7 +266,6 @@ actor InstallerSupervisor {
         installExitTask = nil
         exitLatch = nil
         stopRequested = false
-        finalizedHandleTokens.removeAll()
     }
 
     private func buildBaseEnv(prefixURL: URL, runtimeURL: URL) -> [String: String] {
@@ -304,6 +306,11 @@ actor InstallerExitLatch {
 
     init(scheduler: any DeadlineScheduling = DispatchDeadlineScheduler()) {
         self.scheduler = scheduler
+    }
+
+    /// Number of registered waiters (for test observability).
+    func registeredWaiterCount() -> Int {
+        waiters.keys.count
     }
 
     /// Record an exit outcome, resuming all waiters.

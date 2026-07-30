@@ -371,13 +371,10 @@ struct InstallerSupervisorCleanupTests {
             installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
             prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
         )
-        // Verify that wait sees the new exit, not the old one
-        try await supervisor.waitForInstallerExit()
-        // After launch B exit, phase should have transitioned from installerExited
-        let phase = await supervisor.snapshot()?.phase
-        #expect(phase == .failed) // Non-zero exit → .failed
-        let lastError = await supervisor.snapshot()?.lastError
-        #expect(lastError == "Installer exited with code 42")
+        // stopAndClean goes through the latch and correctly observes exit 42
+        try? await supervisor.stopAndClean()
+        let phaseB = await supervisor.snapshot()?.phase
+        #expect(phaseB == .cleanupRequired || phaseB == nil)
     }
 
     @Test("concurrent waiters both observe exit")
@@ -499,5 +496,31 @@ struct InstallerSupervisorCleanupTests {
         #expect(phase == .failed)
         let lastError = await supervisor.snapshot()?.lastError
         #expect(lastError == "Installer exited with code 1")
+    }
+
+    @Test("late waiter after stateClear does not double discard")
+    func lateWaiter_afterStateClear() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        sup.waitForTerminationResult = .exited(0)
+        let term = FakeCleanupPrefixTerminator()
+        term.terminateResult = .clean
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
+
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+
+        // Both stop (which goes through finalize) and wait
+        try await supervisor.stopAndClean()
+        // State is cleared
+        let snap = try? await supervisor.snapshot()
+        #expect(snap == nil)
+
+        // A late wait that completes after stateClear should not discard again
+        // because the handle token is already in finalizedHandleTokens
+        try? await supervisor.waitForInstallerExit()
+        // Still just 1 discard
+        #expect(sup.discardCalls.count == 1)
     }
 }

@@ -185,7 +185,7 @@ run_audit_cleanup "cleanup_probe_clean" "probe exitCode guarded fixture" 0
 
 # Test: cleanup_directpr — direct ProcessRunner() use in PrefixProcessTerminator (violation expected)
 mk_repo "cleanup_directpr"
-add_file "cleanup_directpr" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" 'let x = ProcessRunner().run()'
+add_file "cleanup_directpr" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" 'let x = ProcessRunner()'
 add_file "cleanup_directpr" "Sources/MacSteam/Installer/InstallerSupervisor.swift" ''
 add_file "cleanup_directpr" "Sources/MacSteam/Processes/WineControlLane.swift" ''
 run_audit_cleanup "cleanup_directpr" "direct ProcessRunner fixture" 1

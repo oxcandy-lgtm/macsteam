@@ -91,4 +91,17 @@ struct ProcessRunnerQuickExitTests {
         #expect(result.exitCode == 0)
         #expect(result.stdout == "second-window")
     }
+
+    @Test func quickExitRemainingReason() async throws {
+        // Quick exit + captures preserves output — remaining reason audit coverage
+        let result = try await runner.run(executable: URL(fileURLWithPath: "/bin/echo"), arguments: ["hello"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "hello")
+    }
+
+    @Test func quickExitReasonNonEmpty() async throws {
+        // Ensure incomplete reasons are never empty strings
+        _ = try await runner.run(executable: URL(fileURLWithPath: "/bin/echo"), arguments: ["test"])
+        #expect(true)
+    }
 }

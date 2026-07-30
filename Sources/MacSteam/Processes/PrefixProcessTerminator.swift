@@ -443,6 +443,9 @@ actor PrefixProcessTerminator {
         if !finalKnown.isEmpty {
             reasons.append("Remaining known processes: \(finalKnown.count)")
         }
+        if !remaining.isEmpty {
+            reasons.append("Remaining tracked process images: \(remaining.count)")
+        }
         if !finalCensus.processes.isEmpty {
             reasons.append("\(finalCensus.processes.count) process(es) still running")
         }
