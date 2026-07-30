@@ -11,15 +11,17 @@ import Foundation
 ///
 /// ## Exit-latch design
 ///
-/// The ``exitLatch`` is the **single authority** for observing the installer
-/// process's exit. An ``installExitTask`` calls ``InstallerExitLatch/record(_:)``
-/// when ``ProcessSupervising/waitForTermination(_:)`` returns. Both the normal-exit
+/// The ``exitLatch`` is created per-launch as the **single authority** for
+/// observing the installer process's exit. An ``installExitTask`` calls
+/// ``InstallerExitLatch/record(_:)`` when
+/// ``ProcessSupervising/waitForTermination(_:)`` returns. Both the normal-exit
 /// path (``waitForInstallerExit()``) and the stop path (``stopAndClean()``) read
 /// from the latch, guaranteeing that the exit event is observed exactly once.
 actor InstallerSupervisor {
     private let processSupervisor: any ProcessSupervising
     private let prefixTerminator: any PrefixProcessTerminating
-    private let exitLatch = InstallerExitLatch()
+    private let deadlineScheduler: any DeadlineScheduling
+    private var exitLatch: InstallerExitLatch?
 
     private(set) var currentOperation: InstallerOperation?
     private var installExitTask: Task<Void, Never>?
@@ -31,10 +33,12 @@ actor InstallerSupervisor {
 
     init(
         processSupervisor: any ProcessSupervising = ProcessSupervisor(),
-        prefixTerminator: any PrefixProcessTerminating = PrefixProcessTerminator()
+        prefixTerminator: any PrefixProcessTerminating = PrefixProcessTerminator(),
+        deadlineScheduler: any DeadlineScheduling = DispatchDeadlineScheduler()
     ) {
         self.processSupervisor = processSupervisor
         self.prefixTerminator = prefixTerminator
+        self.deadlineScheduler = deadlineScheduler
     }
 
     // MARK: - Public API
@@ -47,8 +51,8 @@ actor InstallerSupervisor {
         runtimeSafeID: String,
         prefixSafeID: String
     ) async throws {
-        guard currentOperation == nil || currentOperation?.phase.isTerminal == true else {
-            throw InstallerError.terminationFailed("Installer already running")
+        guard currentOperation == nil else {
+            throw InstallerError.terminationFailed("Previous installer operation requires cleanup")
         }
 
         activeRuntimeURL = runtimeURL
@@ -88,12 +92,14 @@ actor InstallerSupervisor {
             op.updatedAt = Date()
             self.currentOperation = op
 
-            // Single-wait authority: the exit task records into the latch.
-            // Cleanup happens in finalizeInstallerHandle called by stopAndClean
-            // or waitForInstallerExit.
-            installExitTask = Task { [processSupervisor, exitLatch] in
+            // Per-launch latch: each launch creates a fresh latch so multiple
+            // waiters can observe the exit concurrently.
+            let latch = InstallerExitLatch(scheduler: deadlineScheduler)
+            exitLatch = latch
+
+            installExitTask = Task { [processSupervisor, latch] in
                 let outcome = await processSupervisor.waitForTermination(handle)
-                await exitLatch.record(outcome)
+                await latch.record(outcome)
             }
         } catch {
             op.lastError = error.localizedDescription
@@ -110,11 +116,9 @@ actor InstallerSupervisor {
     /// finalises the handle and transitions the state machine via
     /// ``handleInstallerExit``.
     func waitForInstallerExit() async throws {
-        guard let handle = activeHandle else { return }
-        let outcome = await exitLatch.wait(timeout: Double.infinity)
-        if let outcome {
-            try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: false)
-        }
+        guard let handle = activeHandle, let latch = exitLatch else { return }
+        let outcome = await latch.wait()
+        try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: false)
     }
 
     /// Stop the installer and clean up. Fail-closed: if the installer process
@@ -122,15 +126,20 @@ actor InstallerSupervisor {
     func stopAndClean() async throws {
         stopRequested = true
 
-        if let handle = activeHandle {
+        if let handle = activeHandle, let latch = exitLatch {
             await processSupervisor.requestTerminate(handle)
 
-            if let outcome = await exitLatch.wait(timeout: 5) {
+            if let outcome = await latch.wait(timeout: 5) {
                 try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: true)
             } else {
                 // Timeout — force kill
-                try await processSupervisor.requestForceKill(handle)
-                if let outcome = await exitLatch.wait(timeout: 3) {
+                do {
+                    try await processSupervisor.requestForceKill(handle)
+                } catch {
+                    try markCleanupRequired("Force kill failed: \(error.localizedDescription)")
+                    throw error
+                }
+                if let outcome = await latch.wait(timeout: 3) {
                     try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: true)
                 } else {
                     try markCleanupRequired("Installer did not exit after SIGKILL")
@@ -139,7 +148,6 @@ actor InstallerSupervisor {
             }
         }
 
-        // Clean up prefix
         guard let runtimeURL = activeRuntimeURL, let prefixURL = activePrefixURL else {
             try markCleanupRequired("Missing runtime or prefix URL")
             throw InstallerError.terminationFailed("Missing runtime or prefix URL")
@@ -207,23 +215,16 @@ actor InstallerSupervisor {
         do {
             if exitCode == 0 {
                 try op.transition(to: .installerExited)
-                op.updatedAt = Date()
-                self.currentOperation = op
-
-                // Proceed to verification (bootstrap detection deferred to next batch)
                 try op.transition(to: .verifyingInstallation)
-                op.updatedAt = Date()
-                self.currentOperation = op
-
-                // Note: .steamReady is NOT set here — requires dedicated verification
-                // that produces GREEN. The coordinator must explicitly advance.
             } else {
                 op.lastError = "Installer exited with code \(exitCode)"
                 try setPhase(&op, .failed)
             }
+            op.updatedAt = Date()
+            self.currentOperation = op
         } catch {
             op.lastError = error.localizedDescription
-            do { try setPhase(&op, .interrupted) } catch {}
+            self.currentOperation = op
         }
     }
 
@@ -235,10 +236,21 @@ actor InstallerSupervisor {
     }
 
     /// Mark the current operation as requiring cleanup, recording the reason.
+    /// Idempotent: if the operation is already in .cleanupRequired, skips the
+    /// transition but still records the error message.
     private func markCleanupRequired(_ reason: String) throws {
-        guard var op = currentOperation else { return }
+        guard var op = currentOperation else {
+            throw InstallerError.terminationFailed(reason)
+        }
         op.lastError = reason
-        try op.transition(to: .cleanupRequired)
+        if op.phase != .cleanupRequired {
+            do {
+                try op.transition(to: .cleanupRequired)
+            } catch {
+                currentOperation = op
+                throw error
+            }
+        }
         currentOperation = op
     }
 
@@ -249,7 +261,9 @@ actor InstallerSupervisor {
         activePrefixURL = nil
         activeHandle = nil
         installExitTask = nil
+        exitLatch = nil
         stopRequested = false
+        finalizedHandleTokens.removeAll()
     }
 
     private func buildBaseEnv(prefixURL: URL, runtimeURL: URL) -> [String: String] {
@@ -271,8 +285,8 @@ actor InstallerSupervisor {
 
 // MARK: - InstallerExitLatch
 
-/// Single-consumer latch that records a process exit outcome and provides
-/// a timeout-capable waiter.
+/// Broadcast latch that records a process exit outcome and provides
+/// a timeout-capable waiter. Multiple callers can wait concurrently.
 actor InstallerExitLatch {
     enum State: Sendable {
         case waiting
@@ -280,59 +294,69 @@ actor InstallerExitLatch {
     }
 
     private var state: State = .waiting
-    private var waiter: CheckedContinuation<ProcessWaitOutcome?, Never>?
-    private var deadlineToken: UUID?
-    private let scheduler: DeadlineScheduling
+    private struct Waiter: Sendable {
+        let continuation: CheckedContinuation<ProcessWaitOutcome?, Never>
+        let deadlineToken: UUID?
+        let work: (any CancellableWork)?
+    }
+    private var waiters: [UUID: Waiter] = [:]
+    private let scheduler: any DeadlineScheduling
 
-    init(scheduler: DeadlineScheduling = DispatchDeadlineScheduler()) {
+    init(scheduler: any DeadlineScheduling = DispatchDeadlineScheduler()) {
         self.scheduler = scheduler
     }
 
-    /// Record an exit outcome, resuming any waiter.
+    /// Record an exit outcome, resuming all waiters.
+    /// Idempotent: only the first call has effect.
     func record(_ outcome: ProcessWaitOutcome) {
         switch state {
         case .waiting:
             state = .exited(outcome)
-            waiter?.resume(returning: outcome)
-            waiter = nil
+            for (_, w) in waiters {
+                w.work?.cancel()
+                w.continuation.resume(returning: outcome)
+            }
+            waiters = [:]
         case .exited:
             break // already recorded
         }
     }
 
-    /// Wait for the recorded outcome, with a timeout.
-    ///
-    /// - Returns: The ``ProcessWaitOutcome`` if recorded before the timeout,
-    ///   or `nil` if the deadline was reached first.
+    /// Wait indefinitely for the exit outcome.
+    func wait() async -> ProcessWaitOutcome {
+        if case .exited(let o) = state { return o }
+        return await withCheckedContinuation { (c: CheckedContinuation<ProcessWaitOutcome?, Never>) in
+            if case .exited(let o) = state { c.resume(returning: o); return }
+            let id = UUID()
+            waiters[id] = Waiter(continuation: c, deadlineToken: nil, work: nil)
+        }!
+    }
+
+    /// Wait with a timeout. Returns nil when the deadline fires first.
     func wait(timeout: TimeInterval) async -> ProcessWaitOutcome? {
         if case .exited(let o) = state { return o }
 
+        let id = UUID()
         let token = UUID()
-        deadlineToken = token
-
         let work = scheduler.schedule(after: timeout) { [weak self] in
             guard let self else { return }
-            Task { await self._deadlineReached(token: token) }
+            Task { await self._deadlineReached(waiterID: id, token: token) }
         }
 
-        let result = await withCheckedContinuation { (c: CheckedContinuation<ProcessWaitOutcome?, Never>) in
+        return await withCheckedContinuation { c in
             if case .exited(let o) = state {
+                work.cancel()
                 c.resume(returning: o)
                 return
             }
-            waiter = c
+            waiters[id] = Waiter(continuation: c, deadlineToken: token, work: work)
         }
-
-        work.cancel()
-        if token == deadlineToken { deadlineToken = nil }
-        return result
     }
 
-    private func _deadlineReached(token: UUID) {
-        guard token == deadlineToken else { return }
-        deadlineToken = nil
-        waiter?.resume(returning: nil)
-        waiter = nil
+    private func _deadlineReached(waiterID: UUID, token: UUID) {
+        guard let w = waiters[waiterID], w.deadlineToken == token else { return }
+        waiters.removeValue(forKey: waiterID)
+        w.continuation.resume(returning: nil)
     }
 }
 

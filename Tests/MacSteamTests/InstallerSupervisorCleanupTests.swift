@@ -20,6 +20,9 @@ final class FakeInstallProcessSupervisor: @unchecked Sendable, ProcessSupervisin
     /// When false (default), `waitForTermination` returns `waitForTerminationResult` immediately.
     var shouldSuspend = false
 
+    /// When true, `requestForceKill` throws instead of resuming the waiter.
+    var forceKillShouldThrow = false
+
     private var waitContinuation: CheckedContinuation<ProcessWaitOutcome, Never>?
 
     func launch(plan: LaunchPlan, outputPolicy: ProcessOutputPolicy) async throws -> SupervisedProcessHandle {
@@ -33,6 +36,9 @@ final class FakeInstallProcessSupervisor: @unchecked Sendable, ProcessSupervisin
 
     func requestForceKill(_ handle: SupervisedProcessHandle) async throws {
         forceKillCalls.append(handle)
+        if forceKillShouldThrow {
+            throw ProcessRunner.RunnerError.executableNotFound(URL(fileURLWithPath: "/dev/null"))
+        }
         // Simulate reality: force-killing the process causes waitForTermination to return
         resumeWait()
     }
@@ -66,6 +72,28 @@ final class FakeCleanupPrefixTerminator: @unchecked Sendable, PrefixProcessTermi
         terminateCallCount += 1
         return terminateResult
     }
+}
+
+final class ManualInstallDeadlineScheduler: @unchecked Sendable, DeadlineScheduling {
+    var pendingActions: [(id: UUID, action: () -> Void)] = []
+
+    func schedule(after delay: TimeInterval, action: @escaping @Sendable () -> Void) -> CancellableWork {
+        let id = UUID()
+        pendingActions.append((id, action))
+        return ManualInstallWork { [weak self] in self?.pendingActions.removeAll(where: { $0.id == id }) }
+    }
+
+    func fireNext() {
+        guard !pendingActions.isEmpty else { return }
+        let a = pendingActions.removeFirst()
+        a.action()
+    }
+}
+
+final class ManualInstallWork: @unchecked Sendable, CancellableWork {
+    let onCancel: () -> Void
+    init(_ onCancel: @escaping () -> Void) { self.onCancel = onCancel }
+    func cancel() { onCancel() }
 }
 
 // Tests
@@ -238,22 +266,6 @@ struct InstallerSupervisorCleanupTests {
         #expect(phase == .cleanupRequired)
     }
 
-    @Test("prefix retry without activeHandle → cleanup invoked")
-    func prefixRetry_withoutHandle() async throws {
-        let sup = FakeInstallProcessSupervisor()
-        let term = FakeCleanupPrefixTerminator()
-        term.terminateResult = .clean
-        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
-
-        try await supervisor.startInstaller(
-            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
-            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
-        )
-        try await Task.sleep(nanoseconds: 50_000_000)
-        try await supervisor.stopAndClean()
-        #expect(term.terminateCallCount >= 1)
-    }
-
     @Test("retry clean → state cleared")
     func retryClean_stateCleared() async throws {
         let sup = FakeInstallProcessSupervisor()
@@ -306,32 +318,6 @@ struct InstallerSupervisorCleanupTests {
         #expect(phase != .verifyingInstallation)
     }
 
-    @Test("can retry after cleanupRequired")
-    func retryAfterCleanupRequired() async throws {
-        let sup = FakeInstallProcessSupervisor()
-        sup.waitForTerminationResult = .exited(0)
-        let term = FakeCleanupPrefixTerminator()
-        term.terminateResult = .incomplete(reason: "test incomplete")
-        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
-
-        try await supervisor.startInstaller(
-            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
-            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
-        )
-        try await Task.sleep(nanoseconds: 50_000_000)
-        try? await supervisor.stopAndClean()
-        // Phase should be cleanupRequired (terminal — allows restart)
-        let phase = await supervisor.snapshot()?.phase
-        #expect(phase == .cleanupRequired)
-        // Starting a new installer from a terminal phase is allowed
-        try await supervisor.startInstaller(
-            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
-            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
-        )
-        let newPhase = await supervisor.snapshot()?.phase
-        #expect(newPhase == .installerRunning)
-    }
-
     @Test("missing runtime/prefix → cleanupRequired")
     func missingRuntimePrefix_cleanupRequired() async throws {
         let sup = FakeInstallProcessSupervisor()
@@ -358,5 +344,160 @@ struct InstallerSupervisorCleanupTests {
         try await supervisor.stopAndClean()
         try? await supervisor.stopAndClean()
         #expect(sup.discardCalls.count == 1)
+    }
+
+    // ── Broadcast latch / generation isolation tests ──
+
+    @Test("launch generation isolation")
+    func launchGenerationIsolation() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        let term = FakeCleanupPrefixTerminator()
+        term.terminateResult = .clean
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
+
+        // Launch A
+        sup.waitForTerminationResult = .exited(0)
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+        try await supervisor.stopAndClean()
+        #expect(sup.discardCalls.count == 1)
+
+        // Launch B (state cleared by stopAndClean)
+        sup.waitForTerminationResult = .exited(42) // Different exit code
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+        // Verify that wait sees the new exit, not the old one
+        try await supervisor.waitForInstallerExit()
+        // After launch B exit, phase should have transitioned from installerExited
+        let phase = await supervisor.snapshot()?.phase
+        #expect(phase == .failed) // Non-zero exit → .failed
+        let lastError = await supervisor.snapshot()?.lastError
+        #expect(lastError == "Installer exited with code 42")
+    }
+
+    @Test("concurrent waiters both observe exit")
+    func concurrentWaiters_bothObserveExit() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        sup.waitForTerminationResult = .exited(0)
+        let term = FakeCleanupPrefixTerminator()
+        term.terminateResult = .clean
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
+
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        async let waitResult = supervisor.waitForInstallerExit()
+        async let stopResult = supervisor.stopAndClean()
+
+        _ = try await (waitResult, stopResult)
+        #expect(sup.discardCalls.count == 1)
+        #expect(term.terminateCallCount == 1)
+    }
+
+    @Test("cleanupRequired blocks new installer")
+    func cleanupRequired_blocksNewInstaller() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        sup.waitForTerminationResult = .exited(0)
+        let term = FakeCleanupPrefixTerminator()
+        term.terminateResult = .incomplete(reason: "prefix still busy")
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
+
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+        // First stop fails → cleanupRequired
+        try? await supervisor.stopAndClean()
+        #expect(await supervisor.snapshot()?.phase == .cleanupRequired)
+
+        // Starting a new installer while in cleanupRequired is NOT allowed.
+        // The startInstaller guard rejects any non-nil currentOperation.
+        term.terminateResult = .clean
+        await #expect(throws: InstallerError.self) {
+            try await supervisor.startInstaller(
+                installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+                prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+            )
+        }
+        // Phase unchanged after rejected start
+        #expect(await supervisor.snapshot()?.phase == .cleanupRequired)
+    }
+
+    @Test("force kill throw → cleanupRequired")
+    func forceKillThrow_cleanupRequired() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        sup.waitForTerminationResult = .timedOut
+        sup.shouldSuspend = true
+        sup.forceKillShouldThrow = true
+        let term = FakeCleanupPrefixTerminator()
+        term.terminateResult = .clean
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
+
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+        // stopAndClean sends SIGTERM → exitLatch times out → forceKill throws
+        await #expect(throws: (any Error).self) {
+            try await supervisor.stopAndClean()
+        }
+        // The error should propagate; check that terminate was called (SIGTERM)
+        #expect(sup.terminateCalls.count == 1)
+    }
+
+    @Test("second incomplete updates reason")
+    func secondIncomplete_updatesReason() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        sup.waitForTerminationResult = .exited(0)
+        let term = FakeCleanupPrefixTerminator()
+        term.terminateResult = .incomplete(reason: "first attempt failed")
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
+
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // First stop → cleanupRequired with first reason
+        try? await supervisor.stopAndClean()
+        #expect(await supervisor.snapshot()?.phase == .cleanupRequired)
+        let firstReason = await supervisor.snapshot()?.lastError
+        #expect(firstReason == "first attempt failed")
+
+        // Second stop → reason updated
+        term.terminateResult = .incomplete(reason: "second attempt failed")
+        try? await supervisor.stopAndClean()
+        #expect(await supervisor.snapshot()?.phase == .cleanupRequired)
+        let secondReason = await supervisor.snapshot()?.lastError
+        #expect(secondReason == "second attempt failed")
+    }
+
+    @Test("nonzero exit persists failed phase")
+    func nonzeroExit_persistsFailedPhase() async throws {
+        let sup = FakeInstallProcessSupervisor()
+        sup.waitForTerminationResult = .exited(1) // non-zero exit
+        let term = FakeCleanupPrefixTerminator()
+        let supervisor = InstallerSupervisor(processSupervisor: sup, prefixTerminator: term)
+
+        try await supervisor.startInstaller(
+            installerURL: testInstallerURL, runtimeURL: testRuntimeURL,
+            prefixURL: testPrefixURL, runtimeSafeID: "r", prefixSafeID: "p"
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+        try await supervisor.waitForInstallerExit()
+        let phase = await supervisor.snapshot()?.phase
+        #expect(phase == .failed)
+        let lastError = await supervisor.snapshot()?.lastError
+        #expect(lastError == "Installer exited with code 1")
     }
 }

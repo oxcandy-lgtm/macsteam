@@ -87,7 +87,38 @@ if [ "$CLEANUP_ONLY" -eq 1 ]; then
     check "no-handle early return in stopAndClean" 'guard activeHandle else' Sources/MacSteam/Installer/InstallerSupervisor.swift
     check "concrete ProcessSupervisor" 'processSupervisor: ProcessSupervisor([^)]|$)' Sources/MacSteam/Installer/InstallerSupervisor.swift
     check "clock-based deadline in pollForExit" 'ContinuousClock.now' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
-    check "op[.]phase direct assignment" 'op\.phase[[:space:]]*=' Sources/MacSteam/Installer/InstallerSupervisor.swift
+    check "op[.]phase direct assignment" 'op\\.phase[[:space:]]*=' Sources/MacSteam/Installer/InstallerSupervisor.swift
+
+    # ProcessRunner direct use in PrefixProcessTerminator
+    check "direct ProcessRunner in PrefixProcessTerminator" 'ProcessRunner\\(\\)\\.run' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
+
+    # wineserverProbe must not return !output.isEmpty without exitCode check
+    # Use Python scanner for multi-line check
+    python3 -c "
+import sys, re
+with open('Sources/MacSteam/Processes/WineControlLane.swift') as f:
+    content = f.read()
+# Find wineserverProbe function body
+m = re.search(r'func wineserverProbe\(.*?\{', content)
+if m:
+    # Get the function body
+    start = m.end()
+    depth = 1; i = start
+    while depth > 0 and i < len(content):
+        if content[i] == '{': depth += 1
+        elif content[i] == '}': depth -= 1
+        i += 1
+    body = content[start:i-1]
+    if 'guard result.exitCode' in body:
+        print('OK')
+        sys.exit(0)
+    else:
+        print('VIOLATION: wineserverProbe body uses return without exitCode guard')
+        sys.exit(1)
+else:
+    print('OK')
+    sys.exit(0)
+" 2>&1 | head -1 | grep -q "^OK$"; if [ $? -eq 1 ]; then echo "❌ wineserverProbe exitCode guard — 1 found"; VIOLATIONS=$((VIOLATIONS + 1)); fi
 
     if [ "$VIOLATIONS" -eq 0 ]; then
         echo "✅ Cleanup audit PASSED — 0 violations"

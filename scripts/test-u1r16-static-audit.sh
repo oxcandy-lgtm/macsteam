@@ -160,11 +160,35 @@ add_file "cleanup_clock" "Sources/MacSteam/Installer/InstallerSupervisor.swift" 
 add_file "cleanup_clock" "Sources/MacSteam/Processes/WineControlLane.swift" ''
 run_audit_cleanup "cleanup_clock" "clock-based poll fixture" 1
 
+# Test: cleanup_probe — wineserverProbe without exitCode guard (violation expected)
 mk_repo "cleanup_probe"
-add_file "cleanup_probe" "Sources/MacSteam/Processes/WineControlLane.swift" 'let result = wineserverProbe()'
+add_file "cleanup_probe" "Sources/MacSteam/Processes/WineControlLane.swift" '
+func wineserverProbe(wineserverURL: URL, prefixURL: URL) async throws -> Bool {
+    let result = try await ProcessRunner().run(executable: wineserverURL, arguments: ["-p"], environment: ["WINEPREFIX": prefixURL.path], timeout: 5)
+    return !result.stdout.isEmpty
+}'
 add_file "cleanup_probe" "Sources/MacSteam/Installer/InstallerSupervisor.swift" ''
 add_file "cleanup_probe" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" ''
 run_audit_cleanup "cleanup_probe" "probe exitCode ignored fixture" 1
+
+# Test: cleanup_probe_clean — wineserverProbe WITH exitCode guard (no violation)
+mk_repo "cleanup_probe_clean"
+add_file "cleanup_probe_clean" "Sources/MacSteam/Installer/InstallerSupervisor.swift" ''
+add_file "cleanup_probe_clean" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" ''
+add_file "cleanup_probe_clean" "Sources/MacSteam/Processes/WineControlLane.swift" '
+func wineserverProbe(wineserverURL: URL, prefixURL: URL) async throws -> Bool {
+    let result = try await ProcessRunner().run(executable: wineserverURL, arguments: ["-p"], environment: ["WINEPREFIX": prefixURL.path], timeout: 5)
+    guard result.exitCode == 0 else { throw WineControlError.wineserverFailed(exitCode: result.exitCode) }
+    return !result.stdout.isEmpty
+}'
+run_audit_cleanup "cleanup_probe_clean" "probe exitCode guarded fixture" 0
+
+# Test: cleanup_directpr — direct ProcessRunner() use in PrefixProcessTerminator (violation expected)
+mk_repo "cleanup_directpr"
+add_file "cleanup_directpr" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" 'let x = ProcessRunner().run()'
+add_file "cleanup_directpr" "Sources/MacSteam/Installer/InstallerSupervisor.swift" ''
+add_file "cleanup_directpr" "Sources/MacSteam/Processes/WineControlLane.swift" ''
+run_audit_cleanup "cleanup_directpr" "direct ProcessRunner fixture" 1
 
 # Infrastructure failure test (use fake git that exits 2)
 INFRA_DIR="$FIXTURE/infra"

@@ -441,8 +441,7 @@ actor PrefixProcessTerminator {
 
         var reasons: [String] = []
         if !finalKnown.isEmpty {
-            let images = Set(finalKnown.map(\.imageName)).sorted()
-            reasons.append("Remaining known processes: \(images.joined(separator: ", "))")
+            reasons.append("Remaining known processes: \(finalKnown.count)")
         }
         if !finalCensus.processes.isEmpty {
             reasons.append("\(finalCensus.processes.count) process(es) still running")
