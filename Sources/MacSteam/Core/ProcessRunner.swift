@@ -124,7 +124,14 @@ actor ProcessRunner {
     // MARK: - Quick-exit helper
 
     private func finishQuickExit(pid: Int32, termCtrl: TermController,
-                                  captures: (BoundedPipeCapture?, BoundedPipeCapture?)) async throws -> IdentityResolution {
+                                  captures: (BoundedPipeCapture?, BoundedPipeCapture?),
+                                  outputBundle: ProcessOutputPipeBundle?) async throws -> IdentityResolution {
+        // Start captures before waiting (must be active for waitForEOF)
+        do { try captures.0?.start(); try captures.1?.start() }
+        catch {
+            captures.0?.cancel(); captures.1?.cancel(); outputBundle?.closeAll()
+            throw RunnerError.pipeReadFailed
+        }
         let exit = try await termCtrl.wait(until: nil)
         guard let t = exit else { captures.0?.cancel(); captures.1?.cancel(); throw RunnerError.ownershipLost }
         if t.event.signaled { captures.0?.cancel(); captures.1?.cancel(); throw RunnerError.processTerminated(signal: t.event.exitCode) }
@@ -143,25 +150,30 @@ actor ProcessRunner {
         catch {
             // 1st identity failure — check quick exit
             if let latched = latch.snapshot() {
-                return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures)
+                return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures,
+                                                  outputBundle: outputBundle)
             }
             guard process.isRunning else {
-                return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures)
+                return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures,
+                                                  outputBundle: outputBundle)
             }
             // Process running — try once more
             do { return .owned(try identityProvider.identity(forPID: pid)) }
             catch {
                 // 2nd identity failure — check again before terminate
                 if let latched = latch.snapshot() {
-                    return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures)
+                    return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures,
+                                                      outputBundle: outputBundle)
                 }
                 if !process.isRunning {
-                    return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures)
+                    return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures,
+                                                      outputBundle: outputBundle)
                 }
                 // Unresolved — use atomic cleanup claim
                 switch latch.claimCleanupIfNoTermination() {
                 case .alreadyExited:
-                    return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures)
+                    return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures,
+                                                      outputBundle: outputBundle)
                 case .claimed:
                     process.terminate()
                     let o = try await cleanupChild(termCtrl: termCtrl, captures: captures, outputBundle: outputBundle)
@@ -181,31 +193,39 @@ actor ProcessRunner {
     }
 }
 
-// MARK: - TerminationLatch with atomic CleanupClaim
+// MARK: - TerminationLatch
 
 enum CleanupClaim: Sendable { case alreadyExited(TermEvent); case claimed }
 
+enum LatchState: Sendable { case open; case cleanupClaimed; case terminated(TermEvent) }
+
 final class TerminationLatch: @unchecked Sendable {
     private let lock = NSLock()
-    private var recorded: TermEvent?
-    private var cleanupClaimed = false
+    private var state: LatchState = .open
 
     func record(_ e: TermEvent) -> Bool {
         lock.withLock {
-            guard recorded == nil else { return false }
-            recorded = e; return true
+            guard case .open = state else { return false }
+            state = .terminated(e)
+            return true
         }
     }
 
-    func snapshot() -> TermEvent? { lock.withLock { recorded } }
+    func snapshot() -> TermEvent? {
+        lock.withLock {
+            if case .terminated(let e) = state { return e }
+            return nil
+        }
+    }
 
     func claimCleanupIfNoTermination() -> CleanupClaim {
         lock.withLock {
-            if let event = recorded {
-                return .alreadyExited(event)
+            switch state {
+            case .terminated(let e): return .alreadyExited(e)
+            case .open, .cleanupClaimed:
+                state = .cleanupClaimed
+                return .claimed
             }
-            cleanupClaimed = true
-            return .claimed
         }
     }
 }

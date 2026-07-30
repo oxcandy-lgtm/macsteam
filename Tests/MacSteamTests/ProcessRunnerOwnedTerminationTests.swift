@@ -36,4 +36,18 @@ struct ProcessRunnerOwnedTerminationTests {
         let result = try await runner.run(executable: trueURL, timeout: 5)
         #expect(result.exitCode == 0)
     }
+
+    @Test func quickExitStdout() async throws {
+        let shURL = URL(fileURLWithPath: "/bin/sh")
+        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf hello"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "hello")
+    }
+
+    @Test func quickExitStderr() async throws {
+        let shURL = URL(fileURLWithPath: "/bin/sh")
+        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf err >&2"])
+        #expect(result.exitCode == 0)
+        #expect(result.stderr == "err")
+    }
 }

@@ -100,6 +100,24 @@ do { let x = try something() } catch {}
 add_file "ordinaryTry" "Sources/MacSteam/Core/BoundedPipeCapture.swift" ''
 run_audit "ordinaryTry" "ordinary try fixture (should be 0)" 0
 
+# Test 8: audit infrastructure failure (fake git that exits 2)
+INFRA_DIR="$FIXTURE/infra"
+mkdir -p "$INFRA_DIR/Sources/MacSteam/Core"
+echo "let x = true" > "$INFRA_DIR/Sources/MacSteam/Core/ProcessRunner.swift"
+echo "" > "$INFRA_DIR/Sources/MacSteam/Core/BoundedPipeCapture.swift"
+mkdir -p "$INFRA_DIR/fakebin"
+cat > "$INFRA_DIR/fakebin/git" << 'GITEOF'
+#!/bin/bash
+exit 2
+GITEOF
+chmod +x "$INFRA_DIR/fakebin/git"
+cd "$INFRA_DIR"
+# Run audit with fake git in PATH — infrastructure failure exits 2
+PATH="$INFRA_DIR/fakebin:$PATH" GIT_WORK_TREE="$INFRA_DIR" GIT_DIR="$INFRA_DIR/.git" \
+  bash "$AUDIT" --process-runner-only >/dev/null 2>&1 && rc=$? || rc=$?
+[ "$rc" -eq 2 ] && pass "infrastructure failure exits 2" || fail "infra failure should be exit 2, got $rc"
+cd "$SCRIPT_DIR/.."
+
 echo ""
 if [ "$FAILURES" -eq 0 ]; then
     echo "Static audit test PASSED"

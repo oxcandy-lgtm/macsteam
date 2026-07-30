@@ -52,4 +52,26 @@ struct ProcessRunnerQuickExitTests {
             }
         }
     }
+
+    @Test func quickExitStdoutPreserved() async throws {
+        let shURL = URL(fileURLWithPath: "/bin/sh")
+        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf out"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "out")
+    }
+
+    @Test func quickExitStderrPreserved() async throws {
+        let shURL = URL(fileURLWithPath: "/bin/sh")
+        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf err >&2"])
+        #expect(result.exitCode == 0)
+        #expect(result.stderr == "err")
+    }
+
+    @Test func quickExitBothStreams() async throws {
+        let shURL = URL(fileURLWithPath: "/bin/sh")
+        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf out; printf err >&2"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "out")
+        #expect(result.stderr == "err")
+    }
 }
