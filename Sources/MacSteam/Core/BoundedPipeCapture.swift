@@ -1,21 +1,74 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Foundation
+import Darwin
 
-/// RAII ownership of a single file descriptor.
-final class OwnedFD: @unchecked Sendable {
+/// Single FD with guaranteed exactly-one close.
+final class FDLease: @unchecked Sendable {
+    private let lock = NSLock()
     private var fd: Int32?
 
-    init(fd: Int32) { self.fd = fd }
-    func take() throws -> Int32 { guard let f = fd else { throw OwnedFDError.alreadyTaken }; fd = nil; return f }
-    func close() { guard let f = fd else { return }; fd = nil; Darwin.close(f) }
-    deinit { close() }
+    init(_ fd: Int32) { self.fd = fd }
+
+    func value() -> Int32 {
+        lock.withLock {
+            guard let f = fd else { return -1 }
+            fd = nil
+            return f
+        }
+    }
+
+    func closeOnce() {
+        let f: Int32? = lock.withLock {
+            guard let d = fd else { return nil }
+            fd = nil
+            return d
+        }
+        if let d = f { Darwin.close(d) }
+    }
+
+    deinit { closeOnce() }
 }
 
-enum OwnedFDError: Error, Sendable { case alreadyTaken }
+/// RAII POSIX pipe pair. Read-end has O_NONBLOCK.
+final class POSIXPipePair {
+    let readFD: FDLease
+    let writeFD: FDLease
 
-/// Event-driven pipe capture using DispatchSourceRead per FD.
-/// Non-blocking FDs, continuation-based waitForEOF, unified state.
+    init(readFD: Int32, writeFD: Int32) {
+        self.readFD = FDLease(readFD)
+        self.writeFD = FDLease(writeFD)
+    }
+
+    static func createNonBlocking() throws -> POSIXPipePair {
+        var fds: [Int32] = [0, 0]
+        guard pipe(&fds) == 0 else { throw ProcessRunner.RunnerError.pipeReadFailed }
+        let flags = fcntl(fds[0], F_GETFL)
+        guard flags >= 0, fcntl(fds[0], F_SETFL, flags | O_NONBLOCK) == 0 else {
+            Darwin.close(fds[0]); Darwin.close(fds[1])
+            throw ProcessRunner.RunnerError.pipeReadFailed
+        }
+        return POSIXPipePair(readFD: fds[0], writeFD: fds[1])
+    }
+
+    func closeAll() { readFD.closeOnce(); writeFD.closeOnce() }
+}
+
+/// Both stdout/stderr pipe pairs. Partial construction leaks 0.
+final class ProcessOutputPipeBundle {
+    let stdout: POSIXPipePair
+    let stderr: POSIXPipePair
+
+    init() throws {
+        self.stdout = try POSIXPipePair.createNonBlocking()
+        do { self.stderr = try POSIXPipePair.createNonBlocking() }
+        catch { stdout.closeAll(); throw ProcessRunner.RunnerError.pipeReadFailed }
+    }
+
+    func closeAll() { stdout.closeAll(); stderr.closeAll() }
+}
+
+/// Non-blocking bounded pipe capture using DispatchSourceRead per FD.
 final class BoundedPipeCapture: @unchecked Sendable {
     enum State: Sendable {
         case idle
