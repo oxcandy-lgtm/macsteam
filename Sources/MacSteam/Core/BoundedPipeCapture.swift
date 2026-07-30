@@ -3,7 +3,6 @@
 import Foundation
 import Darwin
 
-/// Single FD with guaranteed exactly-one close. Idempotent closeOnce().
 final class FDLease: @unchecked Sendable {
     private let lock = NSLock()
     private var fd: Int32?
@@ -19,8 +18,7 @@ final class FDLease: @unchecked Sendable {
 }
 
 final class POSIXPipePair {
-    let readFD: FDLease
-    let writeFD: FDLease
+    let readFD: FDLease; let writeFD: FDLease
     init(readFD: Int32, writeFD: Int32) { self.readFD = FDLease(readFD); self.writeFD = FDLease(writeFD) }
     static func createNonBlockingRead() throws -> POSIXPipePair {
         var fds: [Int32] = [0, 0]
@@ -37,8 +35,7 @@ final class POSIXPipePair {
 }
 
 final class ProcessOutputPipeBundle {
-    let stdout: POSIXPipePair
-    let stderr: POSIXPipePair
+    let stdout: POSIXPipePair; let stderr: POSIXPipePair
     init() throws {
         self.stdout = try POSIXPipePair.createNonBlockingRead()
         do { self.stderr = try POSIXPipePair.createNonBlockingRead() }
@@ -47,10 +44,11 @@ final class ProcessOutputPipeBundle {
     func closeAll() { stdout.closeAll(); stderr.closeAll() }
 }
 
-/// Non-blocking bounded pipe capture using DispatchSourceRead per FD.
+/// Non-blocking bounded pipe capture. Atomic start (idle→starting→reading).
 final class BoundedPipeCapture: @unchecked Sendable {
     enum State: Sendable {
         case idle
+        case starting
         case reading
         case completed(Data)
         case failed(ProcessRunner.RunnerError)
@@ -75,21 +73,32 @@ final class BoundedPipeCapture: @unchecked Sendable {
 
     func start(on queue: DispatchQueue = .global()) throws {
         lock.lock()
-        guard !started else { lock.unlock(); throw ProcessRunner.RunnerError.alreadyRunning }
-        guard case .idle = state else { lock.unlock(); throw ProcessRunner.RunnerError.pipeReadFailed }
+        guard !started, case .idle = state else {
+            lock.unlock()
+            throw started ? ProcessRunner.RunnerError.alreadyRunning : ProcessRunner.RunnerError.pipeReadFailed
+        }
+        started = true
+        state = .starting
         lock.unlock()
 
         let fd: Int32
         do { fd = try readLease.borrow() }
         catch {
-            lock.lock(); state = .failed(.pipeReadFailed); lock.unlock()
+            lock.withLock { state = .failed(.pipeReadFailed) }
             resumeWaiter(throwing: .pipeReadFailed)
             throw ProcessRunner.RunnerError.pipeReadFailed
         }
 
         let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+
+        lock.lock()
+        guard case .starting = state else {
+            lock.unlock(); src.cancel()
+            throw ProcessRunner.RunnerError.pipeReadFailed
+        }
         source = src
-        lock.withLock { started = true; state = .reading }
+        state = .reading
+        lock.unlock()
 
         src.setEventHandler { [weak self] in
             guard let self else { return }
@@ -115,7 +124,7 @@ final class BoundedPipeCapture: @unchecked Sendable {
 
     func cancel() {
         lock.lock()
-        switch state { case .idle, .reading: break; default: lock.unlock(); return }
+        switch state { case .idle, .starting, .reading: break; default: lock.unlock(); return }
         state = .cancelled
         let c = continuation; continuation = nil
         let src = source; source = nil
@@ -128,7 +137,7 @@ final class BoundedPipeCapture: @unchecked Sendable {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
             lock.lock()
             switch state {
-            case .idle, .reading:
+            case .idle, .starting, .reading:
                 guard !waiterSet else { lock.unlock(); cont.resume(throwing: ProcessRunner.RunnerError.multipleWaiters); return }
                 waiterSet = true; continuation = cont; lock.unlock()
             case .completed(let d): lock.unlock(); cont.resume(returning: d)

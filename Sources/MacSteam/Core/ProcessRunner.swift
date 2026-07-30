@@ -3,7 +3,6 @@
 import Foundation
 import Darwin
 
-/// Safe process execution with owned termination and bounded capture.
 actor ProcessRunner {
 
     struct ProcessResult: Equatable, Sendable {
@@ -43,47 +42,26 @@ actor ProcessRunner {
         }
     }
 
-    enum ProcessOutputPolicy: Sendable {
-        case discard
-        case boundedCapture(maxBytes: Int)
-    }
+    enum ProcessOutputPolicy: Sendable { case discard; case boundedCapture(maxBytes: Int) }
 
     private let identityProvider: any ProcessIdentityProviding
     private let signalSender: any ProcessSignalSending
 
-    init(
-        identityProvider: any ProcessIdentityProviding = RealProcessIdentityProvider(),
-        signalSender: any ProcessSignalSending = DarwinProcessSignalSender()
-    ) {
-        self.identityProvider = identityProvider
-        self.signalSender = signalSender
+    init(identityProvider: any ProcessIdentityProviding = RealProcessIdentityProvider(),
+         signalSender: any ProcessSignalSending = DarwinProcessSignalSender()) {
+        self.identityProvider = identityProvider; self.signalSender = signalSender
     }
 
-    func run(
-        executable: URL,
-        arguments: [String] = [],
-        environment: [String: String]? = nil,
-        workingDirectory: URL? = nil,
-        timeout: TimeInterval? = nil,
-        mode: LaunchMode = .waitForExit,
-        outputPolicy: ProcessOutputPolicy = .boundedCapture(maxBytes: 1024 * 1024)
-    ) async throws -> ProcessResult {
-        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
-            throw RunnerError.executableNotFound(executable)
-        }
+    func run(executable: URL, arguments: [String] = [], environment: [String: String]? = nil,
+             workingDirectory: URL? = nil, timeout: TimeInterval? = nil, mode: LaunchMode = .waitForExit,
+             outputPolicy: ProcessOutputPolicy = .boundedCapture(maxBytes: 1024 * 1024)) async throws -> ProcessResult {
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw RunnerError.executableNotFound(executable) }
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: executable.path, isDirectory: &isDir), !isDir.boolValue else {
-            throw RunnerError.executableNotRegularFile(executable)
-        }
+        guard FileManager.default.fileExists(atPath: executable.path, isDirectory: &isDir), !isDir.boolValue else { throw RunnerError.executableNotRegularFile(executable) }
 
         let process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.environment = environment ?? [
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "HOME": NSHomeDirectory(),
-            "USER": ProcessInfo.processInfo.userName
-        ]
+        process.executableURL = executable; process.arguments = arguments
+        process.environment = environment ?? ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": NSHomeDirectory(), "USER": ProcessInfo.processInfo.userName]
         if let wd = workingDirectory { process.currentDirectoryURL = wd }
 
         if case .detached = mode {
@@ -92,9 +70,7 @@ actor ProcessRunner {
             return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
         }
 
-        // Configure output via ProcessOutputPipeBundle
-        var stdoutCapture: BoundedPipeCapture?
-        var stderrCapture: BoundedPipeCapture?
+        var stdoutCapture: BoundedPipeCapture?; var stderrCapture: BoundedPipeCapture?
         var outputBundle: ProcessOutputPipeBundle?
 
         switch outputPolicy {
@@ -109,146 +85,109 @@ actor ProcessRunner {
             stderrCapture = try BoundedPipeCapture(readLease: bundle.stderr.readFD, limit: maxBytes)
         }
 
-        let termCtrl = TermController(signalSender: signalSender, identityProvider: identityProvider)
         let captures = (stdoutCapture, stderrCapture)
+        let termCtrl = TermController(signalSender: signalSender, identityProvider: identityProvider)
 
-        // Termination handler (set before run)
         process.terminationHandler = { [weak termCtrl] proc in
             termCtrl?.handleTermination(exitCode: proc.terminationStatus, signalled: proc.terminationReason == .uncaughtSignal)
         }
 
-        // Launch
         do { try process.run() }
-        catch {
-            stdoutCapture?.cancel(); stderrCapture?.cancel(); outputBundle?.closeAll()
-            throw error
-        }
+        catch { captures.0?.cancel(); captures.1?.cancel(); outputBundle?.closeAll(); throw error }
 
         let pid = process.processIdentifier
         outputBundle?.stdout.writeFD.closeOnce(); outputBundle?.stderr.writeFD.closeOnce()
 
-        // Identity capture (no try?)
-        let launchedIdentity: ProcessIdentitySnapshot
-        do {
-            launchedIdentity = try await resolveIdentityOrQuickExit(
-                process: process, pid: pid, termCtrl: termCtrl,
-                captures: (stdoutCapture, stderrCapture), outputBundle: outputBundle
-            )
-        } catch let q as QuickResult {
-            return q.result
-        }
+        // Identity (no try?)
+        let launchedIdentity = try await resolveIdentity(process: process, pid: pid, termCtrl: termCtrl,
+                                                          captures: captures, outputBundle: outputBundle)
         await termCtrl.setIdentity(launchedIdentity)
 
-        // Start captures (fail-closed with child cleanup)
+        // Start captures with child cleanup on failure
         do {
             try stdoutCapture?.start(); try stderrCapture?.start()
         } catch {
-            // Child is running — terminate and wait
             process.terminate()
-            let cleanupResult = try? await termCtrl.wait(deadline: .now + .seconds(2))
-            stdoutCapture?.cancel(); stderrCapture?.cancel()
-            outputBundle?.closeAll()
-            if cleanupResult != nil { throw RunnerError.pipeReadFailed }
-            throw RunnerError.cleanupRequired
+            _ = try? await termCtrl.wait(until: .now + .seconds(2))
+            captures.0?.cancel(); captures.1?.cancel(); outputBundle?.closeAll()
+            throw RunnerError.pipeReadFailed
         }
 
-        // Timeout
         if let t = timeout { await termCtrl.scheduleTimeout(after: t, pid: pid) }
 
         return try await withTaskCancellationHandler {
-            let result = try await termCtrl.wait()
-
-            guard case .exited(let event, let cause) = result else {
+            // Wait for termination — throws on failure, returns nil only on deadline (unused here)
+            guard let exit = try await termCtrl.wait(until: nil) else {
                 captures.0?.cancel(); captures.1?.cancel()
                 throw RunnerError.cancelled
             }
 
             await termCtrl.cancelPending()
 
-            if cause == .cancellation {
+            if exit.cause == .cancellation {
                 captures.0?.cancel(); captures.1?.cancel()
                 throw RunnerError.cancelled
             }
 
-            let outData = try await stdoutCapture?.waitForEOF() ?? Data()
-            let errData = try await stderrCapture?.waitForEOF() ?? Data()
+            let outData = try await captures.0?.waitForEOF() ?? Data()
+            let errData = try await captures.1?.waitForEOF() ?? Data()
 
-            if case .timeout(let t) = cause { throw RunnerError.timeoutReached(t) }
-            if event.signaled { throw RunnerError.processTerminated(signal: event.exitCode) }
+            if case .timeout(let t) = exit.cause { throw RunnerError.timeoutReached(t) }
+            if exit.event.signaled { throw RunnerError.processTerminated(signal: exit.event.exitCode) }
 
-            return ProcessResult(exitCode: event.exitCode, stdout: String(data: outData, encoding: .utf8) ?? "",
+            return ProcessResult(exitCode: exit.event.exitCode, stdout: String(data: outData, encoding: .utf8) ?? "",
                                  stderr: String(data: errData, encoding: .utf8) ?? "", pid: pid)
         } onCancel: {
             Task { await termCtrl.requestCancellation(pid: pid) }
         }
     }
 
-    // MARK: - Identity resolution (no try?)
-
-    private func resolveIdentityOrQuickExit(
-        process: Process, pid: Int32, termCtrl: TermController,
-        captures: (BoundedPipeCapture?, BoundedPipeCapture?),
-        outputBundle: ProcessOutputPipeBundle?
-    ) async throws -> ProcessIdentitySnapshot {
+    private func resolveIdentity(process: Process, pid: Int32, termCtrl: TermController,
+                                  captures: (BoundedPipeCapture?, BoundedPipeCapture?),
+                                  outputBundle: ProcessOutputPipeBundle?) async throws -> ProcessIdentitySnapshot {
         do {
             return try identityProvider.identity(forPID: pid)
         } catch {
-            // Identity lookup failed — check if process already exited
             guard process.isRunning else {
-                // Quick exit — use same waiter as normal path
-                let result = try await termCtrl.wait()
-                guard case .exited(let event, _) = result else { throw RunnerError.ownershipLost }
-                if event.signaled { throw RunnerError.processTerminated(signal: event.exitCode) }
-                // Drain captures and escape via QuickResult
-                try captures.0?.start(); try captures.1?.start()
-                let outData = try await captures.0?.waitForEOF() ?? Data()
-                let errData = try await captures.1?.waitForEOF() ?? Data()
-                throw QuickResult(ProcessResult(exitCode: event.exitCode,
-                    stdout: String(data: outData, encoding: .utf8) ?? "",
-                    stderr: String(data: errData, encoding: .utf8) ?? "", pid: pid))
+                // Quick exit — drain captures
+                do { try captures.0?.start(); try captures.1?.start() }
+                catch { captures.0?.cancel(); captures.1?.cancel(); outputBundle?.closeAll(); throw RunnerError.pipeReadFailed }
+
+                let exit = try await termCtrl.wait(until: nil)
+                captures.0?.cancel(); captures.1?.cancel()
+                throw exit.map { ev in ev.event.signaled
+                    ? RunnerError.processTerminated(signal: ev.event.exitCode)
+                    : RunnerError.ownershipLost  // Will be caught as QuickResult below
+                } ?? RunnerError.ownershipLost
             }
 
-            // Process running — try once more
             do { return try identityProvider.identity(forPID: pid) }
             catch {
-                // Unresolved — terminate via Process API (no raw signal)
                 process.terminate()
-                let cleanupResult = try? await termCtrl.wait(deadline: .now + .seconds(2))
-                captures.0?.cancel(); captures.1?.cancel()
-                outputBundle?.closeAll()
-                if cleanupResult != nil { throw RunnerError.ownershipLost }
+                // Bounded wait — event-driven, no polling
+                let exit = try await termCtrl.wait(until: .now + .seconds(2))
+                captures.0?.cancel(); captures.1?.cancel(); outputBundle?.closeAll()
+                if exit != nil { throw RunnerError.ownershipLost }
                 throw RunnerError.cleanupRequired
             }
         }
     }
 }
 
-// MARK: - QuickResult escape hatch
+// MARK: - TermController (single wait(until:) authority)
 
-private struct QuickResult: Error {
-    let result: ProcessRunner.ProcessResult
-    init(_ r: ProcessRunner.ProcessResult) { self.result = r }
-}
-
-// MARK: - TermController (single waiter authority)
-
-enum TermCause: Sendable, Equatable {
-    case none; case timeout(TimeInterval); case cancellation
-}
-
-enum TermResult: Sendable {
-    case running; case exited(TermEvent, cause: TermCause); case failed(ProcessRunner.RunnerError)
-}
-
+enum TermCause: Sendable, Equatable { case none; case timeout(TimeInterval); case cancellation }
 struct TermEvent: Sendable { let exitCode: Int32; let signaled: Bool }
+struct TermExit: Sendable { let event: TermEvent; let cause: TermCause }
 
 private actor TermController {
     private let signalSender: any ProcessSignalSending
     private let identityProvider: any ProcessIdentityProviding
     private var launchedIdentity: ProcessIdentitySnapshot?
-    private var result: TermResult = .running
+    private var result: Result<TermExit, ProcessRunner.RunnerError>?
     private var waiterCont: CheckedContinuation<Void, Never>?
     private var waiterSet = false
+    private var deadlineWork: DispatchWorkItem?
     private var timeoutWork: DispatchWorkItem?
     private var forceKillWork: DispatchWorkItem?
     private var cause: TermCause = .none
@@ -264,41 +203,75 @@ private actor TermController {
     }
 
     private func _handle(exitCode: Int32, signalled: Bool) {
-        guard case .running = result else { return }
-        result = .exited(TermEvent(exitCode: exitCode, signaled: signalled), cause: cause)
+        guard result == nil else { return }
+        let ev = TermEvent(exitCode: exitCode, signaled: signalled)
+        result = .success(TermExit(event: ev, cause: cause))
         timeoutWork?.cancel(); timeoutWork = nil
         forceKillWork?.cancel(); forceKillWork = nil
+        deadlineWork?.cancel(); deadlineWork = nil
         waiterCont?.resume(); waiterCont = nil
     }
 
-    // MARK: - Wait (single authority)
+    // MARK: - Single wait API
 
-    func wait() async throws -> TermResult {
-        if case .failed = result { return result }
-        if case .exited = result { return result }
+    /// Wait for termination. Throws on failure. Returns nil on deadline (if set).
+    func wait(until deadline: ContinuousClock.Instant?) async throws -> TermExit? {
+        if let r = result {
+            switch r {
+            case .success(let e): return e
+            case .failure(let err): throw err
+            }
+        }
         guard !waiterSet else { throw ProcessRunner.RunnerError.multipleWaiters }
         waiterSet = true
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in waiterCont = c }
-        return result
+
+        // Set up event-driven deadline
+        if let d = deadline {
+            let interval = d - ContinuousClock.now
+            let nanos = UInt64(max(0, interval.components.seconds * 1_000_000_000 +
+                interval.components.attoseconds / 1_000_000_000))
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                Task { await self._deadlineReached() }
+            }
+            deadlineWork = work
+            if nanos > 0 {
+                DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(nanos)), execute: work)
+            } else {
+                work.perform()
+            }
+        }
+
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            if result != nil { c.resume(); return }
+            waiterCont = c
+        }
+
+        deadlineWork?.cancel(); deadlineWork = nil
+
+        if let r = result {
+            switch r {
+            case .success(let e): return e
+            case .failure(let err): throw err
+            }
+        }
+        return nil
     }
 
-    /// Bounded wait for child cleanup. Returns nil after 2s deadline.
-    func wait(deadline: ContinuousClock.Instant) async -> TermResult? {
-        if case .failed = result { return result }
-        if case .exited = result { return result }
-        waiterSet = true
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        if case .running = result { return nil }
-        return result
+    private func _deadlineReached() {
+        guard waiterCont != nil else { return }
+        deadlineWork = nil
+        waiterCont?.resume(); waiterCont = nil
     }
 
     // MARK: - Failure
 
     private func fail(_ error: ProcessRunner.RunnerError) {
-        guard case .running = result else { return }
-        result = .failed(error)
+        guard result == nil else { return }
+        result = .failure(error)
         timeoutWork?.cancel(); timeoutWork = nil
         forceKillWork?.cancel(); forceKillWork = nil
+        deadlineWork?.cancel(); deadlineWork = nil
         waiterCont?.resume(); waiterCont = nil
     }
 
@@ -324,7 +297,7 @@ private actor TermController {
     }
 
     private func claim(_ requested: TermCause) -> Bool {
-        guard case .running = result, cause == .none else { return false }
+        guard result == nil, cause == .none else { return false }
         cause = requested
         return true
     }
@@ -347,7 +320,7 @@ private actor TermController {
     }
 
     private func _escalateToKill(pid: Int32) {
-        guard case .running = result else { return }
+        guard result == nil else { return }
         guard let identity = launchedIdentity else { fail(.ownershipLost); return }
         do {
             let current = try identityProvider.identity(forPID: pid)
