@@ -145,14 +145,14 @@ struct UltimateSetupView: View {
 
         case .runtimeReady:
             runtimeReadyView
-            nextButton("Create Prefix →", action: { coordinator.state = .prefixRequired })
+            nextButton("Create Prefix →", action: { Task { await coordinator.send(.next) } })
 
         case .prefixRequired:
             PrefixSetupView(coordinator: coordinator)
 
         case .prefixReady:
             prefixReadyView
-            nextButton("Select Steam Installer →", action: { coordinator.state = .steamInstallerRequired })
+            nextButton("Select Steam Installer →", action: { Task { await coordinator.send(.next) } })
 
         case .steamInstallerRequired, .steamInstallerVerified,
                 .steamInstallationPending, .steamReady:

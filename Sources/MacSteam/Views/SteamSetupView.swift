@@ -256,8 +256,7 @@ struct SteamSetupView: View {
             if coordinator.state != .steamReady {
                 Button("Back") {
                     Task {
-                        try? await coordinator.stopSteamSetupSessionIfNeeded()
-                        coordinator.state = .prefixReady
+                        await coordinator.send(.back)
                     }
                 }
                 .controlSize(.small)
