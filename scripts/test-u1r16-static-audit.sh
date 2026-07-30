@@ -39,6 +39,17 @@ run_audit() {
     fi
 }
 
+run_audit_cleanup() {
+    local repo="$1" label="$2" expected="$3"
+    local rc=0
+    GIT_WORK_TREE="$FIXTURE/$repo" GIT_DIR="$FIXTURE/$repo/.git" bash "$AUDIT" --cleanup-only >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq "$expected" ]; then
+        pass "$label"
+    else
+        fail "$label (expected exit $expected, got $rc)"
+    fi
+}
+
 # ── Fixtures ──
 
 mk_repo "clean"
@@ -115,6 +126,59 @@ cd "$INFRA_DIR"
 # Run audit with fake git in PATH — infrastructure failure exits 2
 PATH="$INFRA_DIR/fakebin:$PATH" GIT_WORK_TREE="$INFRA_DIR" GIT_DIR="$INFRA_DIR/.git" \
   bash "$AUDIT" --process-runner-only >/dev/null 2>&1 && rc=$? || rc=$?
+[ "$rc" -eq 2 ] && pass "infrastructure failure exits 2" || fail "infra failure should be exit 2, got $rc"
+cd "$SCRIPT_DIR/.."
+
+# Test 9-15: Cleanup scope fixtures (--cleanup-only)
+mk_repo "cleanup_clean"
+add_file "cleanup_clean" "Sources/MacSteam/Installer/InstallerSupervisor.swift" 'true'
+add_file "cleanup_clean" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" 'func foo() -> Bool { return true }'
+add_file "cleanup_clean" "Sources/MacSteam/Processes/WineControlLane.swift" 'func bar() {}'
+run_audit_cleanup "cleanup_clean" "clean cleanup fixture" 0
+
+mk_repo "cleanup_tryopt"
+add_file "cleanup_tryopt" "Sources/MacSteam/Installer/InstallerSupervisor.swift" 'try? Task.sleep(for: .seconds(1))'
+add_file "cleanup_tryopt" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" 'let x = try? await foo()'
+add_file "cleanup_tryopt" "Sources/MacSteam/Processes/WineControlLane.swift" ''
+run_audit_cleanup "cleanup_tryopt" "try? detection fixture" 1
+
+mk_repo "cleanup_nohandle"
+add_file "cleanup_nohandle" "Sources/MacSteam/Installer/InstallerSupervisor.swift" 'guard activeHandle else { return }'
+add_file "cleanup_nohandle" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" ''
+add_file "cleanup_nohandle" "Sources/MacSteam/Processes/WineControlLane.swift" ''
+run_audit_cleanup "cleanup_nohandle" "no-handle early return fixture" 1
+
+mk_repo "cleanup_concrete"
+add_file "cleanup_concrete" "Sources/MacSteam/Installer/InstallerSupervisor.swift" 'private let processSupervisor: ProcessSupervisor'
+add_file "cleanup_concrete" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" ''
+add_file "cleanup_concrete" "Sources/MacSteam/Processes/WineControlLane.swift" ''
+run_audit_cleanup "cleanup_concrete" "concrete supervisor dependency fixture" 1
+
+mk_repo "cleanup_clock"
+add_file "cleanup_clock" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" 'ContinuousClock.now'
+add_file "cleanup_clock" "Sources/MacSteam/Installer/InstallerSupervisor.swift" ''
+add_file "cleanup_clock" "Sources/MacSteam/Processes/WineControlLane.swift" ''
+run_audit_cleanup "cleanup_clock" "clock-based poll fixture" 1
+
+mk_repo "cleanup_probe"
+add_file "cleanup_probe" "Sources/MacSteam/Processes/WineControlLane.swift" 'let result = wineserverProbe()'
+add_file "cleanup_probe" "Sources/MacSteam/Installer/InstallerSupervisor.swift" ''
+add_file "cleanup_probe" "Sources/MacSteam/Processes/PrefixProcessTerminator.swift" ''
+run_audit_cleanup "cleanup_probe" "probe exitCode ignored fixture" 1
+
+# Infrastructure failure test (use fake git that exits 2)
+INFRA_DIR="$FIXTURE/infra"
+mkdir -p "$INFRA_DIR/Sources/MacSteam/Core"
+echo "let x = true" > "$INFRA_DIR/Sources/MacSteam/Core/ProcessRunner.swift"
+mkdir -p "$INFRA_DIR/fakebin"
+cat > "$INFRA_DIR/fakebin/git" << 'GITEOF'
+#!/bin/bash
+exit 2
+GITEOF
+chmod +x "$INFRA_DIR/fakebin/git"
+cd "$INFRA_DIR"
+PATH="$INFRA_DIR/fakebin:$PATH" GIT_WORK_TREE="$INFRA_DIR" GIT_DIR="$INFRA_DIR/.git" \
+  bash "$AUDIT" --cleanup-only >/dev/null 2>&1 && rc=$? || rc=$?
 [ "$rc" -eq 2 ] && pass "infrastructure failure exits 2" || fail "infra failure should be exit 2, got $rc"
 cd "$SCRIPT_DIR/.."
 

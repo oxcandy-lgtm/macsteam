@@ -7,8 +7,10 @@ REPO_ROOT="${GIT_WORK_TREE:-$DIR}"
 cd "$REPO_ROOT" || exit 2
 
 PROCESS_RUNNER_ONLY=0
+CLEANUP_ONLY=0
 for arg in "$@"; do
     [ "$arg" = "--process-runner-only" ] && PROCESS_RUNNER_ONLY=1
+    [ "$arg" = "--cleanup-only" ] && CLEANUP_ONLY=1
 done
 
 VIOLATIONS=0
@@ -73,6 +75,28 @@ if [ "$PROCESS_RUNNER_ONLY" -eq 1 ]; then
         exit 0
     else
         echo "💥 ProcessRunner audit FAILED — $VIOLATIONS violation(s)" >&2
+        exit 1
+    fi
+fi
+
+if [ "$CLEANUP_ONLY" -eq 1 ]; then
+    # ProcessRunner scope — no restrictions
+    # Cleanup scope checks:
+    check "try? in InstallerSupervisor" 'try\?[[:space:]]' Sources/MacSteam/Installer/InstallerSupervisor.swift
+    check "try? in PrefixProcessTerminator" 'try\?[[:space:]]' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
+    check "no-handle early return in stopAndClean" 'guard activeHandle else' Sources/MacSteam/Installer/InstallerSupervisor.swift
+    check "concrete ProcessSupervisor" 'processSupervisor: ProcessSupervisor([^)]|$)' Sources/MacSteam/Installer/InstallerSupervisor.swift
+    check "clock-based deadline in pollForExit" 'ContinuousClock.now' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
+    check "wineserverProbe exitCode guard" 'wineserverProbe' Sources/MacSteam/Processes/WineControlLane.swift
+    # also check wineserver probe doesn't return false without exitCode check
+    check "direct ProcessRunner in PrefixProcessTerminator" 'ProcessRunner()' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
+    check "op[.]phase direct assignment" 'op\.phase[[:space:]]*=' Sources/MacSteam/Installer/InstallerSupervisor.swift
+
+    if [ "$VIOLATIONS" -eq 0 ]; then
+        echo "✅ Cleanup audit PASSED — 0 violations"
+        exit 0
+    else
+        echo "❌ Cleanup audit — $VIOLATIONS violation(s)"
         exit 1
     fi
 fi

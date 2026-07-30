@@ -73,6 +73,11 @@ private struct DefaultSleeper: PrefixCleanupSleeping {
 ///    and no parse errors were recorded.
 actor PrefixProcessTerminator {
 
+    // MARK: - Constants
+
+    private static let pollAttempts = 5
+    private static let pollInterval: Duration = .seconds(1)
+
     // MARK: - Dependencies
 
     private let wineControl: any WineControlServicing
@@ -311,14 +316,15 @@ actor PrefixProcessTerminator {
 
     // MARK: - Private Helpers
 
-    /// Poll `tasklist` at 1 s intervals (up to ``duration`` seconds) until no
-    /// known processes remain.
+    /// Poll `tasklist` at 1 s intervals (up to ``pollAttempts`` attempts) until
+    /// no known processes remain.
     ///
     /// - Returns: ``PrefixPollOutcome/exited`` when all known processes have
-    ///   vanished; ``PrefixPollOutcome/deadline`` when the deadline is reached
-    ///   with a (possibly empty) set of survivors; ``PrefixPollOutcome/failed``
-    ///   when any individual census call throws or produces parse errors
-    ///   (fail-closed – we treat unreliable data as a failure).
+    ///   vanished; ``PrefixPollOutcome/deadline`` when the maximum number of
+    ///   attempts is reached with a (possibly empty) set of survivors;
+    ///   ``PrefixPollOutcome/failed`` when any individual census call throws or
+    ///   produces parse errors (fail-closed – we treat unreliable data as a
+    ///   failure).
     private func pollForExit(
         wineURL: URL,
         prefixURL: URL,
@@ -326,24 +332,22 @@ actor PrefixProcessTerminator {
         remaining: Set<String>,
         duration: Duration
     ) async -> PrefixPollOutcome {
-        let deadline = ContinuousClock.now + duration
+        // Note: duration parameter kept for compatibility but poll is attempt-based
         var stillRemaining = remaining
 
-        while ContinuousClock.now < deadline, !stillRemaining.isEmpty {
+        for _ in 0..<Self.pollAttempts {
+            guard !stillRemaining.isEmpty else { return .exited }
             do {
-                try await sleeper.sleep(for: .seconds(1))
+                try await sleeper.sleep(for: Self.pollInterval)
                 let current = try await wineControl.taskList(
                     wineExecutable: wineURL,
                     prefixURL: prefixURL,
                     runtimeURL: runtimeURL
                 )
-
-                // Census parse errors → unreliable data → fail-closed
                 if !current.parseErrors.isEmpty {
                     censusParseErrors += current.parseErrors.count
                     return .failed(reason: "Poll census produced \(current.parseErrors.count) parse error(s)")
                 }
-
                 let known = current.processes.filter {
                     KnownProcessImage.allLowercased.contains($0.imageName.lowercased())
                 }
@@ -353,9 +357,7 @@ actor PrefixProcessTerminator {
             }
         }
 
-        if stillRemaining.isEmpty {
-            return .exited
-        }
+        if stillRemaining.isEmpty { return .exited }
         return .deadline(remaining: stillRemaining)
     }
 
@@ -368,6 +370,7 @@ actor PrefixProcessTerminator {
     /// - Wineserver is not running
     /// - No scan errors were recorded
     /// - No census parse errors occurred (initial, poll, or final)
+    /// - No processes remain from the poll tracking set
     private func finishWithWineserverTeardown(
         wineserverURL: URL,
         prefixURL: URL,
@@ -431,7 +434,8 @@ actor PrefixProcessTerminator {
            !wineserverRunning,
            errors.isEmpty,
            finalCensus.processes.isEmpty,
-           censusParseErrors == 0 {
+           censusParseErrors == 0,
+           remaining.isEmpty {
             return .clean
         }
 

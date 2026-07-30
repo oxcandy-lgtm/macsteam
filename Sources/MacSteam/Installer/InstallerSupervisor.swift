@@ -4,30 +4,33 @@ import Foundation
 
 /// Single-owner supervisor for Steam installation lifecycle.
 ///
-/// Owns the installer process through ProcessSupervisor directly (not
-/// GameSessionSupervisor). Transitions through InstallerPhase via the
-/// InstallerOperation state machine. All phase transitions are validated.
+/// Owns the installer process through ``ProcessSupervising`` (injected via the
+/// protocol, with ``ProcessSupervisor`` as the default). Transitions through
+/// ``InstallerPhase`` via the ``InstallerOperation`` state machine. All phase
+/// transitions are validated.
 ///
-/// ## Single-wait authority
+/// ## Exit-latch design
 ///
-/// The ``installExitTask`` is the **only** task that waits for the installer
-/// process to exit. Both the normal-exit path (``waitForInstallerExit()``) and
-/// the stop path (``stopAndClean()``) read from this single task, guaranteeing
-/// that the exit event is observed exactly once.
+/// The ``exitLatch`` is the **single authority** for observing the installer
+/// process's exit. An ``installExitTask`` calls ``InstallerExitLatch/record(_:)``
+/// when ``ProcessSupervising/waitForTermination(_:)`` returns. Both the normal-exit
+/// path (``waitForInstallerExit()``) and the stop path (``stopAndClean()``) read
+/// from the latch, guaranteeing that the exit event is observed exactly once.
 actor InstallerSupervisor {
-    private let processSupervisor: ProcessSupervisor
+    private let processSupervisor: any ProcessSupervising
     private let prefixTerminator: any PrefixProcessTerminating
+    private let exitLatch = InstallerExitLatch()
 
     private(set) var currentOperation: InstallerOperation?
-    private var installExitTask: Task<ProcessWaitOutcome, Never>?
+    private var installExitTask: Task<Void, Never>?
     private var activeHandle: SupervisedProcessHandle?
     private var activeRuntimeURL: URL?
     private var activePrefixURL: URL?
     private var stopRequested = false
-    private var finalizedHandleToken: UUID?
+    private var finalizedHandleTokens: Set<UUID> = []
 
     init(
-        processSupervisor: ProcessSupervisor = ProcessSupervisor(),
+        processSupervisor: any ProcessSupervising = ProcessSupervisor(),
         prefixTerminator: any PrefixProcessTerminating = PrefixProcessTerminator()
     ) {
         self.processSupervisor = processSupervisor
@@ -85,10 +88,12 @@ actor InstallerSupervisor {
             op.updatedAt = Date()
             self.currentOperation = op
 
-            // Single-wait authority: the exit task only waits — cleanup happens
-            // in finalizeInstallerHandle called by stopAndClean or waitForInstallerExit.
-            installExitTask = Task { [processSupervisor] in
-                await processSupervisor.waitForTermination(handle)
+            // Single-wait authority: the exit task records into the latch.
+            // Cleanup happens in finalizeInstallerHandle called by stopAndClean
+            // or waitForInstallerExit.
+            installExitTask = Task { [processSupervisor, exitLatch] in
+                let outcome = await processSupervisor.waitForTermination(handle)
+                await exitLatch.record(outcome)
             }
         } catch {
             op.lastError = error.localizedDescription
@@ -100,12 +105,15 @@ actor InstallerSupervisor {
 
     /// Wait for the installer to finish.
     ///
-    /// Blocks until the installer exits naturally, then finalises the handle
-    /// and transitions the state machine via ``handleInstallerExit``.
+    /// Blocks until the installer exits naturally (via the exit latch), then
+    /// finalises the handle and transitions the state machine via
+    /// ``handleInstallerExit``.
     func waitForInstallerExit() async throws {
-        guard let handle = activeHandle, let task = installExitTask else { return }
-        let outcome = await task.value
-        try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: false)
+        guard let handle = activeHandle else { return }
+        let outcome = await exitLatch.wait(timeout: Double.infinity)
+        if let outcome {
+            try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: false)
+        }
     }
 
     /// Stop the installer and clean up. Fail-closed: if the installer process
@@ -113,35 +121,53 @@ actor InstallerSupervisor {
     func stopAndClean() async throws {
         stopRequested = true
 
-        guard let handle = activeHandle else { return }
+        if let handle = activeHandle {
+            await processSupervisor.requestTerminate(handle)
 
-        // Terminate owned installer process
-        await processSupervisor.requestTerminate(handle)
-
-        // Single wait authority — wait for existing exit task
-        if let outcome = try? await waitForExitTask(timeout: 5) {
-            try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: true)
-        } else {
-            // Timeout — force kill
-            try await processSupervisor.requestForceKill(handle)
-            if let outcome = try? await waitForExitTask(timeout: 3) {
-                // Exited after SIGKILL
+            if let outcome = await exitLatch.wait(timeout: 5) {
                 try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: true)
             } else {
-                // Still not confirmed — must NOT clear state
-                throw InstallerError.terminationFailed("Installer did not exit after SIGKILL")
+                // Timeout — force kill
+                try await processSupervisor.requestForceKill(handle)
+                if let outcome = await exitLatch.wait(timeout: 3) {
+                    try await finalizeInstallerHandle(handle: handle, outcome: outcome, intentionalStop: true)
+                } else {
+                    try markCleanupRequired("Installer did not exit after SIGKILL")
+                    throw InstallerError.terminationFailed("Installer did not exit after SIGKILL")
+                }
             }
         }
 
         // Clean up prefix
-        guard let runtimeURL = activeRuntimeURL, let prefixURL = activePrefixURL else { return }
-        let result = await prefixTerminator.terminate(runtimeURL: runtimeURL, prefixURL: prefixURL)
+        guard let runtimeURL = activeRuntimeURL, let prefixURL = activePrefixURL else {
+            try markCleanupRequired("Missing runtime or prefix URL")
+            throw InstallerError.terminationFailed("Missing runtime or prefix URL")
+        }
 
+        let result = await prefixTerminator.terminate(runtimeURL: runtimeURL, prefixURL: prefixURL)
         switch result {
         case .clean:
             stateClear()
         case .incomplete(let reason):
+            try markCleanupRequired(reason)
             throw InstallerError.terminationFailed("Prefix cleanup incomplete: \(reason)")
+        }
+    }
+
+    /// Compatibility wrapper that terminates known prefix processes.
+    ///
+    /// Provided for call-sites that pass individual process URLs; delegates
+    /// to the injected ``prefixTerminator`` directly.
+    func stopKnownPrefixProcesses(
+        wineExecutable: URL, wineserverURL: URL,
+        prefixURL: URL, runtimeURL: URL
+    ) async throws {
+        let result = await prefixTerminator.terminate(runtimeURL: runtimeURL, prefixURL: prefixURL)
+        guard case .clean = result else {
+            if case .incomplete(let reason) = result {
+                throw InstallerError.terminationFailed(reason)
+            }
+            return
         }
     }
 
@@ -160,40 +186,11 @@ actor InstallerSupervisor {
         outcome: ProcessWaitOutcome,
         intentionalStop: Bool
     ) async throws {
-        defer {
-            if finalizedHandleToken == handle.token {
-                finalizedHandleToken = nil
-            }
-        }
-        // Guard against double-finalization
-        if finalizedHandleToken == handle.token { return }
-        finalizedHandleToken = handle.token
-
+        guard finalizedHandleTokens.insert(handle.token).inserted else { return }
         await processSupervisor.discard(handle)
         activeHandle = nil
-
         if !intentionalStop {
             await handleInstallerExit(outcome: outcome)
-        }
-    }
-
-    /// Wait for the existing exit task to complete, with a timeout.
-    private func waitForExitTask(timeout: TimeInterval) async throws -> ProcessWaitOutcome {
-        let task = installExitTask
-        guard let task else {
-            throw TimeoutError()
-        }
-        return try await withCheckedThrowingContinuation { continuation in
-            Task {
-                // Race between exit and timeout
-                let timeoutTask = Task {
-                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                    continuation.resume(throwing: TimeoutError())
-                }
-                let outcome = await task.value
-                timeoutTask.cancel()
-                continuation.resume(returning: outcome)
-            }
         }
     }
 
@@ -236,6 +233,14 @@ actor InstallerSupervisor {
         op.updatedAt = Date()
     }
 
+    /// Mark the current operation as requiring cleanup, recording the reason.
+    private func markCleanupRequired(_ reason: String) throws {
+        guard var op = currentOperation else { return }
+        op.lastError = reason
+        try op.transition(to: .cleanupRequired)
+        currentOperation = op
+    }
+
     /// Clear ALL state atomically — only called when cleanup is fully successful.
     private func stateClear() {
         currentOperation = nil
@@ -263,5 +268,83 @@ actor InstallerSupervisor {
     }
 }
 
-/// Timeout error used internally by ``InstallerSupervisor/waitForExitTask(timeout:)``.
-private struct TimeoutError: Error {}
+// MARK: - InstallerExitLatch
+
+/// Single-consumer latch that records a process exit outcome and provides
+/// a timeout-capable waiter.
+actor InstallerExitLatch {
+    enum State: Sendable {
+        case waiting
+        case exited(ProcessWaitOutcome)
+    }
+
+    private var state: State = .waiting
+    private var waiter: CheckedContinuation<ProcessWaitOutcome?, Never>?
+    private var deadlineToken: UUID?
+    private let scheduler: DeadlineScheduling
+
+    init(scheduler: DeadlineScheduling = DispatchDeadlineScheduler()) {
+        self.scheduler = scheduler
+    }
+
+    /// Record an exit outcome, resuming any waiter.
+    func record(_ outcome: ProcessWaitOutcome) {
+        switch state {
+        case .waiting:
+            state = .exited(outcome)
+            waiter?.resume(returning: outcome)
+            waiter = nil
+        case .exited:
+            break // already recorded
+        }
+    }
+
+    /// Wait for the recorded outcome, with a timeout.
+    ///
+    /// - Returns: The ``ProcessWaitOutcome`` if recorded before the timeout,
+    ///   or `nil` if the deadline was reached first.
+    func wait(timeout: TimeInterval) async -> ProcessWaitOutcome? {
+        if case .exited(let o) = state { return o }
+
+        let token = UUID()
+        deadlineToken = token
+
+        let work = scheduler.schedule(after: timeout) { [weak self] in
+            guard let self else { return }
+            Task { await self._deadlineReached(token: token) }
+        }
+
+        let result = await withCheckedContinuation { (c: CheckedContinuation<ProcessWaitOutcome?, Never>) in
+            if case .exited(let o) = state {
+                c.resume(returning: o)
+                return
+            }
+            waiter = c
+        }
+
+        work.cancel()
+        if token == deadlineToken { deadlineToken = nil }
+        return result
+    }
+
+    private func _deadlineReached(token: UUID) {
+        guard token == deadlineToken else { return }
+        deadlineToken = nil
+        waiter?.resume(returning: nil)
+        waiter = nil
+    }
+}
+
+// MARK: - ProcessSupervising
+
+/// Injectable protocol for process lifecycle management, allowing
+/// ``InstallerSupervisor`` to accept any supervisor implementation.
+protocol ProcessSupervising: Sendable {
+    func launch(plan: LaunchPlan, outputPolicy: ProcessOutputPolicy) async throws -> SupervisedProcessHandle
+    func requestTerminate(_ handle: SupervisedProcessHandle) async
+    func requestForceKill(_ handle: SupervisedProcessHandle) async throws
+    func waitForTermination(_ handle: SupervisedProcessHandle) async -> ProcessWaitOutcome
+    func discard(_ handle: SupervisedProcessHandle) async
+}
+
+extension ProcessSupervisor: ProcessSupervising {}

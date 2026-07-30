@@ -102,7 +102,6 @@ final class UltimateSetupCoordinator {
     private let launchCoordinator = SteamLaunchCoordinator()
     private let installerSupervisor = InstallerSupervisor()
     private let wineControl = WineControlLane()
-    private let prefixTerminator = PrefixProcessTerminator()
     private let bindingStore = RuntimePrefixBindingStore()
     private let navigationReducer = InstallerNavigationReducer()
 
@@ -1127,10 +1126,13 @@ final class UltimateSetupCoordinator {
 
         // 3. Stop known prefix processes
         if let runtimeURL, let prefix = prefixLayout?.root {
-            let result = await prefixTerminator.terminate(runtimeURL: runtimeURL, prefixURL: prefix)
-            if case .incomplete(let reason) = result {
-                log("Prefix cleanup during app termination incomplete: \(reason)")
-            }
+            let layout = WineExecutableLayout.detect(from: runtimeURL)
+            try? await installerSupervisor.stopKnownPrefixProcesses(
+                wineExecutable: layout.wine,
+                wineserverURL: layout.wineserver,
+                prefixURL: prefix,
+                runtimeURL: runtimeURL
+            )
         }
 
         // 4. Final check: residual processes?

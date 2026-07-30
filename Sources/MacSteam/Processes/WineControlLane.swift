@@ -266,6 +266,9 @@ actor WineControlLane {
             timeout: 5,
             mode: .waitForExit
         )
+        guard result.exitCode == 0 else {
+            throw WineControlError.wineserverFailed(exitCode: result.exitCode)
+        }
         let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return !output.isEmpty
     }

@@ -54,7 +54,7 @@ let InstallerPhaseAllowedTransitions: [InstallerPhase: Set<InstallerPhase>] = [
 // ---------------------------------------------------------------------------
 
 /// Errors that can occur during Steam installation lifecycle management.
-enum InstallerError: Error, LocalizedError {
+enum InstallerError: Error, LocalizedError, Equatable {
     /// The requested phase transition is not allowed by the state machine.
     case invalidPhaseTransition(from: InstallerPhase, to: InstallerPhase)
     /// No Wine runtime has been configured for this operation.

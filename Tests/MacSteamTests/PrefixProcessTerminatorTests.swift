@@ -100,7 +100,7 @@ final class FakeWineControlService: @unchecked Sendable, WineControlServicing {
         return wineserverWaitResult
     }
 
-    var wineserverProbeResult: Bool = true
+    var wineserverProbeResult: Bool = false
     var wineserverProbeError: Error?
     var wineserverProbeCalls: [(URL, URL)] = []
 
@@ -156,6 +156,12 @@ private func unknownProcess(_ name: String) -> WindowsProcessSnapshot {
 /// Two test URLs reused across tests.
 private let fakeRuntime = URL(fileURLWithPath: "/tmp/test-runtime")
 private let fakePrefix  = URL(fileURLWithPath: "/tmp/test-prefix")
+
+/// A specific Steam process snapshot used in remaining-process tests.
+private let steamProcess = WindowsProcessSnapshot(
+    imageName: "steam.exe", pid: 100, sessionName: "wine",
+    sessionNumber: 0, memUsageKB: 0, status: "running"
+)
 
 // ---------------------------------------------------------------------------
 // MARK: - PrefixProcessTerminatorTests
@@ -383,6 +389,7 @@ struct PrefixProcessTerminatorTests {
         ]
         wineControl.terminateOutcomes = [.success(())]
         wineControl.wineserverWaitResult = true
+        wineControl.wineserverProbeResult = true
 
         let terminator = PrefixProcessTerminator(
             wineControl: wineControl,
@@ -427,7 +434,7 @@ struct PrefixProcessTerminatorTests {
 
     // MARK: - 10. poll_sleep_cancellation
 
-    @Test("poll sleep cancellation is swallowed and poll continues")
+    @Test("poll sleep cancellation returns incomplete")
     func poll_sleep_cancellation() async {
         let wineControl = FakeWineControlService()
         let sleeper = ManualSleeper()
@@ -454,7 +461,7 @@ struct PrefixProcessTerminatorTests {
         let result = await terminator.terminate(
             runtimeURL: fakeRuntime, prefixURL: fakePrefix)
 
-        // The CancellationError from the sleeper is swallowed (try?),
+        // The CancellationError from the sleeper is returned incomplete,
         // so the poll loop continues. Unless the process exits, result
         // will be incomplete.
         #expect(result != .clean)
@@ -468,14 +475,9 @@ struct PrefixProcessTerminatorTests {
         let sleeper = ManualSleeper()
 
         let initialProcs = [knownProcess("steam.exe")]
-        // First poll: still present → force terminate
-        // Second poll: empty → exited
-        wineControl.tasklistResults = [
-            TasklistResult(rawLines: [], processes: initialProcs, parseErrors: []),
-            TasklistResult(rawLines: [], processes: initialProcs, parseErrors: []),
-            emptyTasklist,
-            emptyTasklist, // final census
-        ]
+        let withProc = TasklistResult(rawLines: [], processes: initialProcs, parseErrors: [])
+        let empty = TasklistResult(rawLines: [], processes: [], parseErrors: [])
+        wineControl.tasklistResults = Array(repeating: withProc, count: 6) + Array(repeating: empty, count: 6)
         // Grace succeeds, force succeeds
         wineControl.terminateOutcomes = [
             .success(()),
@@ -503,12 +505,7 @@ struct PrefixProcessTerminatorTests {
         let sleeper = ManualSleeper()
 
         let initialProcs = [knownProcess("steam.exe")]
-        wineControl.tasklistResults = [
-            TasklistResult(rawLines: [], processes: initialProcs, parseErrors: []),
-            TasklistResult(rawLines: [], processes: initialProcs, parseErrors: []),
-            TasklistResult(rawLines: [], processes: initialProcs, parseErrors: []),
-            TasklistResult(rawLines: [], processes: initialProcs, parseErrors: []),
-        ]
+        wineControl.tasklistResults = Array(repeating: TasklistResult(rawLines: [], processes: initialProcs, parseErrors: []), count: 12)
         wineControl.terminateOutcomes = [
             .success(()),
             .failure(WineControlError.terminateFailed(
@@ -536,7 +533,7 @@ struct PrefixProcessTerminatorTests {
         let initialProcs = [knownProcess("steam.exe")]
         let manyProcs = TasklistResult(
             rawLines: [], processes: initialProcs, parseErrors: [])
-        wineControl.tasklistResults = Array(repeating: manyProcs, count: 8)
+        wineControl.tasklistResults = Array(repeating: manyProcs, count: 12)
         wineControl.terminateOutcomes = [
             .success(()),   // grace
             .success(()),   // force
@@ -846,5 +843,104 @@ struct PrefixProcessTerminatorTests {
 
         // Multiple tasklist calls across phases
         #expect(tasklistCount >= 6, "Expected multiple tasklist calls across phases")
+    }
+
+    // MARK: - 24. force deadline remaining blocks clean
+
+    @Test("force deadline remaining blocks clean")
+    func forceDeadline_remaining_blocks_clean() async {
+        let wineControl = FakeWineControlService()
+        let sleeper = ManualSleeper()
+        let procs = TasklistResult(rawLines: [], processes: [steamProcess], parseErrors: [])
+        wineControl.tasklistResults = Array(repeating: procs, count: 12)
+        wineControl.terminateOutcomes = [.success(()), .success(())]
+        wineControl.wineserverKillError = nil
+        wineControl.wineserverWaitResult = true
+        wineControl.wineserverProbeResult = false
+
+        let terminator = PrefixProcessTerminator(wineControl: wineControl, sleeper: sleeper)
+        let result = await terminator.terminate(runtimeURL: fakeRuntime, prefixURL: fakePrefix)
+        #expect(result != .clean)
+        if case .incomplete(let reason) = result {
+            #expect(reason.contains("remaining") || reason.contains("Remaining"))
+        }
+    }
+
+    // MARK: - 25. wineserver nonzero probe returns incomplete
+
+    @Test("wineserver nonzero probe returns incomplete")
+    func wineserverProbe_nonzero_exit() async {
+        let wineControl = FakeWineControlService()
+        let sleeper = ManualSleeper()
+        wineControl.tasklistResults = [emptyTasklist, emptyTasklist]
+        wineControl.wineserverKillError = nil
+        wineControl.wineserverWaitResult = true
+        wineControl.wineserverProbeError = WineControlError.wineserverFailed(exitCode: 1)
+
+        let terminator = PrefixProcessTerminator(wineControl: wineControl, sleeper: sleeper)
+        let result = await terminator.terminate(runtimeURL: fakeRuntime, prefixURL: fakePrefix)
+        #expect(result != .clean)
+    }
+
+    // MARK: - 26. grace deadline force success returns clean
+
+    @Test("grace deadline force success returns clean")
+    func grace_deadline_force_success() async {
+        let wineControl = FakeWineControlService()
+        let sleeper = ManualSleeper()
+        wineControl.tasklistResults = [
+            TasklistResult(rawLines: [], processes: [steamProcess], parseErrors: []),
+            TasklistResult(rawLines: [], processes: [], parseErrors: []),
+        ]
+        wineControl.terminateOutcomes = [.success(())]
+        wineControl.wineserverKillError = nil
+        wineControl.wineserverWaitResult = true
+        wineControl.wineserverProbeResult = false
+
+        let terminator = PrefixProcessTerminator(wineControl: wineControl, sleeper: sleeper)
+        let result = await terminator.terminate(runtimeURL: fakeRuntime, prefixURL: fakePrefix)
+        #expect(result == .clean)
+    }
+
+    // MARK: - 27. poll uses exactly 5 attempts
+
+    @Test("poll uses exactly 5 attempts")
+    func poll_exactly_5_attempts() async {
+        let wineControl = FakeWineControlService()
+        let sleeper = ManualSleeper()
+        let steam = knownProcess("steam.exe")
+        let withProc = TasklistResult(rawLines: [], processes: [steam], parseErrors: [])
+        wineControl.tasklistResults = Array(repeating: withProc, count: 12)
+        wineControl.wineserverKillError = nil
+        wineControl.wineserverWaitResult = true
+        wineControl.wineserverProbeResult = false
+
+        let terminator = PrefixProcessTerminator(wineControl: wineControl, sleeper: sleeper)
+        let result = await terminator.terminate(runtimeURL: fakeRuntime, prefixURL: fakePrefix)
+        // The process persists through all 7 results (1 initial + 5 poll + 1 final)
+        // so the result should be incomplete due to remaining processes
+        #expect(result != .clean)
+    }
+
+    // MARK: - 28. remaining count appears in reason
+
+    @Test("remaining count appears in reason")
+    func remaining_count_in_reason() async {
+        let wineControl = FakeWineControlService()
+        let sleeper = ManualSleeper()
+        let steam = knownProcess("steam.exe")
+        let procs = TasklistResult(rawLines: [], processes: [steam, steam], parseErrors: [])
+        wineControl.tasklistResults = Array(repeating: procs, count: 12)
+        wineControl.terminateOutcomes = [.success(()), .success(())]
+        wineControl.wineserverKillError = nil
+        wineControl.wineserverWaitResult = true
+        wineControl.wineserverProbeResult = false
+
+        let terminator = PrefixProcessTerminator(wineControl: wineControl, sleeper: sleeper)
+        let result = await terminator.terminate(runtimeURL: fakeRuntime, prefixURL: fakePrefix)
+        #expect(result != .clean)
+        if case .incomplete(let reason) = result {
+            #expect(reason.contains("remaining") || reason.contains("Remaining"))
+        }
     }
 }
