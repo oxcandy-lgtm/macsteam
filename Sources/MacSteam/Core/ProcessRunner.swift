@@ -3,10 +3,6 @@
 import Foundation
 
 /// Safe process execution with no shell involvement.
-///
-/// All processes are launched via `Process.executableURL` + `Process.arguments`.
-/// `/bin/sh -c`, `sudo`, and string concatenation of user input are strictly
-/// forbidden.
 actor ProcessRunner {
 
     // MARK: - Public types
@@ -44,8 +40,18 @@ actor ProcessRunner {
         }
     }
 
-    /// Maximum bytes to read from stdout/stderr per run.
-    private let maxOutputBytes = 1024 * 1024  // 1 MB
+    /// Policy for capturing stdout/stderr.
+    enum ProcessOutputPolicy: Sendable {
+        case discard
+        case boundedCapture(maxBytes: Int)
+    }
+
+    /// Reason the process stop was requested.
+    enum RequestedTermination: Sendable {
+        case none
+        case timeout(TimeInterval)
+        case cancellation
+    }
 
     // MARK: - Run
 
@@ -55,9 +61,9 @@ actor ProcessRunner {
         environment: [String: String]? = nil,
         workingDirectory: URL? = nil,
         timeout: TimeInterval? = nil,
-        mode: LaunchMode = .waitForExit
+        mode: LaunchMode = .waitForExit,
+        outputPolicy: ProcessOutputPolicy = .boundedCapture(maxBytes: 1024 * 1024)
     ) async throws -> ProcessResult {
-        // Verify executable
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw RunnerError.executableNotFound(executable)
         }
@@ -71,17 +77,30 @@ actor ProcessRunner {
         process.executableURL = executable
         process.arguments = arguments
 
-        // Safe minimal environment
         let safeEnv = environment ?? [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": NSHomeDirectory(),
             "USER": ProcessInfo.processInfo.userName
         ]
         process.environment = safeEnv
-
-        // Working directory
         if let wd = workingDirectory {
             process.currentDirectoryURL = wd
+        }
+
+        // Detached mode: null device, no pipes needed
+        if case .detached = mode {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
+        }
+
+        // Wait-for-exit mode
+        let maxBytes: Int
+        if case .boundedCapture(let bytes) = outputPolicy {
+            maxBytes = bytes
+        } else {
+            maxBytes = Int.max
         }
 
         let stdoutPipe = Pipe()
@@ -90,92 +109,80 @@ actor ProcessRunner {
         process.standardError = stderrPipe
 
         try process.run()
+        let pid = process.processIdentifier
 
-        // Detached mode: return immediately after successful launch
-        if case .detached = mode {
-            return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
+        // Close parent write-ends after process launch so EOF works cleanly
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+
+        // Launch async reader tasks
+        let stdoutTask = Task.detached { [maxBytes] in
+            let data = try? stdoutPipe.fileHandleForReading.readToEnd()
+            let capped = data?.prefix(maxBytes) ?? Data()
+            return String(data: capped, encoding: .utf8) ?? ""
+        }
+        let stderrTask = Task.detached { [maxBytes] in
+            let data = try? stderrPipe.fileHandleForReading.readToEnd()
+            let capped = data?.prefix(maxBytes) ?? Data()
+            return String(data: capped, encoding: .utf8) ?? ""
         }
 
-        // Wait-for-exit mode: drain pipes via readabilityHandler + DispatchGroup
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessResult, Error>) in
-                let collector = OutputCollector(maxBytes: self.maxOutputBytes)
+        // Track cancellation
+        let terminationIntent = MutableTerminationIntent()
 
-                let stdoutHandle = stdoutPipe.fileHandleForReading
-                let stderrHandle = stderrPipe.fileHandleForReading
-
-                stdoutHandle.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if data.isEmpty {
-                        stdoutHandle.readabilityHandler = nil
-                        return
-                    }
-                    collector.appendStdout(data)
-                }
-
-                stderrHandle.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if data.isEmpty {
-                        stderrHandle.readabilityHandler = nil
-                        return
-                    }
-                    collector.appendStderr(data)
-                }
-
-                // Timeout timer
-                let timer: DispatchSourceTimer?
-                if let timeoutSeconds = timeout {
-                    let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
-                    t.schedule(deadline: .now() + timeoutSeconds)
-                    t.setEventHandler {
-                        process.terminate()
-                    }
-                    t.resume()
-                    timer = t
-                } else {
-                    timer = nil
-                }
-
-                process.terminationHandler = { proc in
-                    timer?.cancel()
-
-                    // Close write-ends to trigger EOF on readabilityHandlers
-                    stdoutPipe.fileHandleForWriting.closeFile()
-                    stderrPipe.fileHandleForWriting.closeFile()
-
-                    // Read any remaining data that readabilityHandler may have missed
-                    if let remainingOut = try? stdoutHandle.readToEnd() {
-                        collector.appendStdout(remainingOut)
-                    }
-                    if let remainingErr = try? stderrHandle.readToEnd() {
-                        collector.appendStderr(remainingErr)
-                    }
-
-                    stdoutHandle.readabilityHandler = nil
-                    stderrHandle.readabilityHandler = nil
-
-                    let terminationStatus = proc.terminationStatus
-                    let terminationReason = proc.terminationReason
-
-                    if collector.didTimeOut {
-                        continuation.resume(throwing: RunnerError.timeoutReached(timeout ?? 0))
-                        return
-                    }
-
-                    if terminationReason == .uncaughtSignal {
-                        continuation.resume(throwing: RunnerError.processTerminated(signal: terminationStatus))
-                        return
-                    }
-
-                    continuation.resume(returning: ProcessResult(
-                        exitCode: terminationStatus,
-                        stdout: collector.stdout,
-                        stderr: collector.stderr,
-                        pid: proc.processIdentifier
-                    ))
+        // Start timeout timer if specified
+        if let timeoutSec = timeout {
+            Task.detached {
+                try? await Task.sleep(for: .seconds(timeoutSec))
+                terminationIntent.set(.timeout(timeoutSec))
+                if process.isRunning {
+                    process.terminate()
                 }
             }
+        }
+
+        return try await withTaskCancellationHandler {
+            // Wait for exit on a dedicated queue (not blocking the swift concurrency thread pool)
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().async {
+                    process.waitUntilExit()
+                    cont.resume()
+                }
+            }
+
+            // Check for timeout (timer or cancellation)
+            let cause = terminationIntent.current
+            var stdout = ""
+            var stderr = ""
+
+            if case .cancellation = cause {
+                stdoutTask.cancel()
+                stderrTask.cancel()
+                throw RunnerError.cancelled
+            }
+
+            stdout = await stdoutTask.value
+            stderr = await stderrTask.value
+
+            let terminationReason = process.terminationReason
+            let terminationStatus = process.terminationStatus
+
+            if case .timeout = cause {
+                throw RunnerError.timeoutReached(timeout ?? 0)
+            }
+
+            if terminationReason == .uncaughtSignal {
+                throw RunnerError.processTerminated(signal: terminationStatus)
+            }
+
+            return ProcessResult(
+                exitCode: terminationStatus,
+                stdout: stdout,
+                stderr: stderr,
+                pid: pid
+            )
         } onCancel: {
+            terminationIntent.set(.cancellation)
             if process.isRunning {
                 process.terminate()
             }
@@ -183,41 +190,14 @@ actor ProcessRunner {
     }
 }
 
-/// Thread‑safe mutable accumulator for process output.
-private final class OutputCollector: @unchecked Sendable {
-    private var _stdout = Data()
-    private var _stderr = Data()
-    private var _timedOut = false
-    private let maxBytes: Int
+/// Sendable holder for termination intent.
+private final class MutableTerminationIntent: @unchecked Sendable {
+    private var _value: ProcessRunner.RequestedTermination = .none
     private let lock = NSLock()
 
-    var didTimeOut: Bool { lock.withLock { _timedOut } }
-    var stdout: String { lock.withLock { String(data: _stdout, encoding: .utf8) ?? "" } }
-    var stderr: String { lock.withLock { String(data: _stderr, encoding: .utf8) ?? "" } }
+    var current: ProcessRunner.RequestedTermination { lock.withLock { _value } }
 
-    init(maxBytes: Int) {
-        self.maxBytes = maxBytes
-    }
-
-    func appendStdout(_ data: Data) {
-        lock.lock()
-        if _stdout.count < maxBytes {
-            let cap = min(data.count, maxBytes - _stdout.count)
-            _stdout.append(data.prefix(cap))
-        }
-        lock.unlock()
-    }
-
-    func appendStderr(_ data: Data) {
-        lock.lock()
-        if _stderr.count < maxBytes {
-            let cap = min(data.count, maxBytes - _stderr.count)
-            _stderr.append(data.prefix(cap))
-        }
-        lock.unlock()
-    }
-
-    func markTimedOut() {
-        lock.withLock { _timedOut = true }
+    func set(_ val: ProcessRunner.RequestedTermination) {
+        lock.withLock { _value = val }
     }
 }

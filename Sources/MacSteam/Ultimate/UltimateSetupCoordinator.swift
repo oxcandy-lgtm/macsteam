@@ -753,8 +753,7 @@ final class UltimateSetupCoordinator {
         // If already visible or hidden, just activate
         switch steamClientState {
         case .runningVisible, .runningHidden:
-            log("Steam already running, sending activation command")
-            await activateExistingSteam()
+            log("Steam already running — window activation pending SteamWindowInventory")
             return
         case .launching, .stopping:
             log("Steam is launching/stopping, ignoring launch request")
@@ -847,30 +846,6 @@ final class UltimateSetupCoordinator {
 
         log("Warning: RuntimeDependencyLayout unavailable, using basic environment")
         return buildBasicEnvironment()
-    }
-
-    /// Activate an already-running Steam window (no new process).
-    private func activateExistingSteam() async {
-        guard let runtime = activeRuntime,
-              let runtimeURL = runtimeURL else { return }
-
-        let layout = WineExecutableLayout.detect(from: runtimeURL)
-        let wineURL = layout.wine
-
-        // Run steam://open/main via wine as a short-lived control command
-        do {
-            let environment = buildWineEnvironment()
-            _ = try await processRunner.run(
-                executable: wineURL,
-                arguments: ["steam://open/main"],
-                environment: environment,
-                workingDirectory: prefixLayout?.root ?? URL(fileURLWithPath: "/"),
-                mode: .detached
-            )
-            log("Steam activation command sent (steam://open/main)")
-        } catch {
-            log("Activation command failed: \(error.localizedDescription)")
-        }
     }
 
     /// Reconcile steamClientState with actual process state.
