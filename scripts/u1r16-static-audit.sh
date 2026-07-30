@@ -62,7 +62,7 @@ if echo "$PYTHON_OUTPUT" | grep -q "STATIC SCANNER PASSED"; then
     echo "✅ 0"
 else
     echo "❌ violations found"
-    echo "$PYTHON_OUTPUT" | grep "^VIOLATION"
+    echo "$PYTHON_OUTPUT" | grep "^VIOLATION" || true
     VIOLATIONS=$((VIOLATIONS + 1))
 fi
 

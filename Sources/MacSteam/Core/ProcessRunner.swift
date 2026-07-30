@@ -159,8 +159,8 @@ actor ProcessRunner {
                 throw RunnerError.cancelled
             }
 
-            let stdoutData = await stdoutCollector?.waitForCompletion() ?? Data()
-            let stderrData = await stderrCollector?.waitForCompletion() ?? Data()
+            let stdoutData = (try? await stdoutCollector?.waitForCompletion()) ?? Data()
+            let stderrData = (try? await stderrCollector?.waitForCompletion()) ?? Data()
 
             if case .timeout = cause {
                 throw RunnerError.timeoutReached(timeout ?? 0)
@@ -205,6 +205,7 @@ final class BoundedStreamCollector: @unchecked Sendable {
     private let limit: Int
     private var isFinished = false
     private var failureError: Error?
+    private var waiter: CheckedContinuation<Data, any Error>?
     private let lock = NSLock()
 
     init(limit: Int) {
@@ -222,23 +223,55 @@ final class BoundedStreamCollector: @unchecked Sendable {
     }
 
     func finish() {
-        lock.withLock { isFinished = true }
+        let w: CheckedContinuation<Data, any Error>?
+        lock.lock()
+        isFinished = true
+        w = waiter
+        waiter = nil
+        lock.unlock()
+        w?.resume(returning: data)
     }
 
     func fail(_ error: Error) {
-        lock.withLock { failureError = error; isFinished = true }
+        let w: CheckedContinuation<Data, any Error>?
+        lock.lock()
+        failureError = error
+        isFinished = true
+        w = waiter
+        waiter = nil
+        lock.unlock()
+        w?.resume(throwing: error)
     }
 
-    func waitForCompletion() async -> Data {
-        // Poll briefly for the collector to finish
-        let deadline = DispatchTime.now() + .seconds(5)
-        while true {
-            let (done, data) = lock.withLock { (isFinished, self.data) }
-            if done { return data }
-            if DispatchTime.now() > deadline { break }
-            try? await Task.sleep(for: .milliseconds(5))
+    func waitForCompletion() async throws -> Data {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, any Error>) in
+            lock.lock()
+            if let err = failureError {
+                lock.unlock()
+                cont.resume(throwing: err)
+                return
+            }
+            if isFinished {
+                let d = data
+                lock.unlock()
+                cont.resume(returning: d)
+                return
+            }
+            waiter = cont
+            lock.unlock()
+
+            // Safety timeout: resume with current data after 10s
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                guard let self else { return }
+                let resumed: CheckedContinuation<Data, any Error>? = lock.withLock {
+                    guard let w = waiter else { return nil }
+                    waiter = nil
+                    return w
+                }
+                resumed?.resume(returning: lock.withLock { data })
+            }
         }
-        return lock.withLock { data }
     }
 }
 

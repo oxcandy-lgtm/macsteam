@@ -3,7 +3,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUDIT="$SCRIPT_DIR/u1r16-static-audit.sh"
 SCANNER="$SCRIPT_DIR/u1r16_static_audit.py"
 TEST_DIR="$(mktemp -d /tmp/macsteam-audit-test.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -12,52 +11,48 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-export GIT_PAGER=cat GIT_TERMINAL_PROMPT=0
-
-make_git() {
-    local dir="$1"
-    mkdir -p "$dir/Sources/MacSteam/Views" "$dir/scripts"
-    ln -sf "$SCANNER" "$dir/scripts/u1r16_static_audit.py" 2>/dev/null || true
+# Helper: create a file in the fixture
+mk_swift() {
+    local dir="$1" subpath="$2" content="$3"
+    mkdir -p "$dir/Sources/MacSteam/Views"
+    echo "$content" > "$dir/Sources/MacSteam/Views/$subpath"
 }
 
 # Test 1: clean fixture
-make_git "$TEST_DIR/clean"
-echo 'import SwiftUI' > "$TEST_DIR/clean/Sources/MacSteam/Views/TestView.swift'
-echo 'let x = coordinator.state' > "$TEST_DIR/clean/Sources/MacSteam/Views/StateView.swift'
-cd "$TEST_DIR/clean"
-git init -q && git add -A 2>/dev/null
-python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && pass "clean scanner returns 0" || fail "clean scanner should return 0"
+CLEAN="$TEST_DIR/clean"
+mk_swift "$CLEAN" "TestView.swift" 'import SwiftUI'
+mk_swift "$CLEAN" "StateView.swift" 'let x = coordinator.state'
+python3 "$SCANNER" --root "$CLEAN/Sources/MacSteam/Views" >/dev/null 2>&1 && pass "clean returns 0" || fail "clean should return 0"
 
-# Test 2: assignment detected (single =)
-make_git "$TEST_DIR/assn1"
-echo 'coordinator.state = .steamReady' > "$TEST_DIR/assn1/Sources/MacSteam/Views/TestView.swift'
-cd "$TEST_DIR/assn1"
-git init -q && git add -A 2>/dev/null
-python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && fail "assignment = should be detected" || pass "assignment = detected"
+# Test 2: assignment detected
+ASSN1="$TEST_DIR/assn1"
+mk_swift "$ASSN1" "TestView.swift" 'coordinator.state = .steamReady'
+python3 "$SCANNER" --root "$ASSN1/Sources/MacSteam/Views" >/dev/null 2>&1 && fail "assignment should be 1" || pass "assignment detected"
 
-# Test 3: multi-space assignment detected
-make_git "$TEST_DIR/assn2"
-echo 'coordinator.state     = .steamReady' > "$TEST_DIR/assn2/Sources/MacSteam/Views/TestView.swift'
-cd "$TEST_DIR/assn2"
-git init -q && git add -A 2>/dev/null
-python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && fail "multi-space assignment should be detected" || pass "multi-space assignment detected"
+# Test 3: multi-space assignment
+ASSN2="$TEST_DIR/assn2"
+mk_swift "$ASSN2" "TestView.swift" 'coordinator.state     = .steamReady'
+python3 "$SCANNER" --root "$ASSN2/Sources/MacSteam/Views" >/dev/null 2>&1 && fail "multi-space assign should be 1" || pass "multi-space detected"
 
-# Test 4: equality comparison excluded
-make_git "$TEST_DIR/eq"
-echo 'if coordinator.state == .steamReady' > "$TEST_DIR/eq/Sources/MacSteam/Views/TestView.swift"
-cd "$TEST_DIR/eq"
-git init -q && git add -A 2>/dev/null
-python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && pass "== comparison excluded" || fail "== comparison should be excluded"
+# Test 4: equality comparison
+EQ="$TEST_DIR/eq"
+mk_swift "$EQ" "TestView.swift" 'if coordinator.state == .steamReady'
+python3 "$SCANNER" --root "$EQ/Sources/MacSteam/Views" >/dev/null 2>&1 && pass "== returns 0" || fail "== should return 0"
 
-# Test 5: inequality comparison excluded
-make_git "$TEST_DIR/neq"
-echo 'if coordinator.state != .steamReady' > "$TEST_DIR/neq/Sources/MacSteam/Views/TestView.swift"
-cd "$TEST_DIR/neq"
-git init -q && git add -A 2>/dev/null
-python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && pass "!= comparison excluded" || fail "!= comparison should be excluded"
+# Test 5: inequality comparison
+NEQ="$TEST_DIR/neq"
+mk_swift "$NEQ" "TestView.swift" 'if coordinator.state != .steamReady'
+python3 "$SCANNER" --root "$NEQ/Sources/MacSteam/Views" >/dev/null 2>&1 && pass "!= returns 0" || fail "!= should return 0"
 
-# Test 6: missing path returns error
-python3 scripts/u1r16_static_audit.py --nonexistent 2>/dev/null && fail "missing path should return error" || pass "missing path returns error"
+# Test 6: missing root
+python3 "$SCANNER" --root "$TEST_DIR/nonexistent" >/dev/null 2>&1 && fail "missing root should be exit 2" || pass "missing root exits 2"
+
+# Test 7: run full audit script
+AUDIT="$SCRIPT_DIR/u1r16-static-audit.sh"
+cd "$SCRIPT_DIR/.."
+bash "$AUDIT" >/dev/null 2>&1 && rc=$? || rc=$?
+# Audit should find violations in existing code
+[ "$rc" -eq 1 ] && pass "full audit exits 1 (expected violations)" || fail "full audit should exit 1"
 
 echo ""
 if [ "$FAILURES" -eq 0 ]; then
