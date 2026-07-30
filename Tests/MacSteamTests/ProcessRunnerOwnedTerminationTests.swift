@@ -57,14 +57,12 @@ struct ProcessRunnerOwnedTerminationTests {
     @Test func latchOpenThenEvent() async throws {
         let latch = TerminationLatch()
         #expect(latch.record(TermEvent(exitCode: 0, signaled: false)) == true)
-        // Duplicate record rejected
         #expect(latch.record(TermEvent(exitCode: 1, signaled: true)) == false)
     }
 
     @Test func latchCleanupClaimedThenEvent() async throws {
         let latch = TerminationLatch()
         if case .claimed = latch.claimCleanupIfNoTermination() { /* ok */ } else { #expect(Bool(false)) }
-        // Event after cleanup claim — should be recorded
         #expect(latch.record(TermEvent(exitCode: 0, signaled: false)) == true)
         #expect(latch.snapshot() != nil)
     }
@@ -72,12 +70,11 @@ struct ProcessRunnerOwnedTerminationTests {
     @Test func latchEventFirstThenClaim() async throws {
         let latch = TerminationLatch()
         #expect(latch.record(TermEvent(exitCode: 0, signaled: false)) == true)
-        // Claim after event
         switch latch.claimCleanupIfNoTermination() {
         case .alreadyExited(let ev):
             #expect(ev.exitCode == 0)
         case .claimed:
-            #expect(Bool(false)) // Should be alreadyExited
+            #expect(Bool(false))
         }
     }
 
@@ -87,13 +84,31 @@ struct ProcessRunnerOwnedTerminationTests {
         if case .claimed = latch.claimCleanupIfNoTermination() { /* ok */ } else { #expect(Bool(false)) }
     }
 
-    // MARK: - Pre-wait failure
+    // MARK: - Pre-wait failure (real process tests)
 
     @Test func timeoutBeforeWait() async throws {
-        // Timeout should arrive before any wait is registered
-        // This tests that fail() sets outcome without activeToken guard
         await #expect(throws: ProcessRunner.RunnerError.timeoutReached(0.5)) {
             try await runner.run(executable: sleepyURL, arguments: ["10"], timeout: 0.5)
         }
+    }
+
+    // MARK: - Identity resolution grace
+
+    @Test func identityResolutionGraceConstant() {
+        #expect(ProcessRunner.identityResolutionGrace == 0.1)
+    }
+
+    // MARK: - Probe tests
+
+    @Test func probeBeforeTermination() async throws {
+        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf hello"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "hello")
+    }
+
+    @Test func probeSecondWindowGrace() async throws {
+        let result = try await runner.run(executable: shURL, arguments: ["-c", "printf second-window"])
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "second-window")
     }
 }

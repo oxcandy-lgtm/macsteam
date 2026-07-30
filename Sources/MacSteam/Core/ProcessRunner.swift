@@ -42,6 +42,8 @@ actor ProcessRunner {
         self.identityProvider = identityProvider; self.signalSender = signalSender
     }
 
+    static let identityResolutionGrace = 0.1
+
     func run(executable: URL, arguments: [String] = [], environment: [String: String]? = nil,
              workingDirectory: URL? = nil, timeout: TimeInterval? = nil, mode: LaunchMode = .waitForExit,
              outputPolicy: ProcessOutputPolicy = .boundedCapture(maxBytes: 1024 * 1024)) async throws -> ProcessResult {
@@ -160,16 +162,12 @@ actor ProcessRunner {
             // Process running — try once more
             do { return .owned(try identityProvider.identity(forPID: pid)) }
             catch {
-                // 2nd identity failure — check again before terminate
-                if let latched = latch.snapshot() {
+                // 2nd identity failure — grace period before cleanup claim
+                if let event = try await termCtrl.probeRecordedTermination(until: .now + .seconds(Self.identityResolutionGrace)) {
                     return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures,
                                                       outputBundle: outputBundle)
                 }
-                if !process.isRunning {
-                    return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures,
-                                                      outputBundle: outputBundle)
-                }
-                // Unresolved — use atomic cleanup claim
+                // Probe deadline — use atomic cleanup claim
                 switch latch.claimCleanupIfNoTermination() {
                 case .alreadyExited:
                     return try await finishQuickExit(pid: pid, termCtrl: termCtrl, captures: captures,
@@ -256,6 +254,8 @@ private actor TermController {
     private var timeoutWork: DispatchWorkItem?
     private var forceKillWork: DispatchWorkItem?
     private var cause: TermCause = .none
+    private var probeContinuation: CheckedContinuation<TermEvent?, Error>?
+    private var probeToken: UUID?
 
     init(signalSender: any ProcessSignalSending, identityProvider: any ProcessIdentityProviding, latch: TerminationLatch) {
         self.signalSender = signalSender; self.identityProvider = identityProvider; self.latch = latch
@@ -268,6 +268,38 @@ private actor TermController {
         outcome = .exited(TermExit(event: event, cause: cause))
         cancelAllWork()
         waiterCont?.resume(); waiterCont = nil
+        probeContinuation?.resume(returning: event); probeContinuation = nil
+        probeToken = nil
+    }
+
+    /// Non-consuming probe — does not affect waiterSet or main WaitOutcome.
+    func probeRecordedTermination(until deadline: ContinuousClock.Instant) async throws -> TermEvent? {
+        // Check immediate sources
+        if let latched = latch.snapshot() { return latched }
+        if case .exited(let e) = outcome { return e.event }
+
+        let token = UUID(); probeToken = token
+
+        let interval = deadline - ContinuousClock.now
+        let nanos = UInt64(max(0, interval.components.seconds * 1_000_000_000 + interval.components.attoseconds / 1_000_000_000))
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { await self._probeDeadlineReached(token: token) }
+        }
+        if nanos > 0 { DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(nanos)), execute: work) }
+        else { work.perform() }
+
+        return try await withCheckedThrowingContinuation { (c: CheckedContinuation<TermEvent?, Error>) in
+            if let latched = latch.snapshot() { c.resume(returning: latched); return }
+            if case .exited(let e) = outcome { c.resume(returning: e.event); return }
+            probeContinuation = c
+        }
+    }
+
+    private func _probeDeadlineReached(token: UUID) {
+        guard token == probeToken else { return }
+        probeToken = nil
+        probeContinuation?.resume(returning: nil); probeContinuation = nil
     }
 
     func wait(until deadline: ContinuousClock.Instant?) async throws -> TermExit? {

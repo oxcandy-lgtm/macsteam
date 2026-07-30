@@ -74,4 +74,9 @@ struct ProcessRunnerQuickExitTests {
         #expect(result.stdout == "out")
         #expect(result.stderr == "err")
     }
+
+    @Test func quickExitGrace() async throws {
+        let result = try await runner.run(executable: trueURL)
+        #expect(result.exitCode == 0)
+    }
 }
