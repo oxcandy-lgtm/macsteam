@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Foundation
-import Darwin.sys.proc
-
-// MARK: - Process identity
-
-/// Snapshot of a running process identity for ownership verification.
-struct ProcessIdentitySnapshot: Sendable, Equatable {
-    let pid: Int32
-    let executablePath: String
-    let startTimeSeconds: UInt64
-    let startTimeMicroseconds: UInt64
-}
-
-protocol ProcessIdentityProviding: Sendable {
-    func identity(forPID pid: Int32) throws -> ProcessIdentitySnapshot
-}
 
 /// Safe process execution with no shell involvement.
 actor ProcessRunner {
@@ -35,7 +20,6 @@ actor ProcessRunner {
         case cancelled
         case alreadyRunning
         case pipeReadFailed
-        case ownershipLost
 
         var errorDescription: String? {
             switch self {
@@ -46,7 +30,6 @@ actor ProcessRunner {
             case .cancelled: return "Process was cancelled."
             case .alreadyRunning: return "Already running."
             case .pipeReadFailed: return "Failed to read process output."
-            case .ownershipLost: return "Process ownership verification failed."
             }
         }
     }
@@ -61,10 +44,6 @@ actor ProcessRunner {
         case timeout(TimeInterval)
         case cancellation
     }
-
-    /// Dedicated serial queue for pipe readers (fixed thread pool, not global concurrent)
-    private static let readerQueue = DispatchQueue(label: "com.nousresearch.macsteam.process-runner",
-                                                     qos: .utility)
 
     // MARK: - Run
 
@@ -103,101 +82,82 @@ actor ProcessRunner {
             return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
         }
 
-        // Configure output — discard uses null device only
-        let isDiscard: Bool
+        // Output setup
+        var isDiscard = false
         let maxBytes: Int
-        var stdoutPipe: Pipe?
-        var stderrPipe: Pipe?
-
         switch outputPolicy {
         case .discard:
             isDiscard = true
             maxBytes = 0
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-        case .boundedCapture(let bytes):
-            isDiscard = false
-            maxBytes = bytes
-            let soPipe = Pipe()
-            let sePipe = Pipe()
-            stdoutPipe = soPipe
-            stderrPipe = sePipe
-            process.standardOutput = soPipe
-            process.standardError = sePipe
+        case .boundedCapture(let b):
+            maxBytes = b
         }
+
+        let soPipe = Pipe()
+        let sePipe = Pipe()
+        process.standardOutput = soPipe
+        process.standardError = sePipe
 
         try process.run()
         let pid = process.processIdentifier
 
-        // Close parent write-ends so EOF works after child exits
-        stdoutPipe?.fileHandleForWriting.closeFile()
-        stderrPipe?.fileHandleForWriting.closeFile()
+        soPipe.fileHandleForWriting.closeFile()
+        sePipe.fileHandleForWriting.closeFile()
 
-        // Process identity
-        let identity = OwnedProcessIdentity(
-            pid: pid,
-            executablePath: executable.path,
-            startTimeSeconds: UInt64(Date().timeIntervalSince1970)
-        )
-        let termOwner = ProcessTerminationOwner(identity: identity)
-
-        // Pipe readers on global queue (readToEnd blocks GCD thread, avoids Swift concurrency blocking)
-        let stdoutResult = ThreadSafeData()
-        let stderrResult = ThreadSafeData()
+        // GCD readers (proven reliable on this hardware)
+        let soResult = ThreadSafeData()
+        let seResult = ThreadSafeData()
         if !isDiscard {
-            if let soHandle = stdoutPipe?.fileHandleForReading {
-                DispatchQueue.global().async { [maxBytes] in
-                    let d = (try? soHandle.readToEnd()) ?? Data()
-                    stdoutResult.value = d.prefix(maxBytes)
-                    try? soHandle.close()
-                }
+            DispatchQueue.global().async { [maxBytes] in
+                let d = (try? soPipe.fileHandleForReading.readToEnd()) ?? Data()
+                soResult.value = d.prefix(maxBytes)
+                try? soPipe.fileHandleForReading.close()
             }
-            if let seHandle = stderrPipe?.fileHandleForReading {
-                DispatchQueue.global().async { [maxBytes] in
-                    let d = (try? seHandle.readToEnd()) ?? Data()
-                    stderrResult.value = d.prefix(maxBytes)
-                    try? seHandle.close()
-                }
+            DispatchQueue.global().async { [maxBytes] in
+                let d = (try? sePipe.fileHandleForReading.readToEnd()) ?? Data()
+                seResult.value = d.prefix(maxBytes)
+                try? sePipe.fileHandleForReading.close()
             }
         } else {
-            stdoutResult.value = Data()
-            stderrResult.value = Data()
+            soResult.value = Data()
+            seResult.value = Data()
         }
 
-        // Timeout (use global queue for timer)
-        if let timeoutSec = timeout {
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSec) { [pid] in
-                guard termOwner.request(.timeout(timeoutSec)) else { return }
-                guard termOwner.verifyOwnership(pid: pid) else { return }
+        // Termination state
+        let term = ProcessTermOwner()
+
+        // Timeout
+        if let t = timeout {
+            DispatchQueue.global().asyncAfter(deadline: .now() + t) { [pid] in
+                guard term.claim(.timeout(t)) else { return }
                 kill(pid, SIGTERM)
                 DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [pid] in
-                    guard termOwner.verifyOwnership(pid: pid) else { return }
-                    kill(pid, SIGKILL)
+                    if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
                 }
             }
         }
 
         return try await withTaskCancellationHandler {
-            // Wait for process exit via terminationHandler
-            let processTerm: ProcessTermination = await withCheckedContinuation { (cont: CheckedContinuation<ProcessTermination, Never>) in
-                process.terminationHandler = { proc in
-                    cont.resume(returning: ProcessTermination(
-                        status: proc.terminationStatus,
-                        reason: proc.terminationReason
-                    ))
+            // Wait for process exit via GCD continuation
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().async {
+                    process.waitUntilExit()
+                    cont.resume()
                 }
             }
 
-            let cause = termOwner.current
+            let cause = term.current
 
             if cause == .cancellation {
                 throw RunnerError.cancelled
             }
 
-            // Wait for pipe readers (poll with timeout on dedicated queue result)
+            // Poll for GCD readers with timeout
             if !isDiscard {
                 let deadline = DispatchTime.now() + .seconds(10)
-                while stdoutResult.value == nil || stderrResult.value == nil {
+                while soResult.value == nil || seResult.value == nil {
                     if DispatchTime.now() > deadline {
                         throw RunnerError.pipeReadFailed
                     }
@@ -205,73 +165,52 @@ actor ProcessRunner {
                 }
             }
 
-            let outData = stdoutResult.value ?? Data()
-            let errData = stderrResult.value ?? Data()
+            let outData = soResult.value ?? Data()
+            let errData = seResult.value ?? Data()
 
             if case .timeout = cause {
                 throw RunnerError.timeoutReached(timeout ?? 0)
             }
 
-            if processTerm.reason == .uncaughtSignal {
-                throw RunnerError.processTerminated(signal: processTerm.status)
+            if process.terminationReason == .uncaughtSignal {
+                throw RunnerError.processTerminated(signal: process.terminationStatus)
             }
 
             return ProcessResult(
-                exitCode: processTerm.status,
+                exitCode: process.terminationStatus,
                 stdout: String(data: outData, encoding: .utf8) ?? "",
                 stderr: String(data: errData, encoding: .utf8) ?? "",
                 pid: pid
             )
         } onCancel: {
-            guard termOwner.request(.cancellation) else { return }
-            guard termOwner.verifyOwnership(pid: pid) else { return }
+            guard term.claim(.cancellation) else { return }
             kill(pid, SIGTERM)
         }
     }
 }
 
-// MARK: - Process termination and identity
+// MARK: - Termination state
 
-struct ProcessTermination: Sendable {
-    let status: Int32
-    let reason: Process.TerminationReason
-}
-
-struct OwnedProcessIdentity: Sendable {
-    let pid: Int32
-    let executablePath: String
-    let startTimeSeconds: UInt64
-}
-
-private final class ProcessTerminationOwner: @unchecked Sendable {
-    private var _value: ProcessRunner.RequestedTermination = .none
-    private let lock = NSLock()
-    let identity: OwnedProcessIdentity
-
-    var current: ProcessRunner.RequestedTermination { lock.withLock { _value } }
-    init(identity: OwnedProcessIdentity) { self.identity = identity }
-
-    func request(_ new: ProcessRunner.RequestedTermination) -> Bool {
-        lock.withLock {
-            guard _value == .none else { return false }
-            _value = new
+private final class ProcessTermOwner: @unchecked Sendable {
+    private var val: ProcessRunner.RequestedTermination = .none
+    private let lk = NSLock()
+    var current: ProcessRunner.RequestedTermination { lk.withLock { val } }
+    func claim(_ v: ProcessRunner.RequestedTermination) -> Bool {
+        lk.withLock {
+            guard val == .none else { return false }
+            val = v
             return true
         }
     }
-
-    func verifyOwnership(pid: Int32) -> Bool {
-        guard kill(pid, 0) == 0 else { return false }
-        return true
-    }
 }
 
-// MARK: - Thread-safe data holder
+// MARK: - Thread-safe data
 
 private final class ThreadSafeData: @unchecked Sendable {
-    private var _value: Data?
-    private let lock = NSLock()
+    private var v: Data?
+    private let lk = NSLock()
     var value: Data? {
-        get { lock.withLock { _value } }
-        set { lock.withLock { _value = newValue } }
+        get { lk.withLock { v } }
+        set { lk.withLock { v = newValue } }
     }
 }

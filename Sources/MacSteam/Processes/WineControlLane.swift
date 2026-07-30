@@ -228,7 +228,7 @@ actor WineControlLane {
             throw error
         } catch let error as ProcessRunner.RunnerError {
             switch error {
-            case .timeoutReached, .processTerminated, .cancelled, .pipeReadFailed, .ownershipLost:
+            case .timeoutReached, .processTerminated, .cancelled, .pipeReadFailed:
                 return false
             case .executableNotFound, .executableNotRegularFile, .alreadyRunning:
                 throw error
@@ -237,8 +237,6 @@ actor WineControlLane {
     }
 
     // MARK: - Environment
-
-    /// Build a full Wine environment using `WineLaunchEnvironmentBuilder`.
     ///
     /// Falls back to a basic environment when `RuntimeDependencyLayout`
     /// cannot be created for the given runtime path.

@@ -3,16 +3,45 @@
 import Foundation
 import Darwin.sys.proc
 
-/// Real process identity provider using macOS proc_info APIs.
+// MARK: - Process identity types
+
+/// Snapshot of a running process identity for ownership verification.
+struct ProcessIdentitySnapshot: Sendable, Equatable {
+    let pid: Int32
+    let canonicalExecutablePath: String
+    let startTimeSeconds: UInt64
+    let startTimeMicroseconds: UInt64
+}
+
+protocol ProcessIdentityProviding: Sendable {
+    func identity(forPID pid: Int32) throws -> ProcessIdentitySnapshot
+}
+
+enum ProcessIdentityError: Error, Sendable {
+    case cannotResolveExecutablePath
+    case cannotResolveStartTime
+}
+
+// MARK: - Real identity provider (macOS proc_info)
+
 struct RealProcessIdentityProvider: ProcessIdentityProviding {
     func identity(forPID pid: Int32) throws -> ProcessIdentitySnapshot {
         // Get executable path via proc_pidpath
-        var buf = [UInt8](repeating: 0, count: 4096) // PROC_PIDPATH_SIZE_MAX
+        var buf = [UInt8](repeating: 0, count: 4096)
         let pathLen = proc_pidpath(pid, &buf, UInt32(buf.count))
         guard pathLen > 0 else {
             throw ProcessIdentityError.cannotResolveExecutablePath
         }
-        let execPath = String(cString: buf)
+        var rawPath = String(cString: buf)
+        // Canonicalize via realpath
+        if let resolved = rawPath.withCString({ cstr -> String? in
+            guard let rp = realpath(cstr, nil) else { return nil }
+            let s = String(cString: rp)
+            free(rp)
+            return s
+        }) {
+            rawPath = resolved
+        }
 
         // Get process start time via proc_pidinfo
         var info = proc_bsdinfo()
@@ -24,14 +53,21 @@ struct RealProcessIdentityProvider: ProcessIdentityProviding {
 
         return ProcessIdentitySnapshot(
             pid: pid,
-            executablePath: execPath,
+            canonicalExecutablePath: rawPath,
             startTimeSeconds: UInt64(info.pbi_start_tvsec),
             startTimeMicroseconds: UInt64(info.pbi_start_tvusec)
         )
     }
 }
 
-enum ProcessIdentityError: Error, Sendable {
-    case cannotResolveExecutablePath
-    case cannotResolveStartTime
+// MARK: - Process signal sending
+
+protocol ProcessSignalSending: Sendable {
+    func sendSignal(_ signal: Int32, to pid: Int32) -> Bool
+}
+
+struct DarwinProcessSignalSender: ProcessSignalSending {
+    func sendSignal(_ signal: Int32, to pid: Int32) -> Bool {
+        kill(pid, signal) == 0
+    }
 }
