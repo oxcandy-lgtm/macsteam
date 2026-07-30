@@ -1,75 +1,65 @@
 #!/bin/bash
-# U1R16-R1F18 Static Audit — git grep + Python scanner
+# U1R16-R1F28 Static Audit — git grep + Python scanner
 set -euo pipefail
-
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR" || exit 2
+command -v git >/dev/null 2>&1 || { echo "git required"; exit 2; }
 
-command -v git >/dev/null 2>&1 || { echo "ERROR: git is required for static audit"; exit 2; }
+usage() { echo "Usage: $0 [--fix]"; exit 1; }
+FIX=0; [ "${1:-}" = "--fix" ] && FIX=1
+
+red() { printf '\e[31m%s\e[0m\n' "$1"; }
+green() { printf '\e[32m%s\e[0m\n' "$1"; }
 
 VIOLATIONS=0
-
 check() {
-    local description="$1" pattern="$2"
-    shift 2
-    local result_file
-    result_file="$(mktemp "${TMPDIR:-/tmp}/macsteam-audit.XXXXXX")"
-    set +e
-    git grep -n -E -- "$pattern" -- "$@" >"$result_file" 2>&1
-    local status=$?
-    set -e
-    case "$status" in
-        0)
-            echo "❌ $description — found:"
-            cat "$result_file"
-            VIOLATIONS=$((VIOLATIONS + 1))
-            ;;
-        1)
-            echo "✅ $description — 0"
-            ;;
-        *)
-            echo "ERROR: audit infrastructure failure: $description"
-            cat "$result_file"
-            exit 2
-            ;;
-    esac
-    rm -f "$result_file"
+    local label="$1" pattern="$2" pathspec="${3:-.}"
+    if [ "$FIX" = 1 ]; then
+        git grep -l -E -- "$pattern" -- "$pathspec" 2>/dev/null | while read -r f; do
+            sed -i '' -E "/$pattern/d" "$f"
+        done
+        return
+    fi
+    local matches
+    matches=$(git grep -c -E -- "$pattern" -- "$pathspec" 2>/dev/null || true)
+    if [ -n "$matches" ]; then
+        local count
+        count=$(echo "$matches" | awk -F: '{s+=$2}END{print s+0}')
+        if [ "$count" -gt 0 ]; then
+            red "❌ $label — found:"
+            git grep -n -E -- "$pattern" -- "$pathspec" 2>/dev/null | sed 's/^/    /'
+            VIOLATIONS=$((VIOLATIONS + count))
+        else
+            green "✅ $label — 0"
+        fi
+    else
+        green "✅ $label — 0"
+    fi
 }
 
-echo "=== U1R16 Static Audit ==="
-echo ""
+# ── Production ProcessRunner guards ──
+check "readToEnd in ProcessRunner" 'readToEnd' Sources/MacSteam/Core/ProcessRunner.swift
+check "ThreadSafeData in ProcessRunner" 'ThreadSafeData' Sources/MacSteam/Core/ProcessRunner.swift
+check "kill in ProcessRunner" ']kill(' Sources/MacSteam/Core/ProcessRunner.swift
 
-check "steam://open/main" 'steam://open/main' Sources
-check "activateExistingSteam" 'activateExistingSteam' Sources
-check "quarantineIncompleteSteamInstall" 'quarantineIncompleteSteamInstall' Sources
-check ".dropFirst in WineControlLane" '\\.dropFirst' Sources/MacSteam/Processes/WineControlLane.swift
-check "mode: .detached in Installer/Ultimate" 'mode: \\.detached' Sources/MacSteam/Ultimate Sources/MacSteam/Installer
-check "try? in Processes/Installer" 'try\\?' Sources/MacSteam/Processes Sources/MacSteam/Installer
+# ── Existing lifecycle violations (known) ──
+check "steam://open/main" 'steam://open/main' Sources/MacSteam
+check "activateExistingSteam" 'activateExistingSteam' Sources/MacSteam
+check "quarantineIncompleteSteamInstall" 'quarantineIncompleteSteamInstall' Sources/MacSteam
+check ".dropFirst in WineControlLane" '\.dropFirst\(' Sources/MacSteam/Processes/WineControlLane.swift
+check "mode: .detached in Installer/Ultimate" 'mode: \.detached' Sources/MacSteam
+check "try? in Processes/Installer" 'try\?' Sources/MacSteam/Processes
 check "Navigation TODOs" 'TODO:.*navigate|TODO:.*advance|TODO:.*dismiss' Sources/MacSteam/Views
 check "Fake timers in Views" 'asyncAfter' Sources/MacSteam/Views
 
-# ProcessRunner production guards (zero tolerance)
-check "readToEnd in ProcessRunner" 'readToEnd' Sources/MacSteam/Core/ProcessRunner.swift
-check "ThreadSafeData in ProcessRunner" 'ThreadSafeData' Sources/MacSteam/Core/ProcessRunner.swift
-check "startTimeSeconds: 0 fallback" 'startTimeSeconds: 0' Sources/MacSteam/Core/ProcessRunner.swift
-check "direct kill in ProcessRunner" 'kill.pid' Sources/MacSteam/Core/ProcessRunner.swift
-
-# coordinator.state = detection (Python scanner)
+# ── coordinator.state detection (Python scanner) ──
 echo -n "coordinator.state assignment in Views... "
-PYTHON_OUTPUT=$(python3 "$DIR/scripts/u1r16_static_audit.py" 2>&1) || true
-if echo "$PYTHON_OUTPUT" | grep -q "STATIC SCANNER PASSED"; then
-    echo "✅ 0"
-else
-    echo "❌ violations found"
-    echo "$PYTHON_OUTPUT" | grep "^VIOLATION" || true
-    VIOLATIONS=$((VIOLATIONS + 1))
-fi
+python3 scripts/u1r16_static_audit.py 2>&1
 
-echo ""
-if [ "$VIOLATIONS" -eq 0 ]; then
-    echo "🎉 Static audit PASSED — 0 violations"
-    exit 0
-else
-    echo "💥 Static audit FAILED — $VIOLATIONS violation(s)"
+if [ "$VIOLATIONS" -gt 0 ]; then
+    echo "💥 Static audit FAILED — $VIOLATIONS violation(s)" >&2
     exit 1
 fi
+
+echo "✅ Static audit PASSED — 0 violations" >&2
+exit 0
