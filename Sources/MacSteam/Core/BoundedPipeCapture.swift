@@ -2,36 +2,20 @@
 
 import Foundation
 
-/// RAII ownership of a single file descriptor. Guarantees single close.
+/// RAII ownership of a single file descriptor.
 final class OwnedFD: @unchecked Sendable {
     private var fd: Int32?
 
-    init(fd: Int32) {
-        self.fd = fd
-    }
-
-    /// Take ownership, returning the fd. After this, close() becomes a no-op.
-    func take() throws -> Int32 {
-        guard let f = fd else { throw OwnedFDError.alreadyTaken }
-        fd = nil
-        return f
-    }
-
-    func close() {
-        guard let f = fd else { return }
-        fd = nil
-        Darwin.close(f)
-    }
-
+    init(fd: Int32) { self.fd = fd }
+    func take() throws -> Int32 { guard let f = fd else { throw OwnedFDError.alreadyTaken }; fd = nil; return f }
+    func close() { guard let f = fd else { return }; fd = nil; Darwin.close(f) }
     deinit { close() }
 }
 
-enum OwnedFDError: Error, Sendable {
-    case alreadyTaken
-}
+enum OwnedFDError: Error, Sendable { case alreadyTaken }
 
 /// Event-driven pipe capture using DispatchSourceRead per FD.
-/// Non-blocking FDs, continuation-based waitForEOF, unified state transitions.
+/// Non-blocking FDs, continuation-based waitForEOF, unified state.
 final class BoundedPipeCapture: @unchecked Sendable {
     enum State: Sendable {
         case idle
@@ -41,7 +25,7 @@ final class BoundedPipeCapture: @unchecked Sendable {
         case cancelled
     }
 
-    private let ownedFD: OwnedFD
+    private let rawFD: Int32
     private let limit: Int
     private var state: State = .idle
     private var storage = Data()
@@ -49,25 +33,22 @@ final class BoundedPipeCapture: @unchecked Sendable {
     private var continuation: CheckedContinuation<Data, Error>?
     private let lock = NSLock()
 
-    /// Create with an OwnedFD. Sets O_NONBLOCK on the fd.
-    /// Throws if O_NONBLOCK cannot be set.
-    init(fd rawFD: Int32, limit: Int) {
-        // Set O_NONBLOCK so read() never blocks in the DispatchSource handler
-        let flags = fcntl(rawFD, F_GETFL)
-        if flags >= 0 { _ = fcntl(rawFD, F_SETFL, flags | O_NONBLOCK) }
-        self.ownedFD = OwnedFD(fd: rawFD)
+    /// Create with fd. Sets O_NONBLOCK (fail-closed — throws on failure).
+    init(fd: Int32, limit: Int) throws {
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            Darwin.close(fd)
+            throw ProcessRunner.RunnerError.pipeReadFailed
+        }
+        self.rawFD = fd
         self.limit = limit
     }
 
-    /// Start event-driven reading on the provided queue.
+    /// Start event-driven reading.
     func start(on queue: DispatchQueue = .global()) {
-        let rawFD: Int32
-        do { rawFD = try ownedFD.take() }
-        catch { return } // already taken or closed
-
         let src = DispatchSource.makeReadSource(fileDescriptor: rawFD, queue: queue)
         source = src
-
+        let fd = rawFD // captured by value in cancel handler
         lock.withLock { state = .reading }
 
         src.setEventHandler { [weak self] in
@@ -76,61 +57,56 @@ final class BoundedPipeCapture: @unchecked Sendable {
             defer { buf.deallocate() }
 
             while true {
-                let n = read(rawFD, buf, 65536)
+                let n = read(self.rawFD, buf, 65536)
                 if n > 0 {
-                    lock.lock()
-                    if case .reading = state {
-                        if storage.count < limit {
-                            let cap = min(n, limit - storage.count)
-                            storage.append(buf, count: cap)
+                    self.lock.lock()
+                    if case .reading = self.state {
+                        if self.storage.count < self.limit {
+                            let cap = min(n, self.limit - self.storage.count)
+                            self.storage.append(buf, count: cap)
                         }
                     }
-                    lock.unlock()
+                    self.lock.unlock()
                     continue
                 }
                 if n == 0 {
                     src.cancel()
-                    complete(.success(storage))
+                    self.complete(.success(self.storage))
                     return
                 }
-                // n < 0
                 if errno == EINTR { continue }
                 if errno == EAGAIN { return }
-                // Real error
                 src.cancel()
-                complete(.failure(.pipeReadFailed))
+                self.complete(.failure(.pipeReadFailed))
                 return
             }
         }
 
-        src.setCancelHandler { [weak self] in
-            guard let self else { return }
-            Darwin.close(rawFD)
-        }
+        // Cancel handler owns FD close directly (no weak self needed)
+        src.setCancelHandler { Darwin.close(fd) }
 
         src.resume()
     }
 
-    /// Cancel reading. Closes FD via source cancel handler.
+    /// Cancel reading. Resumes waiter with pipeReadFailed.
     func cancel() {
+        let c: CheckedContinuation<Data, Error>?
         lock.lock()
-        // Already terminal or cancelled — no-op
-        if case .completed = state { lock.unlock(); return }
-        if case .failed = state { lock.unlock(); return }
-        if case .cancelled = state { lock.unlock(); return }
-
+        let isTerminal: Bool
+        switch state {
+        case .idle, .reading: isTerminal = false
+        default: isTerminal = true
+        }
+        guard !isTerminal else { lock.unlock(); return }
         state = .cancelled
-        let c = continuation
+        c = continuation
         continuation = nil
         let src = source
         source = nil
         lock.unlock()
 
-        if let s = src {
-            s.cancel()
-        } else {
-            ownedFD.close()
-        }
+        if let s = src { s.cancel() }
+        else { Darwin.close(rawFD) } // Never started — close directly
         c?.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
     }
 
@@ -140,6 +116,11 @@ final class BoundedPipeCapture: @unchecked Sendable {
             lock.lock()
             switch state {
             case .idle, .reading:
+                guard continuation == nil else {
+                    lock.unlock()
+                    cont.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
+                    return
+                }
                 continuation = cont
                 lock.unlock()
             case .completed(let d):
@@ -155,24 +136,21 @@ final class BoundedPipeCapture: @unchecked Sendable {
         }
     }
 
-    /// Unified terminal state transition — resumes waiter exactly once.
     private func complete(_ result: Result<Data, ProcessRunner.RunnerError>) {
         let c: CheckedContinuation<Data, Error>?
         lock.lock()
+        // Terminal transition only once
+        guard case .reading = state else { lock.unlock(); return }
         switch result {
-        case .success(let d):
-            state = .completed(d)
-        case .failure(let err):
-            state = .failed(err)
+        case .success(let d): state = .completed(d)
+        case .failure(let err): state = .failed(err)
         }
         c = continuation
         continuation = nil
         lock.unlock()
         switch result {
-        case .success(let d):
-            c?.resume(returning: d)
-        case .failure(let err):
-            c?.resume(throwing: err)
+        case .success(let d): c?.resume(returning: d)
+        case .failure(let err): c?.resume(throwing: err)
         }
     }
 }

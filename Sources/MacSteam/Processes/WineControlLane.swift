@@ -228,7 +228,7 @@ actor WineControlLane {
             throw error
         } catch let error as ProcessRunner.RunnerError {
             switch error {
-            case .timeoutReached, .processTerminated, .cancelled, .pipeReadFailed, .ownershipLost, .signalFailed:
+            case .timeoutReached, .processTerminated, .cancelled, .pipeReadFailed, .ownershipLost, .signalFailed, .multipleWaiters:
                 return false
             case .executableNotFound, .executableNotRegularFile, .alreadyRunning:
                 throw error
