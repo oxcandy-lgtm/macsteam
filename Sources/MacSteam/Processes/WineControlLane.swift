@@ -12,10 +12,17 @@ struct WindowsProcessSnapshot: Sendable, Equatable {
     let status: String
 }
 
+/// Describes why a single CSV line could not be parsed.
+struct TasklistParseError: Sendable, Error {
+    let line: String
+    let reason: String
+}
+
 /// The parsed result of a `tasklist /FO CSV` command.
 struct TasklistResult: Sendable {
     let rawLines: [String]
     let processes: [WindowsProcessSnapshot]
+    let parseErrors: [TasklistParseError]
 }
 
 /// Serializes ALL short-lived Wine control commands (tasklist, taskkill,
@@ -60,13 +67,14 @@ actor WineControlLane {
     ///   - wineExecutable: The resolved `wine` executable URL.
     ///   - prefixURL: The Wine prefix (WINEPREFIX) directory.
     ///   - runtimeURL: The Wine runtime root, used for environment setup.
-    /// - Returns: An array of `WindowsProcessSnapshot` entries.
+    /// - Returns: A `TasklistResult` containing parsed processes and any
+    ///   parse errors encountered.
     /// - Throws: `ProcessRunner.RunnerError` or `WineEnvironmentError`.
     func taskList(
         wineExecutable: URL,
         prefixURL: URL,
         runtimeURL: URL
-    ) async throws -> [WindowsProcessSnapshot] {
+    ) async throws -> TasklistResult {
         let environment = try buildWineEnvironment(prefixURL: prefixURL, runtimeURL: runtimeURL)
         let result = try await processRunner.run(
             executable: wineExecutable,
@@ -90,11 +98,27 @@ actor WineControlLane {
         // /NH suppresses the CSV header, so no dropFirst needed
         let csvLines = rawLines
 
-        let processes = csvLines.compactMap { line -> WindowsProcessSnapshot? in
-            parseTasklistCSVLine(line)
+        var processes: [WindowsProcessSnapshot] = []
+        processes.reserveCapacity(csvLines.count)
+        var parseErrors: [TasklistParseError] = []
+
+        for line in csvLines {
+            do {
+                let snapshot = try parseTasklistCSVLine(line)
+                processes.append(snapshot)
+            } catch let error as TasklistParseError {
+                parseErrors.append(error)
+            } catch {
+                // Unexpected — all parse failures produce TasklistParseError
+                parseErrors.append(TasklistParseError(line: line, reason: "Unexpected error: \(error.localizedDescription)"))
+            }
         }
 
-        return processes
+        return TasklistResult(
+            rawLines: rawLines,
+            processes: processes,
+            parseErrors: parseErrors
+        )
     }
 
     // MARK: - terminate
@@ -107,7 +131,8 @@ actor WineControlLane {
     ///   - wineExecutable: The resolved `wine` executable URL.
     ///   - prefixURL: The Wine prefix (WINEPREFIX) directory.
     ///   - runtimeURL: The Wine runtime root, used for environment setup.
-    /// - Throws: `ProcessRunner.RunnerError` or `WineEnvironmentError`.
+    /// - Throws: `WineControlError.terminateFailed` if exit code is non-zero,
+    ///   `ProcessRunner.RunnerError` or `WineEnvironmentError`.
     func terminate(
         imageName: String,
         force: Bool,
@@ -122,7 +147,7 @@ actor WineControlLane {
         }
         arguments.append(contentsOf: ["/IM", imageName])
 
-        let _ = try await processRunner.run(
+        let result = try await processRunner.run(
             executable: wineExecutable,
             arguments: arguments,
             environment: environment,
@@ -130,6 +155,10 @@ actor WineControlLane {
             timeout: 30,
             mode: .waitForExit
         )
+
+        guard result.exitCode == 0 else {
+            throw WineControlError.terminateFailed(image: imageName, exitCode: result.exitCode)
+        }
     }
 
     // MARK: - wineserver -k
@@ -142,13 +171,14 @@ actor WineControlLane {
     /// - Parameters:
     ///   - wineserverURL: The resolved `wineserver` executable URL.
     ///   - prefixURL: The Wine prefix (WINEPREFIX) directory.
-    /// - Throws: `ProcessRunner.RunnerError`.
+    /// - Throws: `WineControlError.wineserverFailed` if exit code is non-zero,
+    ///   `ProcessRunner.RunnerError`.
     func wineserverKill(
         wineserverURL: URL,
         prefixURL: URL
     ) async throws {
         let environment = buildBasicWineEnvironment(prefixURL: prefixURL)
-        let _ = try await processRunner.run(
+        let result = try await processRunner.run(
             executable: wineserverURL,
             arguments: ["-k"],
             environment: environment,
@@ -156,6 +186,10 @@ actor WineControlLane {
             timeout: 30,
             mode: .waitForExit
         )
+
+        guard result.exitCode == 0 else {
+            throw WineControlError.wineserverFailed(exitCode: result.exitCode)
+        }
     }
 
     // MARK: - wineserver -w
@@ -166,9 +200,10 @@ actor WineControlLane {
     ///   - wineserverURL: The resolved `wineserver` executable URL.
     ///   - prefixURL: The Wine prefix (WINEPREFIX) directory.
     ///   - timeoutSeconds: Maximum seconds to wait for shutdown.
-    /// - Returns: `true` if wineserver exited cleanly, `false` on timeout or
-    ///   signal termination.
-    /// - Throws: `ProcessRunner.RunnerError` (not for timeout – see above).
+    /// - Returns: `true` if wineserver exited cleanly (exit code 0).
+    /// - Throws: `WineControlError.wineserverFailed` if the exit code is
+    ///   non-zero; `ProcessRunner.RunnerError` if the runner itself fails
+    ///   (e.g. executable not found).
     func wineserverWait(
         wineserverURL: URL,
         prefixURL: URL,
@@ -176,7 +211,7 @@ actor WineControlLane {
     ) async throws -> Bool {
         let environment = buildBasicWineEnvironment(prefixURL: prefixURL)
         do {
-            let _ = try await processRunner.run(
+            let result = try await processRunner.run(
                 executable: wineserverURL,
                 arguments: ["-w"],
                 environment: environment,
@@ -184,11 +219,17 @@ actor WineControlLane {
                 timeout: TimeInterval(timeoutSeconds),
                 mode: .waitForExit
             )
+
+            guard result.exitCode == 0 else {
+                throw WineControlError.wineserverFailed(exitCode: result.exitCode)
+            }
             return true
+        } catch let error as WineControlError {
+            throw error
         } catch let error as ProcessRunner.RunnerError {
             switch error {
             case .timeoutReached, .processTerminated, .cancelled, .pipeReadFailed:
-                return false
+                throw WineControlError.wineserverFailed(exitCode: -1)
             case .executableNotFound, .executableNotRegularFile, .alreadyRunning:
                 throw error
             }
@@ -231,9 +272,13 @@ actor WineControlLane {
     /// ```
     ///
     /// `Mem Usage` contains values like `"24 K"`, `"16,928 K"` or `"1,024,432 K"`.
-    private func parseTasklistCSVLine(_ line: String) -> WindowsProcessSnapshot? {
+    ///
+    /// - Throws: `TasklistParseError` when the line cannot be parsed.
+    private func parseTasklistCSVLine(_ line: String) throws -> WindowsProcessSnapshot {
         let fields = parseCSVLine(line)
-        guard fields.count >= 6 else { return nil }
+        guard fields.count >= 6 else {
+            throw TasklistParseError(line: line, reason: "expected at least 6 fields, got \(fields.count)")
+        }
 
         let imageName = fields[0]
         let pidStr = fields[1]
@@ -242,8 +287,12 @@ actor WineControlLane {
         let memUsageStr = fields[4]
         let status = fields[5]
 
-        guard let pid = Int32(pidStr) else { return nil }
-        guard let sessionNumber = Int(sessionNumberStr) else { return nil }
+        guard let pid = Int32(pidStr) else {
+            throw TasklistParseError(line: line, reason: "invalid PID '\(pidStr)'")
+        }
+        guard let sessionNumber = Int(sessionNumberStr) else {
+            throw TasklistParseError(line: line, reason: "invalid session number '\(sessionNumberStr)'")
+        }
 
         // Strip " K" suffix and thousands-separator commas
         let memUsageClean = memUsageStr

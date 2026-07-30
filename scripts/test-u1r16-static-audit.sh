@@ -1,42 +1,63 @@
 #!/bin/bash
-# Test U1R16 static audit script
+# Test U1R16 static audit scripts
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUDIT="$SCRIPT_DIR/u1r16-static-audit.sh"
+SCANNER="$SCRIPT_DIR/u1r16_static_audit.py"
 TEST_DIR="$(mktemp -d /tmp/macsteam-audit-test.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 FAILURES=0
-
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
 export GIT_PAGER=cat GIT_TERMINAL_PROMPT=0
 
-# Test 1: clean fixture returns 0
-CLEAN_DIR="$TEST_DIR/clean"
-mkdir -p "$CLEAN_DIR/Sources/MacSteam/Views"
-echo 'import SwiftUI' > "$CLEAN_DIR/Sources/MacSteam/Views/TestView.swift'
-cd "$CLEAN_DIR"
-git init -q && git add -A && git commit -q -m init 2>/dev/null
-if bash "$AUDIT" >/dev/null 2>&1; then
-    pass "clean fixture returns 0"
-else
-    fail "clean fixture should return 0"
-fi
+make_git() {
+    local dir="$1"
+    mkdir -p "$dir/Sources/MacSteam/Views" "$dir/scripts"
+    ln -sf "$SCANNER" "$dir/scripts/u1r16_static_audit.py" 2>/dev/null || true
+}
 
-# Test 2: coordinator.state = detected
-VIOL_DIR="$TEST_DIR/violation"
-mkdir -p "$VIOL_DIR/Sources/MacSteam/Views"
-echo 'coordinator.state = .steamReady' > "$VIOL_DIR/Sources/MacSteam/Views/TestView.swift"
-cd "$VIOL_DIR"
-git init -q && git add -A && git commit -q -m init 2>/dev/null
-if bash "$AUDIT" >/dev/null 2>&1; then
-    fail "coordinator.state = should be detected"
-else
-    pass "coordinator.state = detected"
-fi
+# Test 1: clean fixture
+make_git "$TEST_DIR/clean"
+echo 'import SwiftUI' > "$TEST_DIR/clean/Sources/MacSteam/Views/TestView.swift'
+echo 'let x = coordinator.state' > "$TEST_DIR/clean/Sources/MacSteam/Views/StateView.swift'
+cd "$TEST_DIR/clean"
+git init -q && git add -A 2>/dev/null
+python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && pass "clean scanner returns 0" || fail "clean scanner should return 0"
+
+# Test 2: assignment detected (single =)
+make_git "$TEST_DIR/assn1"
+echo 'coordinator.state = .steamReady' > "$TEST_DIR/assn1/Sources/MacSteam/Views/TestView.swift'
+cd "$TEST_DIR/assn1"
+git init -q && git add -A 2>/dev/null
+python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && fail "assignment = should be detected" || pass "assignment = detected"
+
+# Test 3: multi-space assignment detected
+make_git "$TEST_DIR/assn2"
+echo 'coordinator.state     = .steamReady' > "$TEST_DIR/assn2/Sources/MacSteam/Views/TestView.swift'
+cd "$TEST_DIR/assn2"
+git init -q && git add -A 2>/dev/null
+python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && fail "multi-space assignment should be detected" || pass "multi-space assignment detected"
+
+# Test 4: equality comparison excluded
+make_git "$TEST_DIR/eq"
+echo 'if coordinator.state == .steamReady' > "$TEST_DIR/eq/Sources/MacSteam/Views/TestView.swift"
+cd "$TEST_DIR/eq"
+git init -q && git add -A 2>/dev/null
+python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && pass "== comparison excluded" || fail "== comparison should be excluded"
+
+# Test 5: inequality comparison excluded
+make_git "$TEST_DIR/neq"
+echo 'if coordinator.state != .steamReady' > "$TEST_DIR/neq/Sources/MacSteam/Views/TestView.swift"
+cd "$TEST_DIR/neq"
+git init -q && git add -A 2>/dev/null
+python3 scripts/u1r16_static_audit.py >/dev/null 2>&1 && pass "!= comparison excluded" || fail "!= comparison should be excluded"
+
+# Test 6: missing path returns error
+python3 scripts/u1r16_static_audit.py --nonexistent 2>/dev/null && fail "missing path should return error" || pass "missing path returns error"
 
 echo ""
 if [ "$FAILURES" -eq 0 ]; then

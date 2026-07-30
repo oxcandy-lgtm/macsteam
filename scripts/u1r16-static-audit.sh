@@ -1,5 +1,5 @@
 #!/bin/bash
-# U1R16-R1F8 Static Audit — git grep based, zero external deps
+# U1R16-R1F10 Static Audit — git grep (general) + Python scanner (coord.state)
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,7 +43,7 @@ check() {
     rm -f "$result_file"
 }
 
-echo "=== U1R16-R1F8 Static Audit ==="
+echo "=== U1R16-R1F10 Static Audit ==="
 echo ""
 
 check "steam://open/main" 'steam://open/main' Sources
@@ -52,9 +52,19 @@ check "quarantineIncompleteSteamInstall" 'quarantineIncompleteSteamInstall' Sour
 check ".dropFirst( in WineControlLane" '\.dropFirst\(' Sources/MacSteam/Processes/WineControlLane.swift
 check "mode: .detached in Installer/Ultimate" 'mode: \.detached' Sources/MacSteam/Ultimate Sources/MacSteam/Installer
 check "try? in Processes/Installer" 'try\?' Sources/MacSteam/Processes Sources/MacSteam/Installer
-check "coordinator.state = in Views" 'coordinator[.]state[[:space:]]*=' Sources/MacSteam/Views
 check "Navigation TODOs" 'TODO:.*navigate|TODO:.*advance|TODO:.*dismiss' Sources/MacSteam/Views
 check "Fake timers in Views" 'asyncAfter' Sources/MacSteam/Views
+
+# coordinator.state = detection (Python scanner, distinguishes assignment from comparison)
+echo -n "coordinator.state assignment in Views... "
+PYTHON_OUTPUT=$(python3 "$DIR/scripts/u1r16_static_audit.py" 2>&1) || true
+if echo "$PYTHON_OUTPUT" | grep -q "STATIC SCANNER PASSED"; then
+    echo "✅ 0"
+else
+    echo "❌ violations found"
+    echo "$PYTHON_OUTPUT" | grep "^VIOLATION"
+    VIOLATIONS=$((VIOLATIONS + 1))
+fi
 
 echo ""
 if [ "$VIOLATIONS" -eq 0 ]; then

@@ -189,10 +189,7 @@ struct SteamSetupView: View {
 
                     Button("Stop Steam") {
                         Task {
-                            let stopped = await coordinator.stopSession()
-                            if stopped {
-                                coordinator.state = .steamReady
-                            }
+                            await coordinator.send(.stopAndClean)
                         }
                     }
                     .buttonStyle(.bordered)
@@ -200,10 +197,7 @@ struct SteamSetupView: View {
 
                     Button("Back") {
                         Task {
-                            let stopped = await coordinator.stopSteamSetupSessionIfNeeded()
-                            if stopped {
-                                coordinator.state = .prefixReady
-                            }
+                            await coordinator.send(.back)
                         }
                     }
                     .buttonStyle(.bordered)

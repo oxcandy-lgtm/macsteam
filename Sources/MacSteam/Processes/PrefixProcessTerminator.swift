@@ -72,7 +72,7 @@ actor PrefixProcessTerminator {
         // ---------------------------------------------------------------
         // Step 1 – census
         // ---------------------------------------------------------------
-        let initialCensus: [WindowsProcessSnapshot]
+        let initialCensus: TasklistResult
         do {
             initialCensus = try await wineControl.taskList(
                 wineExecutable: wineURL,
@@ -85,7 +85,7 @@ actor PrefixProcessTerminator {
             return .incomplete(reason: msg)
         }
 
-        let initialKnown = initialCensus.filter {
+        let initialKnown = initialCensus.processes.filter {
             KnownProcessImage.allLowercased.contains($0.imageName.lowercased())
         }
         var remaining = Set(initialKnown.map { $0.imageName.lowercased() })
@@ -187,9 +187,9 @@ actor PrefixProcessTerminator {
 
         var scanErrors: [String] = []
 
-        let processes: [WindowsProcessSnapshot]
+        let censusResult: TasklistResult
         do {
-            processes = try await wineControl.taskList(
+            censusResult = try await wineControl.taskList(
                 wineExecutable: wineURL,
                 prefixURL: prefixURL,
                 runtimeURL: runtimeURL
@@ -221,7 +221,7 @@ actor PrefixProcessTerminator {
             prefixURL: prefixURL
         )
 
-        let summary = categorizeProcesses(processes)
+        let summary = categorizeProcesses(censusResult.processes)
 
         return PrefixProcessSnapshot(
             windowsProcesses: summary,
@@ -252,7 +252,7 @@ actor PrefixProcessTerminator {
             ) else {
                 continue
             }
-            let known = current.filter {
+            let known = current.processes.filter {
                 KnownProcessImage.allLowercased.contains($0.imageName.lowercased())
             }
             remaining = Set(known.map { $0.imageName.lowercased() })
@@ -289,9 +289,9 @@ actor PrefixProcessTerminator {
         }
 
         // Step 7 – final census
-        let finalProcesses: [WindowsProcessSnapshot]
+        let finalCensus: TasklistResult
         do {
-            finalProcesses = try await wineControl.taskList(
+            finalCensus = try await wineControl.taskList(
                 wineExecutable: wineURL,
                 prefixURL: prefixURL,
                 runtimeURL: runtimeURL
@@ -301,7 +301,7 @@ actor PrefixProcessTerminator {
             return .incomplete(reason: "Final census failed: \(error.localizedDescription)")
         }
 
-        let finalKnown = finalProcesses.filter {
+        let finalKnown = finalCensus.processes.filter {
             KnownProcessImage.allLowercased.contains($0.imageName.lowercased())
         }
         let wineserverRunning = await isWineserverRunning(

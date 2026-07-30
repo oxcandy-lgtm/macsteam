@@ -24,7 +24,7 @@ actor ProcessRunner {
         var errorDescription: String? {
             switch self {
             case .executableNotFound(let url): return "Executable not found at \(url.path)."
-            case .executableNotRegularFile(let url): return "Path is not a regular executable file: \(url.path)."
+            case .executableNotRegularFile(let url): return "Not a regular file: \(url.path)."
             case .processTerminated(let s): return "Terminated by signal \(s)."
             case .timeoutReached(let t): return "Timed out after \(t)s."
             case .cancelled: return "Process was cancelled."
@@ -74,7 +74,7 @@ actor ProcessRunner {
         ]
         if let wd = workingDirectory { process.currentDirectoryURL = wd }
 
-        // Detached mode: null device, no pipes
+        // Detached mode
         if case .detached = mode {
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
@@ -82,18 +82,18 @@ actor ProcessRunner {
             return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
         }
 
-        // Discard or bounded capture — but both go through common lifecycle for timeout/cancellation
+        // Discard through common lifecycle
         let isDiscard: Bool
         let maxBytes: Int
-        let stdoutPipe: Pipe?
-        let stderrPipe: Pipe?
+        var stdoutCollector: BoundedStreamCollector?
+        var stderrCollector: BoundedStreamCollector?
+        var stdoutPipe: Pipe?
+        var stderrPipe: Pipe?
 
         switch outputPolicy {
         case .discard:
             isDiscard = true
             maxBytes = 0
-            stdoutPipe = nil
-            stderrPipe = nil
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
         case .boundedCapture(let bytes):
@@ -105,6 +105,8 @@ actor ProcessRunner {
             stderrPipe = sePipe
             process.standardOutput = soPipe
             process.standardError = sePipe
+            stdoutCollector = BoundedStreamCollector(limit: bytes)
+            stderrCollector = BoundedStreamCollector(limit: bytes)
         }
 
         try process.run()
@@ -114,33 +116,28 @@ actor ProcessRunner {
         stdoutPipe?.fileHandleForWriting.closeFile()
         stderrPipe?.fileHandleForWriting.closeFile()
 
-        // Termination intent (first-writer-wins)
+        // First-writer-wins termination intent
         let termIntent = TerminationIntent()
 
-        // Bounded pipe readers using readToEnd on GCD (blocks GCD thread, not Swift concurrency)
-        let stdoutResult = ThreadSafeData()
-        let stderrResult = ThreadSafeData()
-
-        if !isDiscard, let soHandle = stdoutPipe?.fileHandleForReading, let seHandle = stderrPipe?.fileHandleForReading {
-            DispatchQueue.global().async { [maxBytes] in
-                let d = (try? soHandle.readToEnd()) ?? Data()
-                stdoutResult.value = d.prefix(maxBytes)
-            }
-            DispatchQueue.global().async { [maxBytes] in
-                let d = (try? seHandle.readToEnd()) ?? Data()
-                stderrResult.value = d.prefix(maxBytes)
-            }
-        } else {
-            stdoutResult.value = Data()
-            stderrResult.value = Data()
+        // Start GCD pipe readers
+        if !isDiscard, let so = stdoutCollector, let se = stderrCollector,
+           let soHandle = stdoutPipe?.fileHandleForReading,
+           let seHandle = stderrPipe?.fileHandleForReading {
+            DispatchQueue.global().async { readChunks(handle: soHandle, collector: so) }
+            DispatchQueue.global().async { readChunks(handle: seHandle, collector: se) }
         }
 
-        // Timeout work item
+        // Timeout escalation
         var timeoutWork: DispatchWorkItem?
         if let timeoutSec = timeout {
-            let work = DispatchWorkItem {
-                if termIntent.request(.timeout(timeoutSec), process: process) {
-                    process.terminate()
+            let work = DispatchWorkItem { [process] in
+                guard termIntent.request(.timeout(timeoutSec), process: process) else { return }
+                process.terminate() // SIGTERM
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [pid] in
+                    if process.isRunning {
+                        kill(pid, SIGKILL)
+                        process.waitUntilExit()
+                    }
                 }
             }
             timeoutWork = work
@@ -148,7 +145,6 @@ actor ProcessRunner {
         }
 
         return try await withTaskCancellationHandler {
-            // Wait for process exit on GCD
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 DispatchQueue.global().async {
                     process.waitUntilExit()
@@ -163,18 +159,8 @@ actor ProcessRunner {
                 throw RunnerError.cancelled
             }
 
-            // Collect bounded output (poll for GCD readers to finish)
-            let pollStart = DispatchTime.now()
-            while stdoutResult.value == nil || stderrResult.value == nil {
-                if DispatchTime.now() > pollStart + .seconds(5) { break }
-                try? await Task.sleep(for: .milliseconds(5))
-            }
-
-            let stdoutData = stdoutResult.value ?? Data()
-            let stderrData = stderrResult.value ?? Data()
-
-            let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+            let stdoutData = await stdoutCollector?.waitForCompletion() ?? Data()
+            let stderrData = await stderrCollector?.waitForCompletion() ?? Data()
 
             if case .timeout = cause {
                 throw RunnerError.timeoutReached(timeout ?? 0)
@@ -186,8 +172,8 @@ actor ProcessRunner {
 
             return ProcessResult(
                 exitCode: process.terminationStatus,
-                stdout: stdout,
-                stderr: stderr,
+                stdout: String(data: stdoutData, encoding: .utf8) ?? "",
+                stderr: String(data: stderrData, encoding: .utf8) ?? "",
                 pid: pid
             )
         } onCancel: {
@@ -198,7 +184,63 @@ actor ProcessRunner {
     }
 }
 
+// MARK: - Pipe reader
 
+private func readChunks(handle: FileHandle, collector: BoundedStreamCollector) {
+    do {
+        while true {
+            guard let chunk = try handle.read(upToCount: 65536), !chunk.isEmpty else { break }
+            collector.append(chunk)
+        }
+        collector.finish()
+    } catch {
+        collector.fail(error)
+    }
+}
+
+// MARK: - Bounded stream collector
+
+final class BoundedStreamCollector: @unchecked Sendable {
+    private var data: Data
+    private let limit: Int
+    private var isFinished = false
+    private var failureError: Error?
+    private let lock = NSLock()
+
+    init(limit: Int) {
+        self.limit = limit
+        self.data = Data()
+    }
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        if data.count < limit {
+            let cap = min(chunk.count, limit - data.count)
+            data.append(chunk.prefix(cap))
+        }
+        lock.unlock()
+    }
+
+    func finish() {
+        lock.withLock { isFinished = true }
+    }
+
+    func fail(_ error: Error) {
+        lock.withLock { failureError = error; isFinished = true }
+    }
+
+    func waitForCompletion() async -> Data {
+        // Poll briefly for the collector to finish
+        let deadline = DispatchTime.now() + .seconds(5)
+        while true {
+            let (done, data) = lock.withLock { (isFinished, self.data) }
+            if done { return data }
+            if DispatchTime.now() > deadline { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return lock.withLock { data }
+    }
+}
 
 // MARK: - First-writer-wins termination intent
 
@@ -215,17 +257,5 @@ private final class TerminationIntent: @unchecked Sendable {
             _value = new
             return true
         }
-    }
-}
-
-// MARK: - Thread-safe data holder
-
-private final class ThreadSafeData: @unchecked Sendable {
-    private var _value: Data?
-    private let lock = NSLock()
-
-    var value: Data? {
-        get { lock.withLock { _value } }
-        set { lock.withLock { _value = newValue } }
     }
 }

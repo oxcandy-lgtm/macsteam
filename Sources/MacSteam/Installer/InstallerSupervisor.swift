@@ -149,10 +149,10 @@ actor InstallerSupervisor {
         try? await Task.sleep(nanoseconds: 2_000_000_000)
 
         // Force remaining
-        let afterGraceful = try? await wineControl.taskList(
+        let afterTasklist = try? await wineControl.taskList(
             wineExecutable: wineExecutable, prefixURL: prefixURL, runtimeURL: runtimeURL
         )
-        for proc in afterGraceful ?? [] {
+        for proc in afterTasklist?.processes ?? [] {
             if knownImages.contains(where: { $0.lowercased() == proc.imageName.lowercased() }) {
                 try? await wineControl.terminate(
                     imageName: proc.imageName, force: true,

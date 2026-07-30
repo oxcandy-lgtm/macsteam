@@ -991,12 +991,12 @@ final class UltimateSetupCoordinator {
         guard let runtimeURL, let prefix = prefixLayout?.root else { return false }
         let layout = WineExecutableLayout.detect(from: runtimeURL)
         do {
-            let processes = try await wineControl.taskList(
+            let tasklistResult = try await wineControl.taskList(
                 wineExecutable: layout.wine,
                 prefixURL: prefix,
                 runtimeURL: runtimeURL
             )
-            for proc in processes {
+            for proc in tasklistResult.processes {
                 let name = proc.imageName.lowercased()
                 if name == "wineserver.exe" || name == "winedevice.exe" {
                     return true
@@ -1138,12 +1138,12 @@ final class UltimateSetupCoordinator {
         // 4. Final check: residual processes?
         if let runtimeURL, let prefix = prefixLayout?.root {
             let layout = WineExecutableLayout.detect(from: runtimeURL)
-            if let processes = try? await wineControl.taskList(
+            if let tasklistResult = try? await wineControl.taskList(
                 wineExecutable: layout.wine, prefixURL: prefix, runtimeURL: runtimeURL
             ) {
                 let known = ["steamsetup.exe", "steam.exe", "steamwebhelper.exe",
                              "steamservice.exe", "crashhandler.exe", "wineserver.exe"]
-                for p in processes {
+                for p in tasklistResult.processes {
                     if known.contains(p.imageName.lowercased()) {
                         return .incomplete("Residual: \(p.imageName) (PID \(p.pid))")
                     }
