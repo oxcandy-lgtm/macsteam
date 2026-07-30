@@ -9,38 +9,20 @@ final class FDLease: @unchecked Sendable {
     private var fd: Int32?
 
     init(_ fd: Int32) { self.fd = fd }
-
-    /// Read the fd without consuming ownership.
     func borrow() throws -> Int32 {
-        try lock.withLock {
-            guard let f = fd else { throw ProcessRunner.RunnerError.pipeReadFailed }
-            return f
-        }
+        try lock.withLock { guard let f = fd else { throw ProcessRunner.RunnerError.pipeReadFailed }; return f }
     }
-
-    /// Close exactly once. Second call is a no-op.
     func closeOnce() {
-        let f: Int32? = lock.withLock {
-            guard let d = fd else { return nil }
-            fd = nil
-            return d
-        }
+        let f: Int32? = lock.withLock { guard let d = fd else { return nil }; fd = nil; return d }
         if let d = f { Darwin.close(d) }
     }
-
     deinit { closeOnce() }
 }
 
-/// RAII POSIX pipe pair. All FDLease closeOnce() calls are idempotent.
 final class POSIXPipePair {
     let readFD: FDLease
     let writeFD: FDLease
-
-    init(readFD: Int32, writeFD: Int32) {
-        self.readFD = FDLease(readFD)
-        self.writeFD = FDLease(writeFD)
-    }
-
+    init(readFD: Int32, writeFD: Int32) { self.readFD = FDLease(readFD); self.writeFD = FDLease(writeFD) }
     static func createNonBlockingRead() throws -> POSIXPipePair {
         var fds: [Int32] = [0, 0]
         guard pipe(&fds) == 0 else { throw ProcessRunner.RunnerError.pipeReadFailed }
@@ -51,27 +33,21 @@ final class POSIXPipePair {
         }
         return POSIXPipePair(readFD: fds[0], writeFD: fds[1])
     }
-
     func closeWriteEnd() { writeFD.closeOnce() }
     func closeAll() { readFD.closeOnce(); writeFD.closeOnce() }
 }
 
-/// Both stdout/stderr pipe pairs. Idempotent close — no double-close risk.
 final class ProcessOutputPipeBundle {
     let stdout: POSIXPipePair
     let stderr: POSIXPipePair
-
     init() throws {
         self.stdout = try POSIXPipePair.createNonBlockingRead()
         do { self.stderr = try POSIXPipePair.createNonBlockingRead() }
         catch { stdout.closeAll(); throw ProcessRunner.RunnerError.pipeReadFailed }
     }
-
     func closeAll() { stdout.closeAll(); stderr.closeAll() }
 }
 
-/// Non-blocking bounded pipe capture using DispatchSourceRead per FD.
-/// Owns the read FD via FDLease — cancel handler closes exactly once.
 final class BoundedPipeCapture: @unchecked Sendable {
     enum State: Sendable {
         case idle
@@ -90,16 +66,20 @@ final class BoundedPipeCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var waiterSet = false
 
-    /// Take an FDLease. May close it via cancel handler or deinit.
     init(readLease: FDLease, limit: Int) throws {
-        _ = try readLease.borrow() // validate fd
+        _ = try readLease.borrow()
         self.readLease = readLease
         self.limit = limit
     }
 
-    /// Start event-driven reading.
-    func start(on queue: DispatchQueue = .global()) {
-        guard let fd = try? readLease.borrow() else { return }
+    func start(on queue: DispatchQueue = .global()) throws {
+        let fd: Int32
+        do { fd = try readLease.borrow() }
+        catch {
+            lock.lock(); state = .failed(.pipeReadFailed); lock.unlock()
+            resumeWaiter(throwing: ProcessRunner.RunnerError.pipeReadFailed)
+            throw ProcessRunner.RunnerError.pipeReadFailed
+        }
         let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         source = src
         lock.withLock { state = .reading }
@@ -108,56 +88,33 @@ final class BoundedPipeCapture: @unchecked Sendable {
             guard let self else { return }
             let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: 65536)
             defer { buf.deallocate() }
-
             while true {
                 let n = read(fd, buf, 65536)
                 if n > 0 {
-                    lock.lock()
-                    if case .reading = state {
-                        if storage.count < limit {
-                            let cap = min(n, limit - storage.count)
-                            storage.append(buf, count: cap)
-                        }
-                    }
-                    lock.unlock()
+                    lock.lock(); if case .reading = state, storage.count < limit {
+                        let cap = min(n, limit - storage.count)
+                        storage.append(buf, count: cap)
+                    }; lock.unlock()
                     continue
                 }
-                if n == 0 {
-                    src.cancel()
-                    complete(.success(storage))
-                    return
-                }
+                if n == 0 { src.cancel(); complete(.success(storage)); return }
                 if errno == EINTR { continue }
                 if errno == EAGAIN { return }
-                src.cancel()
-                complete(.failure(.pipeReadFailed))
-                return
+                src.cancel(); complete(.failure(.pipeReadFailed)); return
             }
         }
-
         src.setCancelHandler { [readLease] in readLease.closeOnce() }
         src.resume()
     }
 
-    /// Cancel reading. Resumes waiter with pipeReadFailed.
     func cancel() {
-        let c: CheckedContinuation<Data, Error>?
         lock.lock()
-        let terminal: Bool
-        switch state {
-        case .idle, .reading: terminal = false
-        default: terminal = true
-        }
-        guard !terminal else { lock.unlock(); return }
+        switch state { case .idle, .reading: break; default: lock.unlock(); return }
         state = .cancelled
-        c = continuation
-        continuation = nil
-        let src = source
-        source = nil
+        let c = continuation; continuation = nil
+        let src = source; source = nil
         lock.unlock()
-
-        if let s = src { s.cancel() }
-        else { readLease.closeOnce() }
+        if let s = src { s.cancel() } else { readLease.closeOnce() }
         c?.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
     }
 
@@ -166,41 +123,33 @@ final class BoundedPipeCapture: @unchecked Sendable {
             lock.lock()
             switch state {
             case .idle, .reading:
-                guard !waiterSet else {
-                    lock.unlock()
-                    cont.resume(throwing: ProcessRunner.RunnerError.multipleWaiters)
-                    return
-                }
-                waiterSet = true
-                continuation = cont
-                lock.unlock()
-            case .completed(let d):
-                lock.unlock()
-                cont.resume(returning: d)
-            case .failed(let err):
-                lock.unlock()
-                cont.resume(throwing: err)
-            case .cancelled:
-                lock.unlock()
-                cont.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
+                guard !waiterSet else { lock.unlock(); cont.resume(throwing: ProcessRunner.RunnerError.multipleWaiters); return }
+                waiterSet = true; continuation = cont; lock.unlock()
+            case .completed(let d): lock.unlock(); cont.resume(returning: d)
+            case .failed(let err): lock.unlock(); cont.resume(throwing: err)
+            case .cancelled: lock.unlock(); cont.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
             }
         }
     }
 
-    private func complete(_ result: Result<Data, ProcessRunner.RunnerError>) {
+    private func resumeWaiter(throwing error: ProcessRunner.RunnerError) {
         let c: CheckedContinuation<Data, Error>?
+        lock.lock(); c = continuation; continuation = nil; lock.unlock()
+        c?.resume(throwing: error)
+    }
+
+    private func complete(_ r: Result<Data, ProcessRunner.RunnerError>) {
         lock.lock()
         guard case .reading = state else { lock.unlock(); return }
-        switch result {
+        switch r {
         case .success(let d): state = .completed(d)
-        case .failure(let err): state = .failed(err)
+        case .failure(let e): state = .failed(e)
         }
-        c = continuation
-        continuation = nil
+        let c = continuation; continuation = nil
         lock.unlock()
-        switch result {
+        switch r {
         case .success(let d): c?.resume(returning: d)
-        case .failure(let err): c?.resume(throwing: err)
+        case .failure(let e): c?.resume(throwing: e)
         }
     }
 }
