@@ -2,32 +2,73 @@
 
 import Foundation
 
+/// RAII ownership of a single file descriptor. Guarantees single close.
+final class OwnedFD: @unchecked Sendable {
+    private var fd: Int32?
+
+    init(fd: Int32) {
+        self.fd = fd
+    }
+
+    /// Take ownership, returning the fd. After this, close() becomes a no-op.
+    func take() throws -> Int32 {
+        guard let f = fd else { throw OwnedFDError.alreadyTaken }
+        fd = nil
+        return f
+    }
+
+    func close() {
+        guard let f = fd else { return }
+        fd = nil
+        Darwin.close(f)
+    }
+
+    deinit { close() }
+}
+
+enum OwnedFDError: Error, Sendable {
+    case alreadyTaken
+}
+
 /// Event-driven pipe capture using DispatchSourceRead per FD.
-/// No shared queues, no blocking reads, no polling.
+/// Non-blocking FDs, continuation-based waitForEOF, unified state transitions.
 final class BoundedPipeCapture: @unchecked Sendable {
     enum State: Sendable {
+        case idle
         case reading
         case completed(Data)
         case failed(ProcessRunner.RunnerError)
+        case cancelled
     }
 
-    private let fd: Int32
+    private let ownedFD: OwnedFD
     private let limit: Int
-    private var state: State = .reading
+    private var state: State = .idle
     private var storage = Data()
     private var source: DispatchSourceRead?
     private var continuation: CheckedContinuation<Data, Error>?
     private let lock = NSLock()
 
-    init(fd: Int32, limit: Int) {
-        self.fd = fd
+    /// Create with an OwnedFD. Sets O_NONBLOCK on the fd.
+    /// Throws if O_NONBLOCK cannot be set.
+    init(fd rawFD: Int32, limit: Int) {
+        // Set O_NONBLOCK so read() never blocks in the DispatchSource handler
+        let flags = fcntl(rawFD, F_GETFL)
+        if flags >= 0 { _ = fcntl(rawFD, F_SETFL, flags | O_NONBLOCK) }
+        self.ownedFD = OwnedFD(fd: rawFD)
         self.limit = limit
     }
 
-    /// Start event-driven reading on the provided dispatch queue.
+    /// Start event-driven reading on the provided queue.
     func start(on queue: DispatchQueue = .global()) {
-        let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        let rawFD: Int32
+        do { rawFD = try ownedFD.take() }
+        catch { return } // already taken or closed
+
+        let src = DispatchSource.makeReadSource(fileDescriptor: rawFD, queue: queue)
         source = src
+
+        lock.withLock { state = .reading }
 
         src.setEventHandler { [weak self] in
             guard let self else { return }
@@ -35,7 +76,7 @@ final class BoundedPipeCapture: @unchecked Sendable {
             defer { buf.deallocate() }
 
             while true {
-                let n = read(self.fd, buf, 65536)
+                let n = read(rawFD, buf, 65536)
                 if n > 0 {
                     lock.lock()
                     if case .reading = state {
@@ -48,45 +89,57 @@ final class BoundedPipeCapture: @unchecked Sendable {
                     continue
                 }
                 if n == 0 {
-                    // EOF
                     src.cancel()
-                    finish(with: .completed(storage))
+                    complete(.success(storage))
                     return
                 }
-                if n < 0 {
-                    if errno == EINTR { continue }
-                    if errno == EAGAIN { return } // wait for next event
-                    // Real error
-                    src.cancel()
-                    finish(with: .failed(.pipeReadFailed))
-                    return
-                }
+                // n < 0
+                if errno == EINTR { continue }
+                if errno == EAGAIN { return }
+                // Real error
+                src.cancel()
+                complete(.failure(.pipeReadFailed))
+                return
             }
         }
 
         src.setCancelHandler { [weak self] in
             guard let self else { return }
-            close(self.fd)
+            Darwin.close(rawFD)
         }
 
         src.resume()
     }
 
-    /// Cancel reading and release the FD.
+    /// Cancel reading. Closes FD via source cancel handler.
     func cancel() {
-        lock.withLock {
-            source?.cancel()
-            source = nil
+        lock.lock()
+        // Already terminal or cancelled — no-op
+        if case .completed = state { lock.unlock(); return }
+        if case .failed = state { lock.unlock(); return }
+        if case .cancelled = state { lock.unlock(); return }
+
+        state = .cancelled
+        let c = continuation
+        continuation = nil
+        let src = source
+        source = nil
+        lock.unlock()
+
+        if let s = src {
+            s.cancel()
+        } else {
+            ownedFD.close()
         }
-        // Source's cancel handler closes the fd
+        c?.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
     }
 
-    /// Wait for EOF with continuation (no polling).
+    /// Wait for completion via continuation (no polling).
     func waitForEOF() async throws -> Data {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
             lock.lock()
             switch state {
-            case .reading:
+            case .idle, .reading:
                 continuation = cont
                 lock.unlock()
             case .completed(let d):
@@ -95,67 +148,31 @@ final class BoundedPipeCapture: @unchecked Sendable {
             case .failed(let err):
                 lock.unlock()
                 cont.resume(throwing: err)
+            case .cancelled:
+                lock.unlock()
+                cont.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
             }
         }
     }
 
-    private func finish(with result: State) {
+    /// Unified terminal state transition — resumes waiter exactly once.
+    private func complete(_ result: Result<Data, ProcessRunner.RunnerError>) {
         let c: CheckedContinuation<Data, Error>?
         lock.lock()
-        state = result
+        switch result {
+        case .success(let d):
+            state = .completed(d)
+        case .failure(let err):
+            state = .failed(err)
+        }
         c = continuation
         continuation = nil
         lock.unlock()
         switch result {
-        case .completed(let d):
+        case .success(let d):
             c?.resume(returning: d)
-        case .failed(let err):
+        case .failure(let err):
             c?.resume(throwing: err)
-        case .reading:
-            break
         }
-    }
-}
-
-// MARK: - Owned pipe endpoints
-
-/// RAII ownership of a pipe pair. Ensures no double-close.
-final class OwnedPipeEndpoints: @unchecked Sendable {
-    private(set) var readFD: Int32
-    private(set) var writeFD: Int32
-    private var readClosed = false
-    private var writeClosed = false
-    private let lock = NSLock()
-
-    init(readFD: Int32, writeFD: Int32) {
-        self.readFD = readFD
-        self.writeFD = writeFD
-    }
-
-    /// Transfer read FD ownership to a capture (marks as transferred).
-    func transferReadOwnership() -> Int32 {
-        lock.withLock {
-            readClosed = true // ownership transferred, we won't close it
-            return readFD
-        }
-    }
-
-    func closeWriteEnd() {
-        lock.withLock {
-            guard !writeClosed else { return }
-            writeClosed = true
-            close(writeFD)
-        }
-    }
-
-    func closeAll() {
-        lock.withLock {
-            if !readClosed { readClosed = true; close(readFD) }
-            if !writeClosed { writeClosed = true; close(writeFD) }
-        }
-    }
-
-    deinit {
-        closeAll()
     }
 }

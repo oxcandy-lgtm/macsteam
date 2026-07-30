@@ -44,12 +44,6 @@ actor ProcessRunner {
         case boundedCapture(maxBytes: Int)
     }
 
-    enum RequestedTermination: Sendable, Equatable {
-        case none
-        case timeout(TimeInterval)
-        case cancellation
-    }
-
     // MARK: - Dependencies
 
     private let identityProvider: any ProcessIdentityProviding
@@ -92,7 +86,6 @@ actor ProcessRunner {
         ]
         if let wd = workingDirectory { process.currentDirectoryURL = wd }
 
-        // Detached mode
         if case .detached = mode {
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
@@ -103,103 +96,76 @@ actor ProcessRunner {
         // Configure output
         var stdoutCapture: BoundedPipeCapture?
         var stderrCapture: BoundedPipeCapture?
-        var pipeEndpoints: (stdout: OwnedPipeEndpoints, stderr: OwnedPipeEndpoints)?
+        var writeFds: (Int32, Int32)? // write-end fds for bounded cleanup
 
         switch outputPolicy {
         case .discard:
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
         case .boundedCapture(let maxBytes):
-            var soFds: [Int32] = [0, 0]
-            var seFds: [Int32] = [0, 0]
+            var soFds: [Int32] = [0, 0]; var seFds: [Int32] = [0, 0]
             guard pipe(&soFds) == 0 else { throw RunnerError.pipeReadFailed }
-            guard pipe(&seFds) == 0 else {
-                close(soFds[0]); close(soFds[1])
-                throw RunnerError.pipeReadFailed
-            }
-            let soPipe = OwnedPipeEndpoints(readFD: soFds[0], writeFD: soFds[1])
-            let sePipe = OwnedPipeEndpoints(readFD: seFds[0], writeFD: seFds[1])
-            // Write-ends for Process
+            guard pipe(&seFds) == 0 else { close(soFds[0]); close(soFds[1]); throw RunnerError.pipeReadFailed }
             process.standardOutput = FileHandle(fileDescriptor: soFds[1], closeOnDealloc: false)
             process.standardError = FileHandle(fileDescriptor: seFds[1], closeOnDealloc: false)
-            // Captures own read FDs
-            stdoutCapture = BoundedPipeCapture(fd: soPipe.transferReadOwnership(), limit: maxBytes)
-            stderrCapture = BoundedPipeCapture(fd: sePipe.transferReadOwnership(), limit: maxBytes)
-            pipeEndpoints = (soPipe, sePipe)
+            stdoutCapture = BoundedPipeCapture(fd: soFds[0], limit: maxBytes)
+            stderrCapture = BoundedPipeCapture(fd: seFds[0], limit: maxBytes)
+            writeFds = (soFds[1], seFds[1])
         }
 
         // Termination handler (set before run)
-        let termEvents = ProcessTermEvents()
+        let events = ProcessTermEvents()
 
-        process.terminationHandler = { [weak termEvents] proc in
-            termEvents?.signal(exitCode: proc.terminationStatus, signalFlag: proc.terminationReason == .uncaughtSignal)
+        process.terminationHandler = { [weak events] proc in
+            events?.signal(exitCode: proc.terminationStatus, signalFlag: proc.terminationReason == .uncaughtSignal)
         }
 
-        try process.run()
+        do { try process.run() }
+        catch { stdoutCapture?.cancel(); stderrCapture?.cancel(); throw RunnerError.pipeReadFailed }
+
         let pid = process.processIdentifier
 
-        // Close parent write-ends
-        pipeEndpoints?.stdout.closeWriteEnd()
-        pipeEndpoints?.stderr.closeWriteEnd()
+        // Close parent write-ends so EOF works after child exits
+        if let w = writeFds { close(w.0); close(w.1) }
 
-        // Capture identity (fail-closed)
+        // Identity capture (fail-closed)
         let launchedIdentity: ProcessIdentitySnapshot
-        do {
-            launchedIdentity = try identityProvider.identity(forPID: pid)
-        } catch {
-            // Clean up child before throwing
-            kill(pid, SIGTERM)
-            stdoutCapture?.cancel()
-            stderrCapture?.cancel()
-            pipeEndpoints?.stdout.closeAll()
-            pipeEndpoints?.stderr.closeAll()
+        do { launchedIdentity = try identityProvider.identity(forPID: pid) }
+        catch {
+            process.terminate()
+            try? await Task.sleep(for: .milliseconds(200))
+            stdoutCapture?.cancel(); stderrCapture?.cancel()
             throw RunnerError.ownershipLost
         }
 
         // Start event-driven capture
-        stdoutCapture?.start()
-        stderrCapture?.start()
+        stdoutCapture?.start(); stderrCapture?.start()
 
         // Timeout
         if let t = timeout {
-            scheduleTimeout(after: t, pid: pid, identity: launchedIdentity, termEvents: termEvents)
+            scheduleTimeout(after: t, pid: pid, identity: launchedIdentity, events: events)
         }
 
-        let capturesForCancel = (stdoutCapture, stderrCapture)
+        let captures = (stdoutCapture, stderrCapture)
 
         return try await withTaskCancellationHandler {
-            // Wait for process exit
-            let term = await termEvents.wait()
+            let term = await events.wait()
 
-            // Cancel delayed work (timeout escalation)
-            termEvents.cancelTimeout()
+            events.cancelPending()
 
-            let cause: RequestedTermination
-            if term.signaled {
-                if termEvents.timedOut { cause = .timeout(timeout ?? 0) }
-                else { cause = .none }
-            } else if termEvents.cancelled {
-                cause = .cancellation
-            } else {
-                cause = .none
-            }
+            let isTimeout = events.wasTimedOut
+            let isCancelled = events.wasCancelled
 
-            if cause == .cancellation {
-                capturesForCancel.0?.cancel()
-                capturesForCancel.1?.cancel()
+            if isCancelled {
+                captures.0?.cancel(); captures.1?.cancel()
                 throw RunnerError.cancelled
             }
 
-            let outData = try await stdoutCapture?.waitForEOF() ?? Data()
-            let errData = try await stderrCapture?.waitForEOF() ?? Data()
+            let outData = try await captures.0?.waitForEOF() ?? Data()
+            let errData = try await captures.1?.waitForEOF() ?? Data()
 
-            if case .timeout = cause {
-                throw RunnerError.timeoutReached(timeout ?? 0)
-            }
-
-            if term.signaled {
-                throw RunnerError.processTerminated(signal: term.exitCode)
-            }
+            if isTimeout { throw RunnerError.timeoutReached(timeout ?? 0) }
+            if term.signaled { throw RunnerError.processTerminated(signal: term.exitCode) }
 
             return ProcessResult(
                 exitCode: term.exitCode,
@@ -208,79 +174,75 @@ actor ProcessRunner {
                 pid: pid
             )
         } onCancel: {
-            if kill(pid, 0) == 0 {
-                kill(pid, SIGTERM)
-                termEvents.markCancelled()
+            if (try? identityProvider.identity(forPID: pid)) != nil {
+                _ = signalSender.sendSignal(SIGTERM, to: pid)
+                events.markCancelled()
             }
         }
     }
 
-    private func scheduleTimeout(after seconds: TimeInterval, pid: Int32, identity: ProcessIdentitySnapshot, termEvents: ProcessTermEvents) {
-        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [weak termEvents] in
-            guard let ev = termEvents else { return }
-            // Only act if process still running and not already cancelled
-            guard kill(pid, 0) == 0 else { return }
+    private func scheduleTimeout(after seconds: TimeInterval, pid: Int32, identity: ProcessIdentitySnapshot, events: ProcessTermEvents) {
+        let work = DispatchWorkItem { [weak self, weak events] in
+            guard let self, let ev = events else { return }
+            guard let cur = try? self.identityProvider.identity(forPID: pid), cur == identity else { return }
             ev.markTimedOut()
-            // Verify identity before signal
-            guard let current = try? self.identityProvider.identity(forPID: pid), current == identity else { return }
-            kill(pid, SIGTERM)
-            // Force kill after 2s
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak termEvents] in
-                guard let ev2 = termEvents, ev2.timedOut else { return }
-                guard kill(pid, 0) == 0 else { return }
-                guard let cur = try? self.identityProvider.identity(forPID: pid), cur == identity else { return }
-                kill(pid, SIGKILL)
+            guard self.signalSender.sendSignal(SIGTERM, to: pid) else { return }
+            let killWork = DispatchWorkItem { [weak self, weak events] in
+                guard let self, let ev2 = events, ev2.wasTimedOut else { return }
+                guard let cur2 = try? self.identityProvider.identity(forPID: pid), cur2 == identity else { return }
+                _ = self.signalSender.sendSignal(SIGKILL, to: pid)
             }
+            ev.setKillWork(killWork)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0, execute: killWork)
         }
+        events.setTimeoutWork(work)
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: work)
     }
 }
 
-// MARK: - Thread-safe termination events
+// MARK: - ProcessTermEvents
 
 private final class ProcessTermEvents: @unchecked Sendable {
+    private(set) var wasTimedOut = false
+    private(set) var wasCancelled = false
     private var terminated = false
     private var exitCode: Int32 = 0
     private var signaled = false
-    private(set) var timedOut = false
-    private(set) var cancelled = false
-    private var waiter: CheckedContinuation<TermEvent, Never>?
+    private var cont: CheckedContinuation<TermEvent, Never>?
     private var timeoutWork: DispatchWorkItem?
+    private var killWork: DispatchWorkItem?
     private let lock = NSLock()
 
     func signal(exitCode code: Int32, signalFlag: Bool) {
-        let w: CheckedContinuation<TermEvent, Never>?
+        let c: CheckedContinuation<TermEvent, Never>?
         lock.lock()
-        terminated = true
-        exitCode = code
-        signaled = signalFlag
-        w = waiter
-        waiter = nil
-        let tw = timeoutWork
-        timeoutWork = nil
+        terminated = true; exitCode = code; signaled = signalFlag
+        c = cont; cont = nil
+        let tw = timeoutWork; timeoutWork = nil
+        let kw = killWork; killWork = nil
         lock.unlock()
-        tw?.cancel()
-        w?.resume(returning: TermEvent(exitCode: code, signaled: signalFlag))
+        tw?.cancel(); kw?.cancel()
+        c?.resume(returning: TermEvent(exitCode: code, signaled: signalFlag))
     }
 
     func wait() async -> TermEvent {
         await withCheckedContinuation { (c: CheckedContinuation<TermEvent, Never>) in
             lock.lock()
-            if terminated {
-                lock.unlock()
-                c.resume(returning: TermEvent(exitCode: exitCode, signaled: signaled))
-                return
-            }
-            waiter = c
+            if terminated { lock.unlock(); c.resume(returning: TermEvent(exitCode: exitCode, signaled: signaled)); return }
+            cont = c
             lock.unlock()
         }
     }
 
-    func markTimedOut() { lock.withLock { timedOut = true } }
-    func markCancelled() { lock.withLock { cancelled = true } }
-    func cancelTimeout() {
+    func markTimedOut() { lock.withLock { wasTimedOut = true } }
+    func markCancelled() { lock.withLock { wasCancelled = true } }
+    func setTimeoutWork(_ w: DispatchWorkItem) { lock.withLock { timeoutWork = w } }
+    func setKillWork(_ w: DispatchWorkItem) { lock.withLock { killWork = w } }
+
+    func cancelPending() {
         lock.withLock {
-            timeoutWork?.cancel()
-            timeoutWork = nil
+            timeoutWork?.cancel(); timeoutWork = nil
+            killWork?.cancel(); killWork = nil
         }
     }
 }
