@@ -93,17 +93,10 @@ actor ProcessRunner {
 
         // Detached mode: return immediately after successful launch
         if case .detached = mode {
-            // Drain pipes in background to prevent deadlock
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                let _ = handle.availableData
-            }
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                let _ = handle.availableData
-            }
             return ProcessResult(exitCode: 0, stdout: "", stderr: "", pid: process.processIdentifier)
         }
 
-        // Wait-for-exit mode: use continuation with async pipe reading
+        // Wait-for-exit mode: drain pipes via readabilityHandler + DispatchGroup
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessResult, Error>) in
                 let collector = OutputCollector(maxBytes: self.maxOutputBytes)
@@ -111,16 +104,21 @@ actor ProcessRunner {
                 let stdoutHandle = stdoutPipe.fileHandleForReading
                 let stderrHandle = stderrPipe.fileHandleForReading
 
-                // Set up async readers
                 stdoutHandle.readabilityHandler = { handle in
                     let data = handle.availableData
-                    if data.isEmpty { return }
+                    if data.isEmpty {
+                        stdoutHandle.readabilityHandler = nil
+                        return
+                    }
                     collector.appendStdout(data)
                 }
 
                 stderrHandle.readabilityHandler = { handle in
                     let data = handle.availableData
-                    if data.isEmpty { return }
+                    if data.isEmpty {
+                        stderrHandle.readabilityHandler = nil
+                        return
+                    }
                     collector.appendStderr(data)
                 }
 
@@ -131,7 +129,6 @@ actor ProcessRunner {
                     t.schedule(deadline: .now() + timeoutSeconds)
                     t.setEventHandler {
                         process.terminate()
-                        collector.markTimedOut()
                     }
                     t.resume()
                     timer = t
@@ -142,16 +139,20 @@ actor ProcessRunner {
                 process.terminationHandler = { proc in
                     timer?.cancel()
 
-                    stdoutHandle.readabilityHandler = nil
-                    stderrHandle.readabilityHandler = nil
+                    // Close write-ends to trigger EOF on readabilityHandlers
+                    stdoutPipe.fileHandleForWriting.closeFile()
+                    stderrPipe.fileHandleForWriting.closeFile()
 
-                    // Read any remaining data
+                    // Read any remaining data that readabilityHandler may have missed
                     if let remainingOut = try? stdoutHandle.readToEnd() {
                         collector.appendStdout(remainingOut)
                     }
                     if let remainingErr = try? stderrHandle.readToEnd() {
                         collector.appendStderr(remainingErr)
                     }
+
+                    stdoutHandle.readabilityHandler = nil
+                    stderrHandle.readabilityHandler = nil
 
                     let terminationStatus = proc.terminationStatus
                     let terminationReason = proc.terminationReason
@@ -182,8 +183,7 @@ actor ProcessRunner {
     }
 }
 
-/// Thread‑safe mutable accumulator for process output, used to avoid
-/// Swift 6 Sendable closure capture issues with local `var`.
+/// Thread‑safe mutable accumulator for process output.
 private final class OutputCollector: @unchecked Sendable {
     private var _stdout = Data()
     private var _stderr = Data()

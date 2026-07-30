@@ -87,8 +87,8 @@ actor WineControlLane {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .filter { !$0.isEmpty }
 
-        // Skip the CSV header ("Image Name","PID","Session Name","Session#","Mem Usage","Status")
-        let csvLines = rawLines.dropFirst()
+        // /NH suppresses the CSV header, so no dropFirst needed
+        let csvLines = rawLines
 
         let processes = csvLines.compactMap { line -> WindowsProcessSnapshot? in
             parseTasklistCSVLine(line)
