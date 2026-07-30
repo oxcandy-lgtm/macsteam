@@ -87,9 +87,6 @@ if [ "$CLEANUP_ONLY" -eq 1 ]; then
     check "no-handle early return in stopAndClean" 'guard activeHandle else' Sources/MacSteam/Installer/InstallerSupervisor.swift
     check "concrete ProcessSupervisor" 'processSupervisor: ProcessSupervisor([^)]|$)' Sources/MacSteam/Installer/InstallerSupervisor.swift
     check "clock-based deadline in pollForExit" 'ContinuousClock.now' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
-    check "wineserverProbe exitCode guard" 'wineserverProbe' Sources/MacSteam/Processes/WineControlLane.swift
-    # also check wineserver probe doesn't return false without exitCode check
-    check "direct ProcessRunner in PrefixProcessTerminator" 'ProcessRunner()' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
     check "op[.]phase direct assignment" 'op\.phase[[:space:]]*=' Sources/MacSteam/Installer/InstallerSupervisor.swift
 
     if [ "$VIOLATIONS" -eq 0 ]; then

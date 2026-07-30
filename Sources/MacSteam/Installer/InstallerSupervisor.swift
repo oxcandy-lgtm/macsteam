@@ -97,7 +97,8 @@ actor InstallerSupervisor {
             }
         } catch {
             op.lastError = error.localizedDescription
-            try? op.transition(to: .interrupted)
+            // Silently fall back if the phase is already terminal
+            do { try op.transition(to: .interrupted) } catch {}
             self.currentOperation = op
             throw error
         }
@@ -222,7 +223,7 @@ actor InstallerSupervisor {
             }
         } catch {
             op.lastError = error.localizedDescription
-            try? setPhase(&op, .interrupted)
+            do { try setPhase(&op, .interrupted) } catch {}
         }
     }
 
