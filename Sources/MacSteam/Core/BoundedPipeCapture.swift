@@ -44,7 +44,7 @@ final class ProcessOutputPipeBundle {
     func closeAll() { stdout.closeAll(); stderr.closeAll() }
 }
 
-/// Non-blocking bounded pipe capture. Atomic start (idle→starting→reading).
+/// Non-blocking bounded pipe capture. Single state authority.
 final class BoundedPipeCapture: @unchecked Sendable {
     enum State: Sendable {
         case idle
@@ -58,7 +58,6 @@ final class BoundedPipeCapture: @unchecked Sendable {
     private let readLease: FDLease
     private let limit: Int
     private var state: State = .idle
-    private var started = false
     private var storage = Data()
     private var source: DispatchSourceRead?
     private var continuation: CheckedContinuation<Data, Error>?
@@ -67,17 +66,12 @@ final class BoundedPipeCapture: @unchecked Sendable {
 
     init(readLease: FDLease, limit: Int) throws {
         _ = try readLease.borrow()
-        self.readLease = readLease
-        self.limit = limit
+        self.readLease = readLease; self.limit = limit
     }
 
     func start(on queue: DispatchQueue = .global()) throws {
         lock.lock()
-        guard !started, case .idle = state else {
-            lock.unlock()
-            throw started ? ProcessRunner.RunnerError.alreadyRunning : ProcessRunner.RunnerError.pipeReadFailed
-        }
-        started = true
+        guard case .idle = state else { lock.unlock(); throw ProcessRunner.RunnerError.alreadyRunning }
         state = .starting
         lock.unlock()
 
@@ -91,9 +85,14 @@ final class BoundedPipeCapture: @unchecked Sendable {
 
         let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
 
+        // Set cancel handler BEFORE state check (race-safe)
+        src.setCancelHandler { [readLease] in readLease.closeOnce() }
+
         lock.lock()
         guard case .starting = state else {
-            lock.unlock(); src.cancel()
+            lock.unlock()
+            src.resume() // resume then cancel ensures FD close via cancel handler
+            src.cancel()
             throw ProcessRunner.RunnerError.pipeReadFailed
         }
         source = src
@@ -118,18 +117,21 @@ final class BoundedPipeCapture: @unchecked Sendable {
                 src.cancel(); complete(.failure(.pipeReadFailed)); return
             }
         }
-        src.setCancelHandler { [readLease] in readLease.closeOnce() }
+
         src.resume()
     }
 
     func cancel() {
         lock.lock()
-        switch state { case .idle, .starting, .reading: break; default: lock.unlock(); return }
+        switch state {
+        case .idle, .starting, .reading: break
+        default: lock.unlock(); return
+        }
         state = .cancelled
         let c = continuation; continuation = nil
-        let src = source; source = nil
+        let s = source; source = nil
         lock.unlock()
-        if let s = src { s.cancel() } else { readLease.closeOnce() }
+        if let src = s { src.cancel() } else { readLease.closeOnce() }
         c?.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
     }
 
