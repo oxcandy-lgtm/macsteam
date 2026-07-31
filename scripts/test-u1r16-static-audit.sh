@@ -329,7 +329,9 @@ struct UltimateSetupView: View {
         }
     }
     var diagnosticsPageView: some View {
-        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+        VStack(alignment: .leading, spacing: 12) {
+            canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+        }
     }
 }
 
@@ -2285,6 +2287,280 @@ struct RuntimeSetupView: View {
 }
 '
 run_audit_navguard "correct_helper_call_dead_but_wrong_call_rendered" "correct helper call dead but wrong call rendered" 1 "surface ignores navigation capability"
+
+# ── U1R17-H control-flow dominance fixtures ──
+
+# H1: nested early return in canonicalPrefixEvidenceValid → 1
+mk_repo "canonical_nested_early_true"
+seed_required_files "canonical_nested_early_true"
+add_file "canonical_nested_early_true" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        if inspection.hasSteam { return true }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "canonical_nested_early_true" "canonical nested early true" 1 "canonicalPrefixEvidenceValid control-flow dominance violation"
+
+# H1: nested raw return in canonicalURL → 1
+mk_repo "canonical_url_nested_raw_return"
+seed_required_files "canonical_url_nested_raw_return"
+add_file "canonical_url_nested_raw_return" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        if url.isFileURL { return url }
+        return url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "canonical_url_nested_raw_return" "canonical url nested raw return" 1 "canonicalURL control-flow dominance violation"
+
+# H2: correct call inside an uninvoked closure → 1
+mk_repo "acquisition_correct_call_in_uninvoked_closure"
+seed_required_files "acquisition_correct_call_in_uninvoked_closure"
+add_file "acquisition_correct_call_in_uninvoked_closure" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let work = { establishPrefixEvidence(for: existing, source: .existingCanonical) }
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "acquisition_correct_call_in_uninvoked_closure" "acquisition correct call in uninvoked closure" 1 "prefix acquisition evidence control-flow dominance violation"
+
+# H2: correct call inside a false branch → 1
+mk_repo "acquisition_correct_call_in_false_branch"
+seed_required_files "acquisition_correct_call_in_false_branch"
+add_file "acquisition_correct_call_in_false_branch" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            if false { establishPrefixEvidence(for: existing, source: .existingCanonical) }
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "acquisition_correct_call_in_false_branch" "acquisition correct call in false branch" 1 "prefix acquisition evidence control-flow dominance violation"
+
+# H2: newlyInitialized call in a false branch → 1
+mk_repo "newly_initialized_call_in_false_branch"
+seed_required_files "newly_initialized_call_in_false_branch"
+add_file "newly_initialized_call_in_false_branch" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if false { establishPrefixEvidence(for: layout, source: .newlyInitialized) }
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "newly_initialized_call_in_false_branch" "newly initialized call in false branch" 1 "prefix acquisition evidence control-flow dominance violation"
+
+# H3: correct helper only inside a false branch → 1
+mk_repo "surface_correct_helper_only_in_false_branch"
+seed_required_files "surface_correct_helper_only_in_false_branch"
+add_file "surface_correct_helper_only_in_false_branch" "Sources/MacSteam/Views/RuntimeSetupView.swift" '
+struct RuntimeSetupView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .runtime)
+    var navigationButtons: some View {
+        if false { canonicalNavigationFooter(presentation: presentation, coordinator: coordinator) }
+    }
+}
+'
+run_audit_navguard "surface_correct_helper_only_in_false_branch" "surface correct helper only in false branch" 1 "surface canonical footer render-path violation"
+
+# H3: correct helper only inside an uninvoked closure → 1
+mk_repo "surface_correct_helper_only_in_uninvoked_closure"
+seed_required_files "surface_correct_helper_only_in_uninvoked_closure"
+add_file "surface_correct_helper_only_in_uninvoked_closure" "Sources/MacSteam/Views/RuntimeSetupView.swift" '
+struct RuntimeSetupView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .runtime)
+    var navigationButtons: some View {
+        let f = { canonicalNavigationFooter(presentation: presentation, coordinator: coordinator) }
+    }
+}
+'
+run_audit_navguard "surface_correct_helper_only_in_uninvoked_closure" "surface correct helper only in uninvoked closure" 1 "surface canonical footer render-path violation"
+
+# H3: diagnostics helper nested inside ScrollView → 1
+mk_repo "diagnostics_helper_nested_in_scrollview"
+seed_required_files "diagnostics_helper_nested_in_scrollview"
+add_file "diagnostics_helper_nested_in_scrollview" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
+    var diagnosticsPageView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView {
+                canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+            }
+        }
+    }
+}
+'
+run_audit_navguard "diagnostics_helper_nested_in_scrollview" "diagnostics helper nested in scrollview" 1 "surface canonical footer render-path violation"
+
+# H3: helper assigned to an unused let → 1
+mk_repo "surface_helper_assigned_to_unused_let"
+seed_required_files "surface_helper_assigned_to_unused_let"
+add_file "surface_helper_assigned_to_unused_let" "Sources/MacSteam/Views/RuntimeSetupView.swift" '
+struct RuntimeSetupView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .runtime)
+    var navigationButtons: some View {
+        let footer = canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+        return footer
+    }
+}
+'
+run_audit_navguard "surface_helper_assigned_to_unused_let" "surface helper assigned to unused let" 1 "surface canonical footer render-path violation"
+
+# H3: unbalanced parens in the helper call → 2 (infrastructure)
+mk_repo "surface_helper_call_unbalanced_parens"
+seed_required_files "surface_helper_call_unbalanced_parens"
+add_file "surface_helper_call_unbalanced_parens" "Sources/MacSteam/Views/RuntimeSetupView.swift" '
+struct RuntimeSetupView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .runtime)
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator
+    }
+}
+'
+run_audit_navguard "surface_helper_call_unbalanced_parens" "surface helper call unbalanced parens" 2 "required contract unparseable"
 
 # ── Infrastructure failure ──
 # Infrastructure failure test (use fake git that exits 2)

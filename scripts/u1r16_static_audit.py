@@ -312,6 +312,78 @@ def extract_calls(cleaned_body: str, name: str):
     return calls
 
 
+CONTINUATION_LEAD = "|&?=+*-/.,:!<>^%"
+CONTINUATION_TAIL = ",=([{+-*/%|&?:.!<>^"
+
+
+def direct_statements(cleaned_body: str) -> list:
+    """Split a function/property body into DIRECT statements (brace-depth 0).
+
+    Newlines at depth 0 end a statement unless the line continues (next
+    non-space token is a leading operator, or the line ends with a
+    trailing operator/comma).
+    """
+    stmts = []
+    depth = 0
+    start = 0
+    i = 0
+    n = len(cleaned_body)
+    while i < n:
+        c = cleaned_body[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif depth == 0 and c == ";":
+            stmts.append(cleaned_body[start:i])
+            start = i + 1
+        elif depth == 0 and c == "\n":
+            k = i + 1
+            while k < n and cleaned_body[k] in " \t":
+                k += 1
+            nxt = cleaned_body[k] if k < n else ""
+            j = i - 1
+            while j >= start and cleaned_body[j] in " \t":
+                j -= 1
+            prev = cleaned_body[j] if j >= start else ""
+            if nxt in CONTINUATION_LEAD or prev in CONTINUATION_TAIL:
+                pass  # statement continues
+            else:
+                stmts.append(cleaned_body[start:i])
+                start = i + 1
+        i += 1
+    if start < n:
+        stmts.append(cleaned_body[start:])
+    return [s.strip() for s in stmts if s.strip()]
+
+
+def brace_depth_at(cleaned_body: str, pos: int) -> int:
+    """Brace depth (relative to body) at position `pos`."""
+    return cleaned_body[:pos].count("{") - cleaned_body[:pos].count("}")
+
+
+def call_occurrences(cleaned_body: str, name: str):
+    """Yield (match, brace_depth) for every `name(` occurrence."""
+    for m in re.finditer(r"\b" + re.escape(name) + r"\s*\(", cleaned_body):
+        yield m, brace_depth_at(cleaned_body, m.start())
+
+
+def balanced_after(text: str, open_idx: int) -> str:
+    """Inner text of the balanced braces starting at open_idx (infra on fail)."""
+    depth = 0
+    j = open_idx
+    n = len(text)
+    while j < n:
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:j]
+        j += 1
+    infra("required contract unparseable: unbalanced braces")
+
+
 def iter_swift_files(root: str, rel_dir: str):
     base = os.path.join(root, rel_dir)
     if not os.path.isdir(base):
@@ -759,6 +831,264 @@ def _(root: str) -> list[str]:
     return out
 
 
+@guard("canonicalPrefixEvidenceValid control-flow dominance violation")
+def _(root: str) -> list[str]:
+    """Strict executable-contract shape for canonicalPrefixEvidenceValid:
+
+    1. Exactly one direct top-level guard binds layout + inspection +
+       inspection.isValid.
+    2. Its else body is exactly one direct `return false` (no alternate
+       statement, no nested return).
+    3. After the guard, exactly one direct terminal return whose normalized
+       expression is exactly `canonicalURL(inspection.prefixURL) ==
+       canonicalURL(layout.root)`.
+    4. No additional return anywhere (if/switch/for/while/do-catch/defer/
+       local function/closure included).
+    """
+    content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
+    if content is None:
+        infra("required contract missing: UltimateSetupCoordinator.swift")
+    body = required_body(content, "var canonicalPrefixEvidenceValid",
+                         "UltimateSetupCoordinator.canonicalPrefixEvidenceValid")
+    cleaned = clean_swift(body)
+    stmts = direct_statements(cleaned)
+    out = []
+    if len(stmts) != 2:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   f"expected exactly 2 direct statements (guard + terminal "
+                   f"return), found {len(stmts)}")
+        return out
+    guard_stmt, ret_stmt = stmts[0], stmts[1]
+    guard_re = re.compile(
+        r"guard\s+let\s+layout\s*=\s*prefixLayout\s*,\s*"
+        r"let\s+inspection\s*=\s*prefixInspection\s*,\s*"
+        r"inspection\s*\.\s*isValid\s*else\s*\{")
+    m = guard_re.match(guard_stmt)
+    if not m:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   "first direct statement must be a single guard binding "
+                   "layout, inspection, and inspection.isValid")
+    else:
+        else_body = balanced_after(guard_stmt, guard_stmt.find("else {") + 5)
+        if normalize_expr(else_body) != "return false":
+            out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                       "guard else body must be exactly one direct 'return false'")
+    m2 = re.match(r"return\s+(.*)$", ret_stmt, re.S)
+    if not m2:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   "second direct statement must be the terminal return")
+    else:
+        expr = normalize_expr(m2.group(1))
+        expected = "canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)"
+        if expr != expected:
+            out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                       f"terminal return expression must be exactly '{expected}' "
+                       f"(got '{expr}')")
+    ret_count = len(re.findall(r"\breturn\b", cleaned))
+    if ret_count != 2:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   f"{ret_count} return statements in property body "
+                   "(exactly 2 allowed: guard else + terminal)")
+    return out
+
+
+@guard("canonicalURL control-flow dominance violation")
+def _(root: str) -> list[str]:
+    """canonicalURL(_:) must be a single executable body whose sole
+    expression is `url.standardizedFileURL.resolvingSymlinksInPath()`.
+    An explicit direct `return` form is allowed only as the sole statement.
+    Nested/raw early returns, closures, conditional fallbacks, discarded
+    canonical calls, and additional statements are violations.
+    """
+    content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
+    if content is None:
+        infra("required contract missing: UltimateSetupCoordinator.swift")
+    body = required_body(content, "func canonicalURL",
+                         "UltimateSetupCoordinator.canonicalURL")
+    cleaned = clean_swift(body)
+    stmts = direct_statements(cleaned)
+    expected = "url.standardizedFileURL.resolvingSymlinksInPath()"
+    out = []
+    if len(stmts) != 1:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   f"canonicalURL must have exactly one direct statement "
+                   f"(found {len(stmts)})")
+    else:
+        s = stmts[0]
+        if s.startswith("return "):
+            expr = normalize_expr(s[len("return "):])
+        else:
+            expr = normalize_expr(s)
+        if expr != expected:
+            out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                       f"canonicalURL sole expression must be exactly '{expected}' "
+                       f"(got '{expr}')")
+    ret_count = len(re.findall(r"\breturn\b", cleaned))
+    if ret_count > 1:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   f"{ret_count} return statements in canonicalURL "
+                   "(at most one explicit return, as the sole statement)")
+    if "{" in cleaned:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   "canonicalURL body must not contain closures or control flow")
+    return out
+
+
+@guard("prefix acquisition evidence control-flow dominance violation")
+def _(root: str) -> list[str]:
+    """Evidence calls must dominate production returns / state transition.
+
+    Router branches: exactly one `establishPrefixEvidence` call at the
+    branch body's DIRECT statement depth (not inside a closure, false
+    branch, or local function), binding the selected layout and its
+    matching source in the same call; exactly one direct branch return
+    follows, returning the matching (layout, source) pair; no return/
+    throw/break/continue may precede the evidence call in the branch.
+
+    createPrefix: exactly one `state = .prefixReady`; exactly one direct
+    `establishPrefixEvidence(for: layout, source: .newlyInitialized)`
+    in the same lexical parent scope, preceding and dominating the
+    success assignment; no intervening return/throw/break/continue.
+    """
+    content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
+    if content is None:
+        infra("required contract missing: UltimateSetupCoordinator.swift")
+    out = []
+    cleaned = clean_swift(content)
+    if "func establishExistingPrefixAcquisition" not in cleaned:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   "production acquisition router missing")
+    else:
+        router_body = required_body(
+            cleaned, "func establishExistingPrefixAcquisition",
+            "UltimateSetupCoordinator.establishExistingPrefixAcquisition"
+        )
+        for m in re.finditer(
+            r"if\s+let\s+(\w+)\s*=\s*(validatedLayout|adoptedLayout)", router_body):
+            branch_var = m.group(1)
+            source_kind = m.group(2)
+            expected_source = ".existingCanonical" if source_kind == "validatedLayout" \
+                else ".adoptedSteam"
+            brace = router_body.find("{", m.end())
+            if brace < 0:
+                infra("required contract unparseable: router branch has no body brace")
+            branch_body = balanced_after(router_body, brace)
+            stmts = direct_statements(branch_body)
+            occs = list(call_occurrences(branch_body, "establishPrefixEvidence"))
+            direct_occs = [o for o in occs if o[1] == 0]
+            if len(direct_occs) != 1:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           f"router branch {branch_var} must have exactly one "
+                           "establishPrefixEvidence call at DIRECT statement depth "
+                           f"(found {len(direct_occs)} direct of {len(occs)} total)")
+            else:
+                inner = balanced_parens(branch_body, direct_occs[0][0].end() - 1)
+                if inner is None:
+                    infra("required contract unparseable: evidence call parens")
+                args = labeled_args(inner)
+                if args.get("for") != branch_var or args.get("source") != expected_source:
+                    out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                               f"router branch {branch_var} direct evidence call must bind "
+                               f"(for: {branch_var}, source: {expected_source}) "
+                               f"(got {args.get('for')}, {args.get('source')})")
+                call_pos = direct_occs[0][0].start()
+                prefix = branch_body[:call_pos]
+                for kw in ("return", "throw", "break", "continue"):
+                    if re.search(r"\b" + kw + r"\b", prefix):
+                        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                                   f"router branch {branch_var} has '{kw}' before the "
+                                   "direct evidence call")
+            if len(occs) != 1:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           f"router branch {branch_var} contains {len(occs)} evidence "
+                           "calls (nested/closure calls do not count and must not exist)")
+            ret_stmts = [s for s in stmts if re.match(r"return\b", s)]
+            if len(ret_stmts) != 1:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           f"router branch {branch_var} must have exactly one direct "
+                           f"return (found {len(ret_stmts)})")
+            else:
+                pair = normalize_expr(ret_stmts[0][len("return"):])
+                expected_pair = normalize_expr(f"({branch_var}, {expected_source})")
+                if pair != expected_pair:
+                    out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                               f"router branch {branch_var} direct return must be "
+                               f"'({branch_var}, {expected_source})' (got '{pair}')")
+            if direct_occs and ret_stmts:
+                ev_stmt_text = None
+                for s in stmts:
+                    if "establishPrefixEvidence(" in s:
+                        ev_stmt_text = s
+                        break
+                pos_ev = branch_body.find(ev_stmt_text) if ev_stmt_text else -1
+                pos_ret = branch_body.find(ret_stmts[0])
+                if pos_ev < 0 or pos_ret < 0 or pos_ev > pos_ret:
+                    out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                               f"router branch {branch_var} evidence call must "
+                               "precede the branch return")
+    create_body = required_body(cleaned, "func createPrefix",
+                                "UltimateSetupCoordinator.createPrefix")
+    ready_count = len(re.findall(r"state\s*=\s*\.prefixReady", create_body))
+    if ready_count != 1:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   f"exactly one 'state = .prefixReady' required in createPrefix "
+                   f"(found {ready_count})")
+    occs = list(call_occurrences(create_body, "establishPrefixEvidence"))
+    ready_m = re.search(r"state\s*=\s*\.prefixReady", create_body)
+    ready_pos = ready_m.start() if ready_m else -1
+    # The evidence call must sit in the SAME lexical scope as the success
+    # assignment (e.g. both inside the `do { }` block) at direct statement
+    # depth of that scope — never inside a nested if/closure/false branch.
+    scope_depth = brace_depth_at(create_body, ready_pos) if ready_pos >= 0 else 0
+    direct_occs = [o for o in occs if o[1] == scope_depth]
+    if len(direct_occs) != 1:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   "createPrefix must have exactly one establishPrefixEvidence call "
+                   "at DIRECT statement depth of the .prefixReady scope "
+                   f"(found {len(direct_occs)} direct of {len(occs)} total)")
+    else:
+        inner = balanced_parens(create_body, direct_occs[0][0].end() - 1)
+        if inner is None:
+            infra("required contract unparseable: evidence call parens")
+        args = labeled_args(inner)
+        if args.get("for") != "layout" or args.get("source") != ".newlyInitialized":
+            out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                       "newlyInitialized direct evidence call must bind "
+                       "(for: layout, source: .newlyInitialized) "
+                       f"(got {args.get('for')}, {args.get('source')})")
+        ev_pos = direct_occs[0][0].start()
+        if ready_pos >= 0:
+            if ev_pos > ready_pos:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           "newlyInitialized evidence must precede state = .prefixReady")
+            else:
+                between = create_body[ev_pos:ready_pos]
+                for kw in ("return", "throw", "break", "continue"):
+                    if re.search(r"\b" + kw + r"\b", between):
+                        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                                   f"'{kw}' intervenes between the newlyInitialized "
+                                   "evidence and state = .prefixReady")
+                # Same lexical scope: brace depth between the call and the
+                # assignment must never drop below the scope depth.
+                depth = scope_depth
+                min_depth = depth
+                for ch in between:
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                    min_depth = min(min_depth, depth)
+                if min_depth < scope_depth:
+                    out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                               "newlyInitialized evidence call is in a different "
+                               "lexical scope than state = .prefixReady")
+    if len(occs) != 1:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   f"createPrefix contains {len(occs)} evidence calls "
+                   "(nested/closure calls do not count and must not exist)")
+    return out
+
+
 @guard("prefix acquisition branch evidence ordering violation")
 def _(root: str) -> list[str]:
     content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
@@ -824,6 +1154,106 @@ def _(root: str) -> list[str]:
                    "establishPrefixEvidence(for: layout, source: .newlyInitialized) "
                    "before state = .prefixReady "
                    f"(found {len(new_matching)} matching of {len(new_calls)} calls)")
+    return out
+
+
+@guard("surface canonical footer render-path violation")
+def _(root: str) -> list[str]:
+    """The helper must sit on the RENDERED ViewBuilder path.
+
+    Child surfaces: exactly one standalone DIRECT ViewBuilder expression
+    `canonicalNavigationFooter(presentation: presentation,
+    coordinator: coordinator)` in the navigation body — not assigned to a
+    let, not wrapped, not inside a closure/false branch/control flow.
+
+    Diagnostics: the body's root must be a VStack and the exact helper call
+    must appear exactly once as a DIRECT child of that root ViewBuilder
+    closure (not inside ScrollView/Group/if/modifier closures).
+
+    Zero bare `InstallerNavigationFooter(` bypasses and zero nested/extra
+    helper calls. Malformed ViewBuilder structure is exit 2.
+    """
+    child_surfaces = [
+        ("RuntimeSetupView.swift", "var navigationButtons", "runtime"),
+        ("PrefixSetupView.swift", "var navigationButtons", "environment"),
+        ("SteamSetupView.swift", "var navigationButtons", "steam"),
+        ("CloverPitLaunchView.swift", "var navigationButtons", "cloverPit"),
+    ]
+    out = []
+    expected_call = "canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)"
+    for fname, body_needle, surface in child_surfaces:
+        content = read_file(root, os.path.join(VIEWS, fname))
+        if content is None:
+            infra(f"required contract missing: {fname}")
+        cleaned = clean_swift(content)
+        body = optional_body(cleaned, body_needle)
+        if body is None:
+            continue
+        stmts = direct_statements(body)
+        occs = list(call_occurrences(body, "canonicalNavigationFooter"))
+        direct_occs = [o for o in occs if o[1] == 0]
+        if len(direct_occs) != 1:
+            out.append(f"{os.path.join(VIEWS, fname)}: {surface} surface must have "
+                       "exactly one canonicalNavigationFooter call at DIRECT "
+                       "ViewBuilder depth "
+                       f"(found {len(direct_occs)} direct of {len(occs)} total)")
+        else:
+            inner = balanced_parens(body, direct_occs[0][0].end() - 1)
+            if inner is None:
+                infra("required contract unparseable: footer helper call parens")
+            args = labeled_args(inner)
+            if args.get("presentation") != "presentation" or \
+                    args.get("coordinator") != "coordinator":
+                out.append(f"{os.path.join(VIEWS, fname)}: {surface} surface direct "
+                           f"helper call must be {expected_call} "
+                           f"(got presentation: {args.get('presentation')}, "
+                           f"coordinator: {args.get('coordinator')})")
+        if len(occs) != 1:
+            out.append(f"{os.path.join(VIEWS, fname)}: {surface} surface contains "
+                       f"{len(occs)} helper calls (must be exactly 1, no nesting)")
+        if len(stmts) != 1 or normalize_expr(stmts[0]) != expected_call:
+            out.append(f"{os.path.join(VIEWS, fname)}: {surface} surface navigation "
+                       "body must be a single standalone ViewBuilder expression "
+                       f"{expected_call}")
+        if "InstallerNavigationFooter(" in body:
+            out.append(f"{os.path.join(VIEWS, fname)}: {surface} surface renders "
+                       "a bare InstallerNavigationFooter bypassing the helper")
+    # Diagnostics surface: root VStack + direct child helper call.
+    content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
+    if content is None:
+        infra("required contract missing: UltimateSetupView.swift")
+    cleaned = clean_swift(content)
+    body = optional_body(cleaned, "var diagnosticsPageView")
+    if body is not None:
+        if not re.match(r"\s*VStack\b", body):
+            out.append(f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
+                       "diagnostics root ViewBuilder must be a VStack")
+        occs = list(call_occurrences(body, "canonicalNavigationFooter"))
+        direct_occs = [o for o in occs if o[1] == 1]
+        if len(direct_occs) != 1:
+            out.append(f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
+                       "diagnostics must have exactly one canonicalNavigationFooter "
+                       "call as a DIRECT child of the root VStack "
+                       f"(found {len(direct_occs)} direct of {len(occs)} total)")
+        else:
+            inner = balanced_parens(body, direct_occs[0][0].end() - 1)
+            if inner is None:
+                infra("required contract unparseable: footer helper call parens")
+            args = labeled_args(inner)
+            if args.get("presentation") != "presentation" or \
+                    args.get("coordinator") != "coordinator":
+                out.append(f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
+                           f"diagnostics direct helper call must be {expected_call} "
+                           f"(got presentation: {args.get('presentation')}, "
+                           f"coordinator: {args.get('coordinator')})")
+        if len(occs) != 1:
+            out.append(f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
+                       f"diagnostics contains {len(occs)} helper calls "
+                       "(must be exactly 1, no nesting)")
+        if "InstallerNavigationFooter(" in body:
+            out.append(f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
+                       "diagnostics renders a bare InstallerNavigationFooter "
+                       "bypassing the helper")
     return out
 
 
