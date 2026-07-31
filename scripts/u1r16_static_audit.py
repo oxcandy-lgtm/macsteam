@@ -6,12 +6,13 @@ Usage:
 
 Exit codes:
   0 = clean contract
-  1 = production mutation violation
-  2 = infrastructure failure (missing/unreadable required contract,
-      missing required function, unparseable required body)
+  1 = semantic production mutation
+  2 = infrastructure failure (missing/unreadable required file, missing
+      required declaration or body, unbalanced body, scanner failure)
 
-Required contracts (file presence + core declaration presence) are checked
-FIRST; their absence is an infrastructure failure, never a clean result.
+Required contracts (file presence + core declaration/body presence) are
+checked FIRST; any absence is an infrastructure failure (exit 2), never a
+clean result and never a semantic violation.
 """
 import os
 import re
@@ -22,16 +23,41 @@ ULTIMATE = os.path.join("Sources", "MacSteam", "Ultimate")
 PREFIX = os.path.join("Sources", "MacSteam", "Prefix")
 
 # Required files with the core declarations that must be present.
+# Missing file or missing declaration → exit 2.
 REQUIRED_CONTRACTS = [
-    (VIEWS, "UltimateSetupView.swift", ["diagnosticsPageView"]),
-    (VIEWS, "PrefixSetupView.swift", ["inspectPrefix", "PrefixInspectAction"]),
+    (VIEWS, "UltimateSetupView.swift",
+     ["var presentation", "var pageTitle", "var progressIndicator",
+      "var content", "diagnosticsPageView"]),
+    (VIEWS, "PrefixSetupView.swift",
+     ["func inspectPrefix", "static func production"]),
     (VIEWS, "UltimatePageResolver.swift",
-     ["func presentation(", "func steamMode", "func contentKind"]),
-    (VIEWS, "SteamSetupView.swift", ["InstallerNavigationFooter"]),
+     ["func presentation(", "func contentKind", "func steamMode",
+      "func hasCanonicalNavigation"]),
+    (VIEWS, "SteamSetupView.swift", []),
+    (VIEWS, "RuntimeSetupView.swift", []),
+    (VIEWS, "CloverPitLaunchView.swift", []),
     (ULTIMATE, "UltimateSetupCoordinator.swift",
-     ["func computePageCompletion", "canonicalPrefixEvidenceValid",
-      "func establishPrefixEvidence"]),
-    (PREFIX, "PrefixInspection.swift", ["PrefixInspecting", "PrefixAcquisitionSource"]),
+     ["var canonicalPrefixEvidenceValid", "func canonicalURL",
+      "func establishPrefixEvidence", "func establishExistingPrefixAcquisition",
+      "func createPrefix", "func computePageCompletion"]),
+    (PREFIX, "PrefixInspection.swift",
+     ["PrefixInspecting", "PrefixAcquisitionSource"]),
+]
+
+# Required-body needles: missing or unbalanced body → exit 2.
+REQUIRED_BODIES = [
+    (VIEWS, "UltimateSetupView.swift",
+     ["var presentation", "var pageTitle", "var progressIndicator",
+      "var content", "diagnosticsPageView"]),
+    (VIEWS, "PrefixSetupView.swift",
+     ["func inspectPrefix", "static func production"]),
+    (VIEWS, "UltimatePageResolver.swift",
+     ["func presentation(", "func contentKind", "func steamMode",
+      "func hasCanonicalNavigation"]),
+    (ULTIMATE, "UltimateSetupCoordinator.swift",
+     ["var canonicalPrefixEvidenceValid", "func canonicalURL",
+      "func establishPrefixEvidence", "func establishExistingPrefixAcquisition",
+      "func createPrefix", "func computePageCompletion"]),
 ]
 
 
@@ -70,6 +96,27 @@ def required_body(content: str, needle: str, context: str):
         i += 1
     if depth != 0:
         infra(f"required contract unparseable: {context} (unbalanced braces for '{needle}')")
+    return content[brace + 1:i - 1]
+
+
+def optional_body(content: str, needle: str):
+    """Balanced-brace body following `needle`, or None when absent."""
+    idx = content.find(needle)
+    if idx < 0:
+        return None
+    brace = content.find("{", idx)
+    if brace < 0:
+        return None
+    depth = 1
+    i = brace + 1
+    while depth > 0 and i < len(content):
+        if content[i] == "{":
+            depth += 1
+        elif content[i] == "}":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        return None
     return content[brace + 1:i - 1]
 
 
@@ -150,8 +197,6 @@ def _(root: str) -> list[str]:
     content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
     if content is None:
         infra("required contract missing: UltimateSetupView.swift")
-    if "var content" not in content:
-        return []
     body = required_body(content, "var content", "UltimateSetupView.content")
     if "presentation.contentKind" not in body:
         return [f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
@@ -164,8 +209,6 @@ def _(root: str) -> list[str]:
     content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
     if content is None:
         infra("required contract missing: UltimateSetupView.swift")
-    if "progressIndicator" not in content:
-        return []
     body = required_body(content, "var progressIndicator",
                          "UltimateSetupView.progressIndicator")
     if "presentation.stepNumber" not in body:
@@ -174,24 +217,11 @@ def _(root: str) -> list[str]:
     return []
 
 
-@guard("navigation capability (hasCanonicalNavigation) ignored")
-def _(root: str) -> list[str]:
-    content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
-    if content is None:
-        infra("required contract missing: UltimateSetupView.swift")
-    if "presentation.hasCanonicalNavigation" not in content:
-        return [f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
-                "hasCanonicalNavigation is decorative — not consumed by the root"]
-    return []
-
-
 @guard("pageTitle must derive from presentation")
 def _(root: str) -> list[str]:
     content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
     if content is None:
         infra("required contract missing: UltimateSetupView.swift")
-    if "pageTitle" not in content:
-        return []
     body = required_body(content, "var pageTitle", "UltimateSetupView.pageTitle")
     if "presentation." not in body:
         return [f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
@@ -295,9 +325,6 @@ def _(root: str) -> list[str]:
     content = read_file(root, os.path.join(VIEWS, "PrefixSetupView.swift"))
     if content is None:
         infra("required contract missing: PrefixSetupView.swift")
-    if "static func production" not in content:
-        return [f"{os.path.join(VIEWS, 'PrefixSetupView.swift')}: "
-                "PrefixInspectAction.production missing"]
     body = required_body(content, "static func production",
                          "PrefixInspectAction.production")
     count = body.count("inspectCanonicalPrefix")
@@ -329,12 +356,9 @@ def _(root: str) -> list[str]:
     body = required_body(content, "diagnosticsPageView",
                          "UltimateSetupView.diagnosticsPageView")
     out = []
-    if "InstallerNavigationFooter" not in body:
+    if "InstallerNavigationFooter" not in body and "canonicalNavigationFooter" not in body:
         out.append(f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
-                   "diagnostics page lacks InstallerNavigationFooter in its own body")
-    if "coordinator.send" not in body:
-        out.append(f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
-                   "diagnostics page lacks coordinator.send callback")
+                   "diagnostics page lacks a canonical navigation footer in its own body")
     if re.search(r"coordinator\.(currentPage|state)\s*=", body):
         out.append(f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
                    "diagnostics page mutates coordinator page/state directly")
@@ -363,6 +387,65 @@ def _(root: str) -> list[str]:
     return out
 
 
+@guard("surface ignores navigation capability")
+def _(root: str) -> list[str]:
+    """All six surfaces must gate their navigation on the presentation.
+
+    Each surface's navigation body must either use the shared production
+    helper `canonicalNavigationFooter(...)` or satisfy all three points:
+    presentation.hasCanonicalNavigation + presentation.footerPage +
+    coordinator.send(intent). Scoped per surface body — a single
+    hasCanonicalNavigation anywhere in UltimateSetupView.swift does not
+    satisfy the diagnostics surface.
+    """
+    surfaces = [
+        ("RuntimeSetupView.swift", "var navigationButtons", "runtime"),
+        ("PrefixSetupView.swift", "var navigationButtons", "environment"),
+        ("SteamSetupView.swift", "var navigationButtons", "steam"),
+        ("CloverPitLaunchView.swift", "var navigationButtons", "cloverPit"),
+        ("UltimateSetupView.swift", "var diagnosticsPageView", "diagnostics"),
+    ]
+    out = []
+    for fname, body_needle, surface in surfaces:
+        content = read_file(root, os.path.join(VIEWS, fname))
+        if content is None:
+            infra(f"required contract missing: {fname}")
+        body = optional_body(content, body_needle)
+        if body is None:
+            out.append(f"{os.path.join(VIEWS, fname)}: {surface} surface has "
+                       "no navigation body consuming the capability")
+            continue
+        uses_helper = "canonicalNavigationFooter(" in body
+        three_points = all(t in body for t in (
+            "presentation.hasCanonicalNavigation",
+            "presentation.footerPage",
+            "coordinator.send",
+        ))
+        if not uses_helper and not three_points:
+            out.append(f"{os.path.join(VIEWS, fname)}: {surface} surface "
+                       "ignores the navigation capability")
+    return out
+
+
+@guard("shared footer helper ignores navigation capability")
+def _(root: str) -> list[str]:
+    out = []
+    for path in iter_swift_files(root, VIEWS):
+        content = read_file(root, os.path.relpath(path, root))
+        if content is None:
+            continue
+        if "func canonicalNavigationFooter" not in content:
+            continue
+        body = required_body(content, "func canonicalNavigationFooter",
+                             "canonicalNavigationFooter helper")
+        missing = [t for t in (
+            "hasCanonicalNavigation", "presentation.footerPage",
+            "coordinator.send", "InstallerNavigationFooter") if t not in body]
+        if missing:
+            out.append(f"{path}: shared footer helper missing {missing}")
+    return out
+
+
 @guard("canonicalPrefixEvidenceValid semantics incomplete")
 def _(root: str) -> list[str]:
     content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
@@ -370,20 +453,35 @@ def _(root: str) -> list[str]:
         infra("required contract missing: UltimateSetupCoordinator.swift")
     body = required_body(content, "var canonicalPrefixEvidenceValid",
                          "UltimateSetupCoordinator.canonicalPrefixEvidenceValid")
-    required_tokens = ["prefixLayout", "prefixInspection", "isValid",
-                       "canonicalURL(inspection.prefixURL)",
-                       "canonicalURL(layout.root)", "=="]
-    missing = [t for t in required_tokens if t not in body]
-    if missing:
-        return [f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                f"canonicalPrefixEvidenceValid missing {missing}"]
-    # canonicalURL must canonicalize BOTH sides.
+    norm = " ".join(body.split())
+    out = []
+    required_tokens = [
+        ("let layout = prefixLayout", "layout binding"),
+        ("let inspection = prefixInspection", "inspection binding"),
+        ("inspection.isValid", "inspection.isValid check"),
+        ("return false", "failure return false"),
+    ]
+    for token, what in required_tokens:
+        if token not in norm:
+            out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                       f"canonicalPrefixEvidenceValid missing {what}")
+    success_return = "return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)"
+    if success_return not in norm:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   "success return is not exactly "
+                   "canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)")
+    elif norm.count(success_return) != 1:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   f"{norm.count(success_return)} success returns (must be exactly 1)")
+    # canonicalURL(_:) must apply both canonicalizations to the input URL.
     cu_body = required_body(content, "func canonicalURL",
                             "UltimateSetupCoordinator.canonicalURL")
-    if "standardizedFileURL" not in cu_body or "resolvingSymlinksInPath" not in cu_body:
-        return [f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                "canonicalURL must use standardizedFileURL and resolvingSymlinksInPath"]
-    return []
+    cu_norm = " ".join(cu_body.split())
+    if "url.standardizedFileURL.resolvingSymlinksInPath()" not in cu_norm:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   "canonicalURL must return url.standardizedFileURL."
+                   "resolvingSymlinksInPath()")
+    return out
 
 
 @guard("prefix acquisition branch evidence ordering violation")
@@ -391,10 +489,7 @@ def _(root: str) -> list[str]:
     content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
     if content is None:
         infra("required contract missing: UltimateSetupCoordinator.swift")
-    body = required_body(content, "func createPrefix",
-                         "UltimateSetupCoordinator.createPrefix")
     out = []
-    # The production router must carry the matching source per branch.
     if "func establishExistingPrefixAcquisition" not in content:
         out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
                    "production acquisition router missing")
@@ -403,37 +498,48 @@ def _(root: str) -> list[str]:
             content, "func establishExistingPrefixAcquisition",
             "UltimateSetupCoordinator.establishExistingPrefixAcquisition"
         )
-        for src in (".existingCanonical", ".adoptedSteam"):
-            if f"source: {src}" not in router_body:
-                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                           f"acquisition router branch {src} lacks matching evidence")
-        # The SELECTED layout must be the layout passed to the helper —
-        # a mismatched argument means evidence binds a different prefix.
-        for m in re.finditer(r"if\s+let\s+(\w+)\s*=\s*(validatedLayout|adoptedLayout)",
-                             router_body):
+        # Branch-local analysis: each branch's evidence call must use the
+        # SELECTED variable with its MATCHING source, BEFORE the branch return.
+        # Tokens from other branches or comments never satisfy a branch.
+        for m in re.finditer(
+            r"if\s+let\s+(\w+)\s*=\s*(validatedLayout|adoptedLayout)", router_body):
             branch_var = m.group(1)
+            source_kind = m.group(2)
+            expected_source = ".existingCanonical" if source_kind == "validatedLayout" \
+                else ".adoptedSteam"
             rest = router_body[m.end():]
-            em = re.search(r"establishPrefixEvidence\(\s*for:\s*([^,\s]+)", rest)
+            return_pos = rest.find("return")
+            branch_head = rest[:return_pos] if return_pos >= 0 else rest
+            em = re.search(r"establishPrefixEvidence\(\s*for:\s*([^,\s]+)", branch_head)
             if not em:
                 out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
                            f"router branch {branch_var} never establishes evidence")
-            elif em.group(1) != branch_var:
+                continue
+            if em.group(1) != branch_var:
                 out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
                            f"router branch {branch_var} passes layout "
                            f"'{em.group(1)}' instead of the selected layout")
-    # Router call must precede the Steam-ready early return in createPrefix.
-    pos_router = body.find("establishExistingPrefixAcquisition")
-    pos_ready = body.find("state = .steamReady")
-    if pos_ready >= 0 and (pos_router < 0 or pos_router > pos_ready):
+            if f"source: {expected_source}" not in branch_head:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           f"router branch {branch_var} lacks source "
+                           f"{expected_source} before its return")
+            if return_pos >= 0 and em.start() > return_pos:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           f"router branch {branch_var} establishes evidence "
+                           "after its return")
+    # Newly-initialized path: evidence for the ACTUAL new layout before
+    # the prefixReady state change.
+    body = required_body(content, "func createPrefix",
+                         "UltimateSetupCoordinator.createPrefix")
+    new_call = re.search(
+        r"establishPrefixEvidence\(\s*for:\s*layout\s*,\s*source:\s*\.newlyInitialized",
+        body)
+    if not new_call:
         out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                   "existing/adopted evidence not established before Steam-ready return")
-    # Newly-initialized evidence must precede the prefixReady state change.
-    if "source: .newlyInitialized" not in body:
-        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                   "createPrefix branch .newlyInitialized lacks evidence establishment")
-    pos_new = body.find("source: .newlyInitialized")
+                   "newlyInitialized path lacks establishPrefixEvidence(for: layout, "
+                   "source: .newlyInitialized)")
     pos_ready2 = body.find("state = .prefixReady")
-    if pos_new >= 0 and pos_ready2 >= 0 and pos_new > pos_ready2:
+    if new_call and pos_ready2 >= 0 and new_call.start() > pos_ready2:
         out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
                    "newlyInitialized evidence established after prefixReady")
     return out
@@ -466,6 +572,14 @@ def scan(root: str) -> list[str]:
         for tok in tokens:
             if tok not in content:
                 infra(f"required contract missing: {rel} (no '{tok}')")
+    # 1) Required bodies — missing or unbalanced body is exit 2.
+    for rel_dir, fname, needles in REQUIRED_BODIES:
+        rel = os.path.join(rel_dir, fname)
+        content = read_file(root, rel)
+        if content is None:
+            infra(f"required contract missing: {rel}")
+        for needle in needles:
+            required_body(content, needle, rel)
 
     violations: list[str] = []
     for label, fn in GUARDS:

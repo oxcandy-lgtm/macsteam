@@ -292,9 +292,9 @@ run_audit_navguard() {
     fi
 }
 
-# Seed the six required contracts (clean stubs). Each violation fixture seeds
+# Seed the required contracts (clean stubs). Each violation fixture seeds
 # these first, then overwrites its target file with the violating content.
-# Required-contract absence is exit 2, never clean.
+# Required-contract absence / body absence / unbalanced body → exit 2.
 seed_required_files() {
     local repo="$1"
     add_file "$repo" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
@@ -307,29 +307,32 @@ struct UltimatePageResolver {
         default: return nil
         }
     }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
     static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
         UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
     }
 }
+
 '
     add_file "$repo" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
     var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
     @ViewBuilder
     var content: some View {
         switch presentation.contentKind {
-        case .steamInstaller: EmptyView()
-        case .steamClient: EmptyView()
+        case .runtime: EmptyView()
         default: EmptyView()
         }
     }
-    var pageTitle: String { "Step \\(presentation.stepNumber) — \\(presentation.title)" }
     var diagnosticsPageView: some View {
-        if presentation.hasCanonicalNavigation {
-            InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
-        }
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
     }
 }
+
 '
     add_file "$repo" "Sources/MacSteam/Views/PrefixSetupView.swift" '
 struct PrefixInspectAction {
@@ -339,29 +342,49 @@ struct PrefixInspectAction {
     }
 }
 struct PrefixSetupView: View {
-    let coordinator: UltimateSetupCoordinator
-    var presentation: UltimatePagePresentation
-    var inspectAction: PrefixInspectAction
-    init(coordinator: UltimateSetupCoordinator, presentation: UltimatePagePresentation) {
-        self.coordinator = coordinator
-        self.presentation = presentation
-        self.inspectAction = .production(coordinator: coordinator)
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
     }
     func inspectPrefix() {
         Task { await inspectAction.run() }
     }
-    var body: some View {
-        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
-    }
 }
+
 '
     add_file "$repo" "Sources/MacSteam/Views/SteamSetupView.swift" '
 struct SteamSetupView: View {
     var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .steamInstaller)
-    var body: some View {
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
+}
+
+'
+    add_file "$repo" "Sources/MacSteam/Views/RuntimeSetupView.swift" '
+struct RuntimeSetupView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .runtime)
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
+}
+
+'
+    add_file "$repo" "Sources/MacSteam/Views/CloverPitLaunchView.swift" '
+struct CloverPitLaunchView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .cloverPit)
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
+}
+
+'
+    add_file "$repo" "Sources/MacSteam/Views/CanonicalNavigationFooter.swift" '
+func canonicalNavigationFooter(presentation: UltimatePagePresentation, coordinator: UltimateSetupCoordinator) -> some View {
+    if presentation.hasCanonicalNavigation {
         InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
     }
 }
+
 '
     add_file "$repo" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
 final class UltimateSetupCoordinator {
@@ -397,6 +420,7 @@ final class UltimateSetupCoordinator {
         state = .prefixReady
     }
 }
+
 '
     add_file "$repo" "Sources/MacSteam/Prefix/PrefixInspection.swift" '
 protocol PrefixInspecting { func inspect(url: URL) -> PrefixInspection }
@@ -421,6 +445,9 @@ mk_repo "required_file_missing"
 add_file "required_file_missing" "Sources/MacSteam/Views/UltimatePageResolver.swift" 'struct UltimatePageResolver {}'
 add_file "required_file_missing" "Sources/MacSteam/Views/PrefixSetupView.swift" 'struct PrefixSetupView {}'
 add_file "required_file_missing" "Sources/MacSteam/Views/SteamSetupView.swift" 'struct SteamSetupView {}'
+add_file "required_file_missing" "Sources/MacSteam/Views/RuntimeSetupView.swift" 'struct RuntimeSetupView {}'
+add_file "required_file_missing" "Sources/MacSteam/Views/CloverPitLaunchView.swift" 'struct CloverPitLaunchView {}'
+add_file "required_file_missing" "Sources/MacSteam/Views/CanonicalNavigationFooter.swift" 'func canonicalNavigationFooter() {}'
 add_file "required_file_missing" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" 'final class UltimateSetupCoordinator {}'
 add_file "required_file_missing" "Sources/MacSteam/Prefix/PrefixInspection.swift" 'protocol PrefixInspecting {}'
 run_audit_navguard "required_file_missing" "required file missing" 2 "required contract missing"
@@ -430,6 +457,7 @@ mk_repo "required_function_missing"
 seed_required_files "required_function_missing"
 add_file "required_function_missing" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
 struct UltimatePageResolver {
+    static func contentKind(for page: InstallerPage) -> PageContentKind { .runtime }
     static func steamMode(for page: InstallerPage) -> SteamSetupMode? {
         switch page {
         case .steamInstaller: return .installer
@@ -437,19 +465,48 @@ struct UltimatePageResolver {
         default: return nil
         }
     }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
 }
 '
 run_audit_navguard "required_function_missing" "required function missing" 2 "required contract missing"
+
+# required body missing (progressIndicator) → 2 (infrastructure)
+mk_repo "required_body_missing_progressIndicator"
+seed_required_files "required_body_missing_progressIndicator"
+add_file "required_body_missing_progressIndicator" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
+    var diagnosticsPageView: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
+}
+'
+run_audit_navguard "required_body_missing_progressIndicator" "required body missing progressIndicator" 2 "required contract missing"
 
 # root dispatch on coordinator.state → 1
 mk_repo "nav_root_state"
 seed_required_files "nav_root_state"
 add_file "nav_root_state" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
-    var diagnosticsPageView: some View { Text("Diag") }
+    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
     @ViewBuilder
     var content: some View {
         switch coordinator.state { default: EmptyView() }
+    }
+    var diagnosticsPageView: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
     }
 }
 '
@@ -461,13 +518,19 @@ seed_required_files "nav_merged_steam"
 add_file "nav_merged_steam" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
     var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
-    var diagnosticsPageView: some View { Text("Diag") }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
     @ViewBuilder
     var content: some View {
         switch presentation.contentKind {
         case .steamInstaller, .steamClient: EmptyView()
         default: EmptyView()
         }
+    }
+    var diagnosticsPageView: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
     }
 }
 '
@@ -479,8 +542,10 @@ seed_required_files "nav_recheck_direct"
 add_file "nav_recheck_direct" "Sources/MacSteam/Views/SteamSetupView.swift" '
 struct SteamSetupView: View {
     var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .steamInstaller)
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
     var body: some View {
-        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
         Button("Next") { Task { await coordinator.recheckCloverPit() } }
     }
 }
@@ -493,8 +558,10 @@ seed_required_files "nav_try_swallow"
 add_file "nav_try_swallow" "Sources/MacSteam/Views/SteamSetupView.swift" '
 struct SteamSetupView: View {
     var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .steamInstaller)
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
     var body: some View {
-        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
         Button("Next") { Task { try? await coordinator.stopSteamSetupSessionIfNeeded() } }
     }
 }
@@ -514,10 +581,10 @@ struct PrefixInspectAction {
 struct PrefixSetupView: View {
     var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .environment)
     private let prefixInspector = PrefixInspector()
-    func inspectPrefix() { Task { await inspectAction.run() } }
-    var body: some View {
-        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
     }
+    func inspectPrefix() { Task { await inspectAction.run() } }
 }
 '
 run_audit_navguard "nav_local_inspector" "local prefix inspector" 1 "local PrefixInspector authority in PrefixSetupView"
@@ -528,6 +595,17 @@ seed_required_files "nav_unstable_log"
 add_file "nav_unstable_log" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
     var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
     var logLines: [String] { [] }
     var diagnosticsPageView: some View { Text("Diag") }
     var body: some View {
@@ -543,6 +621,17 @@ seed_required_files "nav_diag_footer_missing"
 add_file "nav_diag_footer_missing" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
     var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
     var diagnosticsPageView: some View { Text("Diagnostics") }
 }
 '
@@ -557,12 +646,18 @@ final class UltimateSetupCoordinator {
         guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
         return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
     }
-    func canonicalURL(_ url: URL) -> URL { url.standardizedFileURL.resolvingSymlinksInPath() }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
     func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
         if let existing = validatedLayout {
             establishPrefixEvidence(for: existing, source: .existingCanonical)
             return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
         }
         return nil
     }
@@ -585,7 +680,21 @@ mk_repo "view_currentPage_write"
 seed_required_files "view_currentPage_write"
 add_file "view_currentPage_write" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
-    var diagnosticsPageView: some View { Text("Diag") }
+    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
+    var diagnosticsPageView: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
     func jump() { coordinator.currentPage = .diagnostics }
 }
 '
@@ -603,6 +712,9 @@ struct PrefixInspectAction {
 }
 struct PrefixSetupView: View {
     @State private var inspection: PrefixInspection?
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
     func inspectPrefix() { Task { await inspectAction.run() } }
 }
 '
@@ -614,6 +726,17 @@ seed_required_files "footer_elsewhere_not_in_diagnostics"
 add_file "footer_elsewhere_not_in_diagnostics" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
     var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
     var body: some View {
         VStack {
             InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { _ in })
@@ -630,14 +753,32 @@ mk_repo "environment_symbol_elsewhere_but_gate_unbound"
 seed_required_files "environment_symbol_elsewhere_but_gate_unbound"
 add_file "environment_symbol_elsewhere_but_gate_unbound" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
 final class UltimateSetupCoordinator {
-    var canonicalPrefixEvidenceValid: Bool { true }
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
     func computePageCompletion() -> [String: Bool] {
         var completion: [String: Bool] = [:]
         completion[.environment] = prefixInspection?.isValid == true
         return completion
     }
     func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
         state = .prefixReady
     }
@@ -645,7 +786,8 @@ final class UltimateSetupCoordinator {
 '
 run_audit_navguard "environment_symbol_elsewhere_but_gate_unbound" "environment symbol elsewhere but gate unbound" 1 "environment completion not bound to canonicalPrefixEvidenceValid"
 
-# both steam modes map to installer → 1
+
+# steam both modes installer → 1
 mk_repo "steam_both_modes_installer"
 seed_required_files "steam_both_modes_installer"
 add_file "steam_both_modes_installer" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
@@ -655,9 +797,9 @@ struct UltimatePageResolver {
         switch page {
         case .steamInstaller: return .installer
         case .steamClient: return .installer
-        default: return nil
         }
     }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
     static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
         UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
     }
@@ -665,7 +807,7 @@ struct UltimatePageResolver {
 '
 run_audit_navguard "steam_both_modes_installer" "steam both modes installer" 1 "steamMode resolver case mapping invalid"
 
-# steam client resolves to installer mode → 1
+# steam resolver client maps installer → 1
 mk_repo "steam_resolver_client_maps_installer"
 seed_required_files "steam_resolver_client_maps_installer"
 add_file "steam_resolver_client_maps_installer" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
@@ -675,9 +817,9 @@ struct UltimatePageResolver {
         switch page {
         case .steamInstaller: return .installer
         case .steamClient: return .installer
-        default: return nil
         }
     }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
     static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
         UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
     }
@@ -695,9 +837,9 @@ struct UltimatePageResolver {
         switch page {
         case .steamInstaller: return .client
         case .steamClient: return .installer
-        default: return nil
         }
     }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
     static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
         UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
     }
@@ -705,7 +847,7 @@ struct UltimatePageResolver {
 '
 run_audit_navguard "steam_mapping_swapped" "steam mapping swapped" 1 "steamMode resolver case mapping invalid"
 
-# steam mapping duplicated (both installer) → 1
+# steam mapping duplicated → 1
 mk_repo "steam_mapping_duplicated"
 seed_required_files "steam_mapping_duplicated"
 add_file "steam_mapping_duplicated" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
@@ -715,9 +857,9 @@ struct UltimatePageResolver {
         switch page {
         case .steamInstaller: return .installer
         case .steamClient: return .installer
-        default: return nil
         }
     }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
     static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
         UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
     }
@@ -725,7 +867,7 @@ struct UltimatePageResolver {
 '
 run_audit_navguard "steam_mapping_duplicated" "steam mapping duplicated" 1 "steamMode resolver case mapping invalid"
 
-# steam default maps non-nil → 1
+# steam default non-nil → 1
 mk_repo "steam_default_non_nil"
 seed_required_files "steam_default_non_nil"
 add_file "steam_default_non_nil" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
@@ -738,6 +880,7 @@ struct UltimatePageResolver {
         default: return .installer
         }
     }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
     static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
         UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
     }
@@ -745,7 +888,47 @@ struct UltimatePageResolver {
 '
 run_audit_navguard "steam_default_non_nil" "steam default non-nil" 1 "steamMode resolver case mapping invalid"
 
-# Inspect action bypasses the coordinator lane → 1
+# steam mapping both client → 1
+mk_repo "steam_mapping_both_client"
+seed_required_files "steam_mapping_both_client"
+add_file "steam_mapping_both_client" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
+struct UltimatePageResolver {
+    static func contentKind(for page: InstallerPage) -> PageContentKind { .runtime }
+    static func steamMode(for page: InstallerPage) -> SteamSetupMode? {
+        switch page {
+        case .steamInstaller: return .client
+        case .steamClient: return .client
+        }
+    }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
+    static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
+        UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
+    }
+}
+'
+run_audit_navguard "steam_mapping_both_client" "steam mapping both client" 1 "steamMode resolver case mapping invalid"
+
+# steam mapping nested return → 1
+mk_repo "steam_mapping_nested_return"
+seed_required_files "steam_mapping_nested_return"
+add_file "steam_mapping_nested_return" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
+struct UltimatePageResolver {
+    static func contentKind(for page: InstallerPage) -> PageContentKind { .runtime }
+    static func steamMode(for page: InstallerPage) -> SteamSetupMode? {
+        switch page {
+        case .steamInstaller: if flag { return .installer } else { return .client }
+        case .steamClient: return .client
+        }
+    }
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool { true }
+    static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
+        UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
+    }
+}
+'
+run_audit_navguard "steam_mapping_nested_return" "steam mapping nested return" 1 "steamMode resolver case mapping invalid"
+
+# Inspect action type present but button bypasses the lane → 1
 mk_repo "prefix_inspect_action_bypasses_coordinator"
 seed_required_files "prefix_inspect_action_bypasses_coordinator"
 add_file "prefix_inspect_action_bypasses_coordinator" "Sources/MacSteam/Views/PrefixSetupView.swift" '
@@ -756,6 +939,10 @@ struct PrefixInspectAction {
     }
 }
 struct PrefixSetupView: View {
+    var inspectAction: PrefixInspectAction = .production(coordinator: UltimateSetupCoordinator())
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
     func inspectPrefix() {
         Task { await coordinator.inspectCanonicalPrefix() }
     }
@@ -763,7 +950,7 @@ struct PrefixSetupView: View {
 '
 run_audit_navguard "prefix_inspect_action_bypasses_coordinator" "inspect bypasses coordinator" 1 "prefix Inspect button bypasses the production lane"
 
-# Inspect type present but button path bypasses the lane → 1
+# Inspect type present but the Button path bypasses the lane → 1
 mk_repo "inspect_type_present_but_button_bypasses"
 seed_required_files "inspect_type_present_but_button_bypasses"
 add_file "inspect_type_present_but_button_bypasses" "Sources/MacSteam/Views/PrefixSetupView.swift" '
@@ -775,12 +962,37 @@ struct PrefixInspectAction {
 }
 struct PrefixSetupView: View {
     var inspectAction: PrefixInspectAction = .production(coordinator: UltimateSetupCoordinator())
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
     func inspectPrefix() {
         Task { await coordinator.inspectCanonicalPrefix() }
     }
 }
 '
 run_audit_navguard "inspect_type_present_but_button_bypasses" "inspect type present but button bypasses" 1 "prefix Inspect button bypasses the production lane"
+
+# button calls a DIFFERENT coordinator method directly → 1
+mk_repo "button_calls_other_coordinator_method"
+seed_required_files "button_calls_other_coordinator_method"
+add_file "button_calls_other_coordinator_method" "Sources/MacSteam/Views/PrefixSetupView.swift" '
+struct PrefixInspectAction {
+    let run: () async -> Void
+    static func production(coordinator: UltimateSetupCoordinator) -> PrefixInspectAction {
+        PrefixInspectAction(run: { await coordinator.inspectCanonicalPrefix() })
+    }
+}
+struct PrefixSetupView: View {
+    var inspectAction: PrefixInspectAction = .production(coordinator: UltimateSetupCoordinator())
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
+    func inspectPrefix() {
+        Task { await coordinator.recheckCloverPit() }
+    }
+}
+'
+run_audit_navguard "button_calls_other_coordinator_method" "button calls other coordinator method" 1 "prefix Inspect button bypasses the production lane"
 
 # PrefixInspectAction.production calls zero times → 1
 mk_repo "inspect_production_calls_zero"
@@ -794,6 +1006,9 @@ struct PrefixInspectAction {
 }
 struct PrefixSetupView: View {
     var inspectAction: PrefixInspectAction = .production(coordinator: UltimateSetupCoordinator())
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
     func inspectPrefix() {
         Task { await inspectAction.run() }
     }
@@ -816,6 +1031,9 @@ struct PrefixInspectAction {
 }
 struct PrefixSetupView: View {
     var inspectAction: PrefixInspectAction = .production(coordinator: UltimateSetupCoordinator())
+    var navigationButtons: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
     func inspectPrefix() {
         Task { await inspectAction.run() }
     }
@@ -829,13 +1047,28 @@ seed_required_files "canonical_property_always_true"
 add_file "canonical_property_always_true" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
 final class UltimateSetupCoordinator {
     var canonicalPrefixEvidenceValid: Bool { true }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
     func computePageCompletion() -> [String: Bool] {
         var completion: [String: Bool] = [:]
         completion[.environment] = canonicalPrefixEvidenceValid
         return completion
     }
     func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
         state = .prefixReady
     }
@@ -852,14 +1085,28 @@ final class UltimateSetupCoordinator {
         guard let layout = prefixLayout, let inspection = prefixInspection else { return false }
         return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
     }
-    func canonicalURL(_ url: URL) -> URL { url.standardizedFileURL.resolvingSymlinksInPath() }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
     func computePageCompletion() -> [String: Bool] {
         var completion: [String: Bool] = [:]
         completion[.environment] = canonicalPrefixEvidenceValid
         return completion
     }
     func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
         state = .prefixReady
     }
@@ -876,13 +1123,28 @@ final class UltimateSetupCoordinator {
         guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
         return inspection.prefixURL == layout.root
     }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
     func computePageCompletion() -> [String: Bool] {
         var completion: [String: Bool] = [:]
         completion[.environment] = canonicalPrefixEvidenceValid
         return completion
     }
     func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
         state = .prefixReady
     }
@@ -899,20 +1161,74 @@ final class UltimateSetupCoordinator {
         guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
         return canonicalURL(layout.root) == canonicalURL(layout.root)
     }
-    func canonicalURL(_ url: URL) -> URL { url.standardizedFileURL.resolvingSymlinksInPath() }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
     func computePageCompletion() -> [String: Bool] {
         var completion: [String: Bool] = [:]
         completion[.environment] = canonicalPrefixEvidenceValid
         return completion
     }
     func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
         state = .prefixReady
     }
 }
 '
 run_audit_navguard "canonical_property_same_side_comparison" "canonical property same-side comparison" 1 "canonicalPrefixEvidenceValid semantics incomplete"
+
+# canonical tokens present but terminal return same-side → 1
+mk_repo "canonical_tokens_present_but_terminal_return_same_side"
+seed_required_files "canonical_tokens_present_but_terminal_return_same_side"
+add_file "canonical_tokens_present_but_terminal_return_same_side" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        let evidence = canonicalURL(inspection.prefixURL)
+        let root = canonicalURL(layout.root)
+        return root == root
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "canonical_tokens_present_but_terminal_return_same_side" "canonical tokens present but terminal return same side" 1 "canonicalPrefixEvidenceValid semantics incomplete"
 
 # existing branch token elsewhere but skips evidence → 1
 mk_repo "existing_branch_token_elsewhere_but_skips_evidence"
@@ -923,15 +1239,27 @@ final class UltimateSetupCoordinator {
         guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
         return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
     }
-    func canonicalURL(_ url: URL) -> URL { url.standardizedFileURL.resolvingSymlinksInPath() }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
-    func inspectCanonicalPrefix() { _ = source == .existingCanonical }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
     func computePageCompletion() -> [String: Bool] {
         var completion: [String: Bool] = [:]
         completion[.environment] = canonicalPrefixEvidenceValid
         return completion
     }
     func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
         state = .prefixReady
     }
@@ -948,9 +1276,15 @@ final class UltimateSetupCoordinator {
         guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
         return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
     }
-    func canonicalURL(_ url: URL) -> URL { url.standardizedFileURL.resolvingSymlinksInPath() }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
     func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
         if let adopted = adoptedLayout {
             establishPrefixEvidence(for: adopted, source: .existingCanonical)
             return (adopted, .existingCanonical)
@@ -971,6 +1305,194 @@ final class UltimateSetupCoordinator {
 '
 run_audit_navguard "adopted_branch_wrong_source" "adopted branch wrong source" 1 "prefix acquisition branch evidence ordering violation"
 
+# acquisition sources swapped between branches → 1
+mk_repo "acquisition_sources_swapped"
+seed_required_files "acquisition_sources_swapped"
+add_file "acquisition_sources_swapped" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .adoptedSteam)
+            return (existing, .adoptedSteam)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .existingCanonical)
+            return (adopted, .existingCanonical)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "acquisition_sources_swapped" "acquisition sources swapped" 1 "prefix acquisition branch evidence ordering violation"
+
+# existing source token only in adopted branch → 1
+mk_repo "existing_source_token_only_in_adopted_branch"
+seed_required_files "existing_source_token_only_in_adopted_branch"
+add_file "existing_source_token_only_in_adopted_branch" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .existingCanonical)
+            return (adopted, .existingCanonical)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "existing_source_token_only_in_adopted_branch" "existing source token only in adopted branch" 1 "prefix acquisition branch evidence ordering violation"
+
+# adopted source token only in existing branch → 1
+mk_repo "adopted_source_token_only_in_existing_branch"
+seed_required_files "adopted_source_token_only_in_existing_branch"
+add_file "adopted_source_token_only_in_existing_branch" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: existing, source: .adoptedSteam)
+            return (existing, .adoptedSteam)
+        }
+        if let adopted = adoptedLayout {
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "adopted_source_token_only_in_existing_branch" "adopted source token only in existing branch" 1 "prefix acquisition branch evidence ordering violation"
+
+# branch evidence after return → 1
+mk_repo "branch_evidence_after_return"
+seed_required_files "branch_evidence_after_return"
+add_file "branch_evidence_after_return" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            return (existing, .existingCanonical)
+            establishPrefixEvidence(for: existing, source: .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "branch_evidence_after_return" "branch evidence after return" 1 "prefix acquisition branch evidence ordering violation"
+
+# selected layout mismatch helper argument → 1
+mk_repo "selected_layout_mismatch_helper_argument"
+seed_required_files "selected_layout_mismatch_helper_argument"
+add_file "selected_layout_mismatch_helper_argument" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            establishPrefixEvidence(for: otherLayout, source: .existingCanonical)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+'
+run_audit_navguard "selected_layout_mismatch_helper_argument" "selected layout mismatch helper argument" 1 "prefix acquisition branch evidence ordering violation"
+
 # new branch evidence after return → 1
 mk_repo "new_branch_evidence_after_return"
 seed_required_files "new_branch_evidence_after_return"
@@ -980,7 +1502,9 @@ final class UltimateSetupCoordinator {
         guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
         return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
     }
-    func canonicalURL(_ url: URL) -> URL { url.standardizedFileURL.resolvingSymlinksInPath() }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
     func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
     func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
         if let existing = validatedLayout {
@@ -1014,12 +1538,70 @@ add_file "presentation_declared_but_title_bypasses" "Sources/MacSteam/Views/Ulti
 struct UltimateSetupView: View {
     var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
     var pageTitle: String { UltimatePageResolver.title(for: coordinator.currentPage) }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
     var diagnosticsPageView: some View {
-        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
     }
 }
 '
 run_audit_navguard "presentation_declared_but_title_bypasses" "presentation declared but title bypasses" 1 "pageTitle must derive from presentation"
+
+# presentation declared but step bypasses → 1
+mk_repo "presentation_declared_but_step_bypasses"
+seed_required_files "presentation_declared_but_step_bypasses"
+add_file "presentation_declared_but_step_bypasses" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(UltimatePageResolver.stepNumber(for: coordinator.currentPage))") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
+    var diagnosticsPageView: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
+}
+'
+run_audit_navguard "presentation_declared_but_step_bypasses" "presentation declared but step bypasses" 1 "step indicator must derive from presentation.stepNumber"
+
+# presentation declared but content bypasses → 1
+mk_repo "presentation_declared_but_content_bypasses"
+seed_required_files "presentation_declared_but_content_bypasses"
+add_file "presentation_declared_but_content_bypasses" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
+    var diagnosticsPageView: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
+    }
+}
+'
+run_audit_navguard "presentation_declared_but_content_bypasses" "presentation declared but content bypasses" 1 "content must dispatch on presentation.contentKind"
 
 # presentation declared but footer bypasses → 1
 mk_repo "presentation_declared_but_footer_bypasses"
@@ -1028,6 +1610,16 @@ add_file "presentation_declared_but_footer_bypasses" "Sources/MacSteam/Views/Ult
 struct UltimateSetupView: View {
     var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
     var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
     var diagnosticsPageView: some View {
         InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: coordinator.currentPage, onNavigate: { intent in await coordinator.send(intent) })
     }
@@ -1046,10 +1638,10 @@ struct PrefixInspectAction {
     }
 }
 struct PrefixSetupView: View {
-    func inspectPrefix() { Task { await inspectAction.run() } }
-    var body: some View {
+    var navigationButtons: some View {
         InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: .environment, onNavigate: { intent in await coordinator.send(intent) })
     }
+    func inspectPrefix() { Task { await inspectAction.run() } }
 }
 '
 run_audit_navguard "child_footer_hardcodes_page" "child footer hardcodes page" 1 "footer must derive from presentation.footerPage"
@@ -1059,22 +1651,66 @@ mk_repo "presentation_not_consumed_by_root"
 seed_required_files "presentation_not_consumed_by_root"
 add_file "presentation_not_consumed_by_root" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
-    var diagnosticsPageView: some View { Text("Diag") }
+    var presentation: String { "not the resolver descriptor" }
+    var pageTitle: String { "Step \\(presentation) — T" }
+    var progressIndicator: some View {
+        HStack { Text("\\(presentation)") }
+    }
     @ViewBuilder
     var content: some View {
-        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
-        case .runtime: EmptyView()
+        switch presentation {
+        case "x": EmptyView()
         default: EmptyView()
         }
+    }
+    var diagnosticsPageView: some View {
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
     }
 }
 '
 run_audit_navguard "presentation_not_consumed_by_root" "presentation not consumed" 1 "presentation descriptor not consumed by root view"
 
-# button calls a DIFFERENT coordinator method directly → 1
-mk_repo "button_calls_other_coordinator_method"
-seed_required_files "button_calls_other_coordinator_method"
-add_file "button_calls_other_coordinator_method" "Sources/MacSteam/Views/PrefixSetupView.swift" '
+# navigation capability ignored (diagnostics) → 1
+mk_repo "navigation_capability_ignored"
+seed_required_files "navigation_capability_ignored"
+add_file "navigation_capability_ignored" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
+    var progressIndicator: some View {
+        HStack { Text("\(presentation.stepNumber)") }
+    }
+    @ViewBuilder
+    var content: some View {
+        switch presentation.contentKind {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
+    var diagnosticsPageView: some View {
+        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
+    }
+}
+'
+run_audit_navguard "navigation_capability_ignored" "navigation capability ignored" 1 "surface ignores navigation capability"
+
+# runtime surface ignores capability → 1
+mk_repo "runtime_navigation_capability_ignored"
+seed_required_files "runtime_navigation_capability_ignored"
+add_file "runtime_navigation_capability_ignored" "Sources/MacSteam/Views/RuntimeSetupView.swift" '
+struct RuntimeSetupView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .runtime)
+    var navigationButtons: some View {
+        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
+    }
+}
+'
+run_audit_navguard "runtime_navigation_capability_ignored" "runtime capability ignored" 1 "surface ignores navigation capability"
+
+# environment surface ignores capability → 1
+mk_repo "environment_navigation_capability_ignored"
+seed_required_files "environment_navigation_capability_ignored"
+add_file "environment_navigation_capability_ignored" "Sources/MacSteam/Views/PrefixSetupView.swift" '
 struct PrefixInspectAction {
     let run: () async -> Void
     static func production(coordinator: UltimateSetupCoordinator) -> PrefixInspectAction {
@@ -1082,104 +1718,50 @@ struct PrefixInspectAction {
     }
 }
 struct PrefixSetupView: View {
-    func inspectPrefix() {
-        Task { await coordinator.recheckCloverPit() }
+    var navigationButtons: some View {
+        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
+    }
+    func inspectPrefix() { Task { await inspectAction.run() } }
+}
+'
+run_audit_navguard "environment_navigation_capability_ignored" "environment capability ignored" 1 "surface ignores navigation capability"
+
+# steam surface ignores capability → 1
+mk_repo "steam_navigation_capability_ignored"
+seed_required_files "steam_navigation_capability_ignored"
+add_file "steam_navigation_capability_ignored" "Sources/MacSteam/Views/SteamSetupView.swift" '
+struct SteamSetupView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .steamInstaller)
+    var navigationButtons: some View {
+        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
     }
 }
 '
-run_audit_navguard "button_calls_other_coordinator_method" "button calls other coordinator method" 1 "prefix Inspect button bypasses the production lane"
+run_audit_navguard "steam_navigation_capability_ignored" "steam capability ignored" 1 "surface ignores navigation capability"
 
-# selected layout != layout passed to the evidence helper → 1
-mk_repo "selected_layout_mismatch_helper_argument"
-seed_required_files "selected_layout_mismatch_helper_argument"
-add_file "selected_layout_mismatch_helper_argument" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
-final class UltimateSetupCoordinator {
-    var canonicalPrefixEvidenceValid: Bool {
-        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
-        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
-    }
-    func canonicalURL(_ url: URL) -> URL { url.standardizedFileURL.resolvingSymlinksInPath() }
-    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
-    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
-        if let existing = validatedLayout {
-            establishPrefixEvidence(for: otherLayout, source: .existingCanonical)
-            return (existing, .existingCanonical)
-        }
-        if let adopted = adoptedLayout {
-            establishPrefixEvidence(for: adopted, source: .adoptedSteam)
-            return (adopted, .adoptedSteam)
-        }
-        return nil
-    }
-    func computePageCompletion() -> [String: Bool] {
-        var completion: [String: Bool] = [:]
-        completion[.environment] = canonicalPrefixEvidenceValid
-        return completion
-    }
-    func createPrefix() {
-        _ = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil)
-        establishPrefixEvidence(for: layout, source: .newlyInitialized)
-        state = .prefixReady
+# cloverpit surface ignores capability → 1
+mk_repo "cloverpit_navigation_capability_ignored"
+seed_required_files "cloverpit_navigation_capability_ignored"
+add_file "cloverpit_navigation_capability_ignored" "Sources/MacSteam/Views/CloverPitLaunchView.swift" '
+struct CloverPitLaunchView: View {
+    var presentation: UltimatePagePresentation = UltimatePageResolver.presentation(for: .cloverPit)
+    var navigationButtons: some View {
+        InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
     }
 }
 '
-run_audit_navguard "selected_layout_mismatch_helper_argument" "selected layout mismatch helper argument" 1 "prefix acquisition branch evidence ordering violation"
+run_audit_navguard "cloverpit_navigation_capability_ignored" "cloverpit capability ignored" 1 "surface ignores navigation capability"
 
-# descriptor present but step from another authority → 1
-mk_repo "presentation_declared_but_step_bypasses"
-seed_required_files "presentation_declared_but_step_bypasses"
-add_file "presentation_declared_but_step_bypasses" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+# diagnostics surface ignores capability → 1
+mk_repo "diagnostics_navigation_capability_ignored"
+seed_required_files "diagnostics_navigation_capability_ignored"
+add_file "diagnostics_navigation_capability_ignored" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
     var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
-    @ViewBuilder
-    var content: some View {
-        switch presentation.contentKind {
-        case .runtime: EmptyView()
-        default: EmptyView()
-        }
-    }
-    var pageTitle: String { "Step \\(presentation.stepNumber) — \\(presentation.title)" }
+    var pageTitle: String { "Step \(presentation.stepNumber) — \(presentation.title)" }
     var progressIndicator: some View {
-        HStack { Text("\\(UltimatePageResolver.stepNumber(for: coordinator.currentPage))") }
+        HStack { Text("\(presentation.stepNumber)") }
     }
-    var diagnosticsPageView: some View {
-        if presentation.hasCanonicalNavigation {
-            InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
-        }
-    }
-}
-'
-run_audit_navguard "presentation_declared_but_step_bypasses" "presentation declared but step bypasses" 1 "step indicator must derive from presentation.stepNumber"
-
-# descriptor present but content from another authority → 1
-mk_repo "presentation_declared_but_content_bypasses"
-seed_required_files "presentation_declared_but_content_bypasses"
-add_file "presentation_declared_but_content_bypasses" "Sources/MacSteam/Views/UltimateSetupView.swift" '
-struct UltimateSetupView: View {
-    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
-    @ViewBuilder
-    var content: some View {
-        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
-        case .runtime: EmptyView()
-        default: EmptyView()
-        }
-    }
-    var pageTitle: String { "Step \\(presentation.stepNumber) — \\(presentation.title)" }
-    var diagnosticsPageView: some View {
-        if presentation.hasCanonicalNavigation {
-            InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
-        }
-    }
-}
-'
-run_audit_navguard "presentation_declared_but_content_bypasses" "presentation declared but content bypasses" 1 "content must dispatch on presentation.contentKind"
-
-# navigation capability ignored → 1
-mk_repo "navigation_capability_ignored"
-seed_required_files "navigation_capability_ignored"
-add_file "navigation_capability_ignored" "Sources/MacSteam/Views/UltimateSetupView.swift" '
-struct UltimateSetupView: View {
-    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
     @ViewBuilder
     var content: some View {
         switch presentation.contentKind {
@@ -1187,53 +1769,22 @@ struct UltimateSetupView: View {
         default: EmptyView()
         }
     }
-    var pageTitle: String { "Step \\(presentation.stepNumber) — \\(presentation.title)" }
     var diagnosticsPageView: some View {
         InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
     }
 }
 '
-run_audit_navguard "navigation_capability_ignored" "navigation capability ignored" 1 "navigation capability (hasCanonicalNavigation) ignored"
+run_audit_navguard "diagnostics_navigation_capability_ignored" "diagnostics capability ignored" 1 "surface ignores navigation capability"
 
-# both steam modes map to client → 1
-mk_repo "steam_mapping_both_client"
-seed_required_files "steam_mapping_both_client"
-add_file "steam_mapping_both_client" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
-struct UltimatePageResolver {
-    static func contentKind(for page: InstallerPage) -> PageContentKind { .runtime }
-    static func steamMode(for page: InstallerPage) -> SteamSetupMode? {
-        switch page {
-        case .steamInstaller: return .client
-        case .steamClient: return .client
-        default: return nil
-        }
-    }
-    static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
-        UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
-    }
+# shared footer helper ignores capability → 1
+mk_repo "shared_footer_helper_ignores_capability"
+seed_required_files "shared_footer_helper_ignores_capability"
+add_file "shared_footer_helper_ignores_capability" "Sources/MacSteam/Views/CanonicalNavigationFooter.swift" '
+func canonicalNavigationFooter(presentation: UltimatePagePresentation, coordinator: UltimateSetupCoordinator) -> some View {
+    InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: presentation.footerPage, onNavigate: { intent in await coordinator.send(intent) })
 }
 '
-run_audit_navguard "steam_mapping_both_client" "steam mapping both client" 1 "steamMode resolver case mapping invalid"
-
-# nested/unreachable return token → 1
-mk_repo "steam_mapping_nested_return"
-seed_required_files "steam_mapping_nested_return"
-add_file "steam_mapping_nested_return" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
-struct UltimatePageResolver {
-    static func contentKind(for page: InstallerPage) -> PageContentKind { .runtime }
-    static func steamMode(for page: InstallerPage) -> SteamSetupMode? {
-        switch page {
-        case .steamInstaller: if flag { return .installer } else { return .client }
-        case .steamClient: return .client
-        default: return nil
-        }
-    }
-    static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
-        UltimatePagePresentation(page: page, contentKind: .runtime, title: "T", stepNumber: 1, footerPage: page, steamMode: nil, hasCanonicalNavigation: true)
-    }
-}
-'
-run_audit_navguard "steam_mapping_nested_return" "steam mapping nested return" 1 "steamMode resolver case mapping invalid"
+run_audit_navguard "shared_footer_helper_ignores_capability" "shared footer helper ignores capability" 1 "shared footer helper ignores navigation capability"
 
 # ── Infrastructure failure ──
 # Infrastructure failure test (use fake git that exits 2)

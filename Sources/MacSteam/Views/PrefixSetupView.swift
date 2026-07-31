@@ -210,13 +210,7 @@ struct PrefixSetupView: View {
     }
 
     private var navigationButtons: some View {
-        InstallerNavigationFooter(
-            validator: DefaultInstallerNavigationValidator(),
-            currentPage: presentation.footerPage,
-            onNavigate: { intent in
-                await coordinator.send(intent)
-            }
-        )
+        canonicalNavigationFooter(presentation: presentation, coordinator: coordinator)
     }
 
     // MARK: - Actions
