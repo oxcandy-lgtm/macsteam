@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import SwiftUI
+import MacsTeamNavigationCore
 
 /// View for creating and inspecting the CloverPit Wine prefix
 /// environment.
 ///
-/// Uses ``PrefixManager`` to create the managed directory structure
-/// and ``PrefixInspector`` to validate the resulting environment.
+/// The coordinator (``UltimateSetupCoordinator``) creates the managed
+/// directory structure; ``PrefixInspector`` validates the resulting
+/// environment.
 struct PrefixSetupView: View {
     let coordinator: UltimateSetupCoordinator
 
-    @State private var prefixPath: String = ""
     @State private var inspection: PrefixInspection?
     @State private var isInspecting = false
 
-    private let prefixManager = PrefixManager()
     private let prefixInspector = PrefixInspector()
+
+    private var prefixPath: String {
+        coordinator.prefixLayout?.root.path ?? ""
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -24,6 +28,7 @@ struct PrefixSetupView: View {
             statusSection
             inspectionSection
             Spacer()
+            blockerBanner
             navigationButtons
         }
         .padding(24)
@@ -167,35 +172,32 @@ struct PrefixSetupView: View {
 
     // MARK: - Navigation
 
-    private var navigationButtons: some View {
-        HStack {
-            Button("Back") {
-                // TODO: navigate to runtime setup
-            }
-            .controlSize(.small)
-
-            Spacer()
-
-            Button("Next") {
-                // TODO: advance to Steam installer setup
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(inspection?.isValid != true)
+    @ViewBuilder
+    private var blockerBanner: some View {
+        if let result = coordinator.lastNavigationResult, !result.accepted, let blocker = result.blocker {
+            Label(blocker.message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
+    }
+
+    private var navigationButtons: some View {
+        InstallerNavigationFooter(
+            validator: DefaultInstallerNavigationValidator(),
+            currentPage: .environment,
+            onNavigate: { intent in
+                await coordinator.send(intent)
+            }
+        )
     }
 
     // MARK: - Actions
 
     private func inspectPrefix() {
-        guard !prefixPath.isEmpty else { return }
+        guard let root = coordinator.prefixLayout?.root else { return }
         isInspecting = true
-
-        // TODO: wire to PrefixInspector with real URL
-        // let url = URL(fileURLWithPath: prefixPath)
-        // inspection = prefixInspector.inspect(url: url)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        Task {
+            inspection = prefixInspector.inspect(url: root)
             isInspecting = false
         }
     }

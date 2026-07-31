@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import SwiftUI
+import MacsTeamNavigationCore
 
 /// Root view for the MacSteam Ultimate U1 setup flow.
 ///
@@ -46,19 +47,37 @@ struct UltimateSetupView: View {
             .padding(.horizontal)
             .padding(.top, 6)
 
-            ScrollView {
-                Text(coordinator.installerLog)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(logLines, id: \.self) { line in
+                            Text(line)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                    }
                     .padding(.horizontal)
+                    .id("logBottom")
+                }
+                .frame(maxHeight: 160)
+                .background(Color.secondary.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .padding([.horizontal, .bottom])
+                .onChange(of: coordinator.installerLog) {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo("logBottom", anchor: .bottom)
+                    }
+                }
             }
-            .frame(maxHeight: 160)
-            .background(Color.secondary.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .padding([.horizontal, .bottom])
         }
+    }
+
+    private var logLines: [String] {
+        coordinator.installerLog
+            .components(separatedBy: "\n")
+            .filter { !$0.isEmpty }
     }
 
     // MARK: - Header
@@ -69,7 +88,7 @@ struct UltimateSetupView: View {
                 Text(AppBrand.displayName)
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text(AppBrand.setupTitle)
+                Text(pageTitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -86,6 +105,12 @@ struct UltimateSetupView: View {
                             .fill(Color.secondary.opacity(0.12))
                     )
             }
+#if DEBUG
+            // Debug-only: process identity for diagnostics
+            Text("PID \(ProcessInfo.processInfo.processIdentifier)")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.tertiary)
+#endif
             progressIndicator
             Button("Settings", systemImage: "gearshape") {
                 showingSettings = true
@@ -94,6 +119,22 @@ struct UltimateSetupView: View {
             .controlSize(.small)
         }
         .padding()
+    }
+
+    /// Human-readable title for the current page (step X of N).
+    private var pageTitle: String {
+        let pages = InstallerPage.allCases
+        let names: [InstallerPage: String] = [
+            .runtime: "Compatibility Runtime",
+            .environment: "Environment Setup",
+            .steamInstaller: "Steam Installer",
+            .steamClient: "Steam Client",
+            .cloverPit: "CloverPit",
+            .diagnostics: "Diagnostics"
+        ]
+        let idx = pages.firstIndex(of: coordinator.currentPage).map { $0 + 1 } ?? 0
+        let name = names[coordinator.currentPage] ?? "Setup"
+        return "Step \(idx) of \(pages.count) — \(name)"
     }
 
     private var progressIndicator: some View {

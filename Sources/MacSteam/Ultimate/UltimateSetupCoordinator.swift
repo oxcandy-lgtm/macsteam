@@ -1120,7 +1120,7 @@ final class UltimateSetupCoordinator {
                 await navigationReducer.setPageComplete(page, complete)
             }
             await navigationReducer.setActiveOperation(hasActiveOperation)
-            await navigationReducer.setCleanupRequired(false)
+            await navigationReducer.setCleanupRequired(isCleanupRequired)
             result = await navigationReducer.send(intent: intent)
             if result.accepted, let newPage = result.newPage {
                 currentPage = newPage
@@ -1144,7 +1144,7 @@ final class UltimateSetupCoordinator {
                 }
             }
 
-            await navigationReducer.setCleanupRequired(false)
+            await navigationReducer.setCleanupRequired(isCleanupRequired)
             result = await navigationReducer.send(intent: intent)
             if result.accepted, let newPage = result.newPage {
                 currentPage = newPage
@@ -1169,17 +1169,22 @@ final class UltimateSetupCoordinator {
         lastNavigationResult = result
     }
 
-    private var hasActiveOperation: Bool {
+    var hasActiveOperation: Bool {
         sessionSupervisorIsRunning
     }
 
-    private func computePageCompletion() -> [InstallerPage: Bool] {
+    private var isCleanupRequired: Bool {
+        if case .recoveryRequired = steamClientState { return true }
+        return false
+    }
+
+    func computePageCompletion() -> [InstallerPage: Bool] {
         var completion: [InstallerPage: Bool] = [:]
-        completion[.runtime] = runtimeURL != nil
+        completion[.runtime] = runtimeURL != nil && runtimeInspection?.isUsable == true
         completion[.environment] = prefixLayout?.root != nil
-        completion[.steamInstaller] = selectedInstaller != nil
-        completion[.steamClient] = false // requires verified Steam
-        completion[.cloverPit] = false   // blocked
+        completion[.steamInstaller] = selectedInstaller != nil || steamInstallLifecycle == .verifiedComplete
+        completion[.steamClient] = steamInstallLifecycle == .verifiedComplete
+        completion[.cloverPit] = cloverPitInspection?.isReady == true
         completion[.diagnostics] = true
         return completion
     }

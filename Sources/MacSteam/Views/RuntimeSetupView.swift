@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import SwiftUI
+import MacsTeamNavigationCore
 
 /// View for selecting and inspecting a Wine compatibility runtime.
 ///
@@ -25,6 +26,7 @@ struct RuntimeSetupView: View {
             runtimeSelection
             inspectionSection
             Spacer()
+            blockerBanner
             navigationButtons
         }
         .padding(24)
@@ -223,22 +225,23 @@ struct RuntimeSetupView: View {
 
     // MARK: - Navigation
 
-    private var navigationButtons: some View {
-        HStack {
-            Button("Back") {
-                // TODO: navigate to previous step
-            }
-            .controlSize(.small)
-
-            Spacer()
-
-            Button("Next") {
-                // TODO: advance to prefix setup
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(inspectionResult?.isUsable != true)
+    @ViewBuilder
+    private var blockerBanner: some View {
+        if let result = coordinator.lastNavigationResult, !result.accepted, let blocker = result.blocker {
+            Label(blocker.message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
+    }
+
+    private var navigationButtons: some View {
+        InstallerNavigationFooter(
+            validator: DefaultInstallerNavigationValidator(),
+            currentPage: .runtime,
+            onNavigate: { intent in
+                await coordinator.send(intent)
+            }
+        )
     }
 
     // MARK: - Actions
@@ -254,19 +257,14 @@ struct RuntimeSetupView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         selectedRuntimePath = url.path
-        // TODO: wire to RuntimeLocator.locateRuntime(at:)
-        // TODO: create ImportedWineRuntime(url:) and inspect
     }
 
     private func inspectSystemRuntime() {
         isInspecting = true
         inspectionResult = nil
-
-        // TODO: wire to actual SystemWineRuntime detection and inspection
-        // let system = SystemWineRuntime(url: someURL)
-        // inspectionResult = system?.inspect()
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        Task {
+            await coordinator.inspectSystem()
+            inspectionResult = coordinator.runtimeInspection
             isInspecting = false
         }
     }

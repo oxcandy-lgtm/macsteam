@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import SwiftUI
+import MacsTeamNavigationCore
 
 /// View for detecting CloverPit within a Steam installation and
 /// launching it via the selected Wine runtime.
 ///
-/// Uses ``SteamInstallationDetector`` to check for the CloverPit
-/// game manifest and executable, and ``SteamLaunchCoordinator`` to
-/// build the launch plan.
+/// Detection and launch are driven through ``UltimateSetupCoordinator``,
+/// which checks for the CloverPit game manifest and executable and
+/// builds the launch plan via the session supervisor.
 struct CloverPitLaunchView: View {
     let coordinator: UltimateSetupCoordinator
 
@@ -17,9 +18,6 @@ struct CloverPitLaunchView: View {
     @State private var detectionDetail: String = ""
     @State private var launchResult: String = ""
 
-    private let detector = SteamInstallationDetector()
-    private let launchCoordinator = SteamLaunchCoordinator()
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
@@ -27,6 +25,7 @@ struct CloverPitLaunchView: View {
             detectionSection
             launchSection
             Spacer()
+            blockerBanner
             navigationButtons
         }
         .padding(24)
@@ -164,22 +163,23 @@ struct CloverPitLaunchView: View {
 
     // MARK: - Navigation
 
-    private var navigationButtons: some View {
-        HStack {
-            Button("Back") {
-                // TODO: navigate to Steam setup
-            }
-            .controlSize(.small)
-
-            Spacer()
-
-            Button("Done") {
-                // TODO: dismiss or navigate to main launcher
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!cloverPitDetected && launchResult.isEmpty)
+    @ViewBuilder
+    private var blockerBanner: some View {
+        if let result = coordinator.lastNavigationResult, !result.accepted, let blocker = result.blocker {
+            Label(blocker.message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
+    }
+
+    private var navigationButtons: some View {
+        InstallerNavigationFooter(
+            validator: DefaultInstallerNavigationValidator(),
+            currentPage: .cloverPit,
+            onNavigate: { intent in
+                await coordinator.send(intent)
+            }
+        )
     }
 
     // MARK: - Actions
@@ -188,34 +188,26 @@ struct CloverPitLaunchView: View {
         isDetecting = true
         cloverPitDetected = false
         detectionDetail = ""
-
-        // TODO: wire to SteamInstallationDetector.inspect(recipe:runtime:)
-        // let result = await detector.inspect(recipe: cloverpitRecipe, runtime: activeRuntime)
-        // cloverPitDetected = result.manifestPresent && result.executablePresent
-        // detectionDetail = result.isReady ? "Manifest and executable found" : "Incomplete installation"
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        Task {
+            await coordinator.recheckCloverPit()
+            let inspection = coordinator.cloverPitInspection
+            cloverPitDetected = inspection?.isReady == true
+            detectionDetail = inspection.map {
+                $0.isReady ? "Manifest and executable found" : "Incomplete installation"
+            } ?? ""
             isDetecting = false
-            cloverPitDetected = true
-            detectionDetail = "Steam manifest found, executable verified"
         }
     }
 
     private func launchCloverPit() {
         isLaunching = true
         launchResult = ""
-
-        // TODO: wire to SteamLaunchCoordinator.makeLaunchPlan(prefixURL:recipe:)
-        // if let plan = launchCoordinator.makeLaunchPlan(prefixURL: prefixURL, recipe: recipe) {
-        //     try await processRunner.run(executable: plan.runtimeExecutable, ...)
-        //     launchResult = "Launch submitted"
-        // } else {
-        //     launchResult = "Failed to create launch plan"
-        // }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        Task {
+            await coordinator.launchCloverPit()
+            launchResult = coordinator.state == .launchSubmitted || coordinator.state == .processObserved
+                ? "Launch submitted successfully"
+                : "Launch failed"
             isLaunching = false
-            launchResult = "Launch submitted successfully"
         }
     }
 }
