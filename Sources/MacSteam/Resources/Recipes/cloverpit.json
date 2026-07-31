@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "cloverpit",
+  "displayName": "CloverPit",
+  "store": {
+    "type": "steam",
+    "appId": "3314790"
+  },
+  "runtime": {
+    "preferredAdapter": "crossover"
+  },
+  "launch": {
+    "arguments": [
+      "-applaunch",
+      "3314790"
+    ]
+  },
+  "detection": {
+    "manifestName": "appmanifest_3314790.acf",
+    "executableCandidates": [
+      "CloverPit.exe"
+    ]
+  }
+}

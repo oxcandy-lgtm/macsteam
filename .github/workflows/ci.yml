@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Swift Build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Swift build
+        run: swift build
+      - name: Swift test
+        run: swift test
+
+  audit:
+    name: Public Audit
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run public audit
+        run: bash scripts/public-audit.sh
+
+  license-validation:
+    name: License Validation
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check LICENSE exists
+        run: test -f LICENSE && head -1 LICENSE | grep -q "GNU"
+      - name: Check THIRD_PARTY_NOTICES exists
+        run: test -f THIRD_PARTY_NOTICES.md
+      - name: Check SPDX headers in Swift files
+        run: |
+          count=$(find Sources -name "*.swift" -exec grep -l "SPDX-License-Identifier: GPL-3.0-or-later" {} \; | wc -l)
+          total=$(find Sources -name "*.swift" | wc -l)
+          echo "SPDX headers: $count/$total"
+          [ "$count" = "$total" ] || exit 1
+
+  recipe-validation:
+    name: Recipe Validation
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate recipe JSON
+        run: |
+          for f in Sources/MacSteam/Resources/Recipes/*.json; do
+            echo "Validating $f"
+            python3 -m json.tool "$f" > /dev/null
+          done
+
+  gitignore-validation:
+    name: Gitignore Validation
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check .gitignore exists
+        run: test -f .gitignore
+      - name: Check no forbidden patterns in repo
+        run: |
+          ! find . -name ".DS_Store" 2>/dev/null | grep -q .
+          ! find . -name "xcuserdata" -not -path "./.git/*" 2>/dev/null | grep -q .

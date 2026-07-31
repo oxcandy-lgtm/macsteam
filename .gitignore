@@ -1,0 +1,37 @@
+# Xcode
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Environment
+.env
+.env.*
+
+# Logs & traces
+*.log
+*.trace
+*.crash
+
+# Build artifacts
+.build/
+*.dSYM
+*.ipa
+*.pkg
+*.dmg
+
+# Secrets & keys
+*.p12
+*.key
+*.pem
+*.mobileprovision
+
+# Local config
+LocalConfig.*
+UserSettings.*
+Secrets.*
+
+# macOS
+.DS_Store
