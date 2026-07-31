@@ -107,11 +107,16 @@ struct PrefixInspectLaneTests {
         coordinator.prefixLayout = makePrefixLayout(root: testPrefixURL)
 
         // The view's stored action IS what the Inspect button invokes.
-        let view = PrefixSetupView(coordinator: coordinator)
+        let view = PrefixSetupView(
+            coordinator: coordinator,
+            presentation: UltimatePageResolver.presentation(for: .environment)
+        )
         await view.inspectAction.run()
 
         #expect(fake.inspectCallCount == 1)
         #expect(coordinator.canonicalPrefixEvidenceValid == true)
+        // The view carries the SAME presentation the root derives.
+        #expect(view.presentation == UltimatePageResolver.presentation(for: .environment))
     }
 }
 
@@ -160,6 +165,58 @@ struct PrefixAcquisitionEvidenceTests {
         #expect(evidence.isValid == true)
         #expect(coordinator.canonicalPrefixEvidenceValid == true)
         #expect(fake.inspectCallCount == 1)
+    }
+
+    @Test("production router: validated layout branch uses existingCanonical source")
+    func router_validatedBranch_establishesMatchingEvidence() async {
+        let coordinator = UltimateSetupCoordinator()
+        let fake = FakePrefixInspector(inspection: makeValidPrefixInspection(root: testPrefixURL))
+        coordinator.prefixInspectorProvider = { fake }
+        let layout = makePrefixLayout(root: testPrefixURL)
+
+        let acquisition = coordinator.establishExistingPrefixAcquisition(
+            validatedLayout: layout,
+            adoptedLayout: nil
+        )
+
+        #expect(acquisition?.layout.root == layout.root)
+        #expect(acquisition?.source == .existingCanonical)
+        #expect(coordinator.prefixInspection != nil)
+        #expect(coordinator.canonicalPrefixEvidenceValid == true)
+        #expect(fake.inspectCallCount == 1)
+    }
+
+    @Test("production router: adopted branch uses adoptedSteam source")
+    func router_adoptedBranch_establishesMatchingEvidence() async {
+        let coordinator = UltimateSetupCoordinator()
+        let fake = FakePrefixInspector(inspection: makeValidPrefixInspection(root: testPrefixURL))
+        coordinator.prefixInspectorProvider = { fake }
+        let layout = makePrefixLayout(root: testPrefixURL)
+
+        let acquisition = coordinator.establishExistingPrefixAcquisition(
+            validatedLayout: nil,
+            adoptedLayout: layout
+        )
+
+        #expect(acquisition?.layout.root == layout.root)
+        #expect(acquisition?.source == .adoptedSteam)
+        #expect(coordinator.prefixInspection != nil)
+        #expect(coordinator.canonicalPrefixEvidenceValid == true)
+        #expect(fake.inspectCallCount == 1)
+    }
+
+    @Test("production router: neither existing nor adopted selects the new path")
+    func router_noExistingOrAdopted_returnsNil() async {
+        let coordinator = UltimateSetupCoordinator()
+
+        let acquisition = coordinator.establishExistingPrefixAcquisition(
+            validatedLayout: nil,
+            adoptedLayout: nil
+        )
+
+        // The caller then uses .newlyInitialized after wineboot.
+        #expect(acquisition == nil)
+        #expect(coordinator.prefixInspection == nil)
     }
 
     @Test("adopted Steam path establishes bound evidence")

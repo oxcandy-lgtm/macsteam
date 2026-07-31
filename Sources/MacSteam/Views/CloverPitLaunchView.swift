@@ -11,6 +11,8 @@ import MacsTeamNavigationCore
 /// builds the launch plan via the session supervisor.
 struct CloverPitLaunchView: View {
     let coordinator: UltimateSetupCoordinator
+    /// The page's production presentation (footer page MUST come from here).
+    let presentation: UltimatePagePresentation
 
     @State private var isDetecting = false
     @State private var isLaunching = false
@@ -175,7 +177,7 @@ struct CloverPitLaunchView: View {
     private var navigationButtons: some View {
         InstallerNavigationFooter(
             validator: DefaultInstallerNavigationValidator(),
-            currentPage: .cloverPit,
+            currentPage: presentation.footerPage,
             onNavigate: { intent in
                 await coordinator.send(intent)
             }

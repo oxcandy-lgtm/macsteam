@@ -25,13 +25,17 @@ struct PrefixInspectAction {
 struct PrefixSetupView: View {
     let coordinator: UltimateSetupCoordinator
 
+    /// The page's production presentation (footer page MUST come from here).
+    let presentation: UltimatePagePresentation
+
     /// The production Inspect lane (testable; view + tests share the type).
     var inspectAction: PrefixInspectAction
 
     @State private var isInspecting = false
 
-    init(coordinator: UltimateSetupCoordinator) {
+    init(coordinator: UltimateSetupCoordinator, presentation: UltimatePagePresentation) {
         self.coordinator = coordinator
+        self.presentation = presentation
         self.inspectAction = .production(coordinator: coordinator)
     }
 
@@ -208,7 +212,7 @@ struct PrefixSetupView: View {
     private var navigationButtons: some View {
         InstallerNavigationFooter(
             validator: DefaultInstallerNavigationValidator(),
-            currentPage: .environment,
+            currentPage: presentation.footerPage,
             onNavigate: { intent in
                 await coordinator.send(intent)
             }

@@ -177,23 +177,25 @@ struct UltimateSetupView: View {
     private var content: some View {
         switch presentation.contentKind {
         case .runtime:
-            RuntimeSetupView(coordinator: coordinator)
+            RuntimeSetupView(coordinator: coordinator, presentation: presentation)
         case .environment:
-            PrefixSetupView(coordinator: coordinator)
+            PrefixSetupView(coordinator: coordinator, presentation: presentation)
         case .steamInstaller:
             // Production-separated installer surface (page .steamInstaller).
             SteamSetupView(
                 coordinator: coordinator,
-                mode: presentation.steamMode ?? .installer
+                mode: presentation.steamMode ?? .installer,
+                presentation: presentation
             )
         case .steamClient:
             // Production-separated client surface (page .steamClient).
             SteamSetupView(
                 coordinator: coordinator,
-                mode: presentation.steamMode ?? .client
+                mode: presentation.steamMode ?? .client,
+                presentation: presentation
             )
         case .cloverPit:
-            CloverPitLaunchView(coordinator: coordinator)
+            CloverPitLaunchView(coordinator: coordinator, presentation: presentation)
         case .diagnostics:
             diagnosticsPageView
         }
@@ -314,10 +316,11 @@ struct UltimateSetupView: View {
             }
 
             // Diagnostics participates in the canonical navigation lane:
-            // Back → CloverPit via coordinator.send(.back).
+            // Back → CloverPit via coordinator.send(.back). Footer page comes
+            // from the SAME presentation as the body.
             InstallerNavigationFooter(
                 validator: DefaultInstallerNavigationValidator(),
-                currentPage: coordinator.currentPage,
+                currentPage: presentation.footerPage,
                 onNavigate: { intent in
                     await coordinator.send(intent)
                 }

@@ -11,6 +11,8 @@ import MacsTeamNavigationCore
 /// capabilities, and any validation failures.
 struct RuntimeSetupView: View {
     let coordinator: UltimateSetupCoordinator
+    /// The page's production presentation (footer page MUST come from here).
+    let presentation: UltimatePagePresentation
 
     @State private var selectedRuntimePath: String = ""
     @State private var inspectionResult: RuntimeInspection?
@@ -237,7 +239,7 @@ struct RuntimeSetupView: View {
     private var navigationButtons: some View {
         InstallerNavigationFooter(
             validator: DefaultInstallerNavigationValidator(),
-            currentPage: .runtime,
+            currentPage: presentation.footerPage,
             onNavigate: { intent in
                 await coordinator.send(intent)
             }

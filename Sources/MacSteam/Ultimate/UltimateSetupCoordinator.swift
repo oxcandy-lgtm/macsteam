@@ -165,6 +165,31 @@ final class UltimateSetupCoordinator {
         return inspection
     }
 
+    /// Production acquisition router: selects the existing/adopted layout and
+    /// establishes matching evidence for it (BEFORE any success/early return).
+    ///
+    /// `createPrefix` passes its real candidate results; tests drive the SAME
+    /// router with injected candidates. Returns nil when a NEW prefix must be
+    /// created (caller then uses ``PrefixAcquisitionSource.newlyInitialized``
+    /// after wineboot).
+    @discardableResult
+    func establishExistingPrefixAcquisition(
+        validatedLayout: PrefixLayout?,
+        adoptedLayout: PrefixLayout?
+    ) -> (layout: PrefixLayout, source: PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            log("Canonical prefix resolved (evidence isValid=\(evidence.isValid))")
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+
     /// Re-run verification evidence for the current canonical prefix
     /// (coordinator-owned — the Inspect action goes through this authority).
     func inspectCanonicalPrefix() async {
@@ -514,16 +539,19 @@ final class UltimateSetupCoordinator {
 
         do {
             // Resolve canonical prefix layout via PrefixManager (NX Dispatch §3.2)
+            // through the production acquisition router (evidence established
+            // BEFORE any success/early return on every branch).
+            let validated = try? prefixManager.validatedLayout(for: recipe)
+            let adopted = validated == nil ? adoptExistingSteamPrefix() : nil
             let layout: PrefixLayout
-            if let existing = try? prefixManager.validatedLayout(for: recipe) {
-                layout = existing
-                // Existing canonical prefix — establish evidence BEFORE any
-                // early return (inspection must never be skipped).
-                establishPrefixEvidence(for: existing, source: .existingCanonical)
-                log("Canonical prefix resolved")
+            if let acquisition = establishExistingPrefixAcquisition(
+                validatedLayout: validated,
+                adoptedLayout: adopted
+            ) {
+                layout = acquisition.layout
                 log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
 
-                // Check if Steam is already installed
+                // Check if Steam is already installed (evidence already bound)
                 log("Checking steam.exe in canonical prefix…")
                 if layout.signature().steamExePresent {
                     state = .steamReady
@@ -532,29 +560,15 @@ final class UltimateSetupCoordinator {
                 }
                 log("steam.exe NOT FOUND — proceeding with wineboot")
             } else {
-                // U1R15: Scan for existing Steam prefixes before creating new ones
-                if let adopted = adoptExistingSteamPrefix() {
-                    layout = adopted
-                    // Adopted prefix — establish evidence BEFORE the steam check.
-                    establishPrefixEvidence(for: adopted, source: .adoptedSteam)
-                    log("Adopted existing prefix with Steam installation")
-                    log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
-                    if layout.signature().steamExePresent {
-                        state = .steamReady
-                        log("steam.exe FOUND in adopted prefix — advancing to Steam ready")
-                        return
-                    }
-                } else {
-                    // Create new prefix root directory (wineboot will do the rest)
-                    let rootURL = prefixManager.prefixURL(for: recipe)
-                    try prefixManager.createPrefix(for: recipe)
-                    log("Prefix root created at: \(rootURL.path)")
-                    let newLayout = try PrefixLayout(validatedRoot: rootURL)
-                    self.prefixLayout = newLayout
-                    layout = newLayout
-                    log("New prefix root prepared — will initialize with wineboot")
-                    log("steam.exe not present yet — running wineboot")
-                }
+                // Create new prefix root directory (wineboot will do the rest)
+                let rootURL = prefixManager.prefixURL(for: recipe)
+                try prefixManager.createPrefix(for: recipe)
+                log("Prefix root created at: \(rootURL.path)")
+                let newLayout = try PrefixLayout(validatedRoot: rootURL)
+                self.prefixLayout = newLayout
+                layout = newLayout
+                log("New prefix root prepared — will initialize with wineboot")
+                log("steam.exe not present yet — running wineboot")
             }
             let prefixDir = layout.root
 

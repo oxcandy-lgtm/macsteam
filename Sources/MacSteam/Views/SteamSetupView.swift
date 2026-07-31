@@ -17,6 +17,8 @@ import MacsTeamNavigationCore
 struct SteamSetupView: View {
     let coordinator: UltimateSetupCoordinator
     let mode: SteamSetupMode
+    /// The page's production presentation (footer page MUST come from here).
+    let presentation: UltimatePagePresentation
 
     @State private var installerURL: URL? = nil
     @State private var fileSize: UInt64 = 0
@@ -255,7 +257,7 @@ struct SteamSetupView: View {
     private var navigationButtons: some View {
         InstallerNavigationFooter(
             validator: DefaultInstallerNavigationValidator(),
-            currentPage: coordinator.currentPage,
+            currentPage: presentation.footerPage,
             onNavigate: { intent in
                 await coordinator.send(intent)
             }
