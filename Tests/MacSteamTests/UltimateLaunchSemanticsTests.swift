@@ -9,67 +9,125 @@ struct UltimateLaunchSemanticsTests {
     let testPrefixURL = URL(fileURLWithPath: "/tmp/test-prefix")
     let testRuntimeURL = URL(fileURLWithPath: "/usr/lib/wine")
 
-    @Test("Steam session plan uses supervisedSession")
-    func steamPlan_supervisedSession() {
+    // MARK: - Render profiles
+
+    private static let testRenderArgs = ["-cef-enable-gpu", "-no-cef-sandbox"]
+
+    @Test("Steam plan includes render profile args")
+    func steamPlan_includesRenderArgs() {
         let env = ["WINEPREFIX": testPrefixURL.path]
         let coordinator = UltimateSetupCoordinator()
-        let plan = coordinator.makeSteamSessionPlan(wineURL: testWineURL, steamURL: testSteamURL, prefixURL: testPrefixURL, environment: env)
-        #expect(plan.mode == .supervisedSession)
+        let plan = coordinator.makeSteamSessionPlan(
+            wineURL: testWineURL, steamURL: testSteamURL,
+            prefixURL: testPrefixURL, environment: env,
+            renderArguments: Self.testRenderArgs
+        )
+        for arg in Self.testRenderArgs {
+            #expect(plan.arguments.contains(arg), "Missing render arg: \(arg)")
+        }
     }
 
-    @Test("CloverPit session plan uses supervisedSession")
-    func cloverPitPlan_supervisedSession() {
+    @Test("CloverPit plan includes render profile args")
+    func cloverPitPlan_includesRenderArgs() {
         let env = ["WINEPREFIX": testPrefixURL.path]
         let coordinator = UltimateSetupCoordinator()
-        let plan = coordinator.makeCloverPitSessionPlan(wineURL: testWineURL, steamURL: testSteamURL, prefixURL: testPrefixURL, environment: env)
-        #expect(plan.mode == .supervisedSession)
+        let plan = coordinator.makeCloverPitSessionPlan(
+            wineURL: testWineURL, steamURL: testSteamURL,
+            prefixURL: testPrefixURL, environment: env,
+            renderArguments: Self.testRenderArgs
+        )
+        for arg in Self.testRenderArgs {
+            #expect(plan.arguments.contains(arg), "Missing render arg: \(arg)")
+        }
     }
 
     @Test("Steam plan does not include -applaunch")
     func steamPlan_noAppLaunch() {
         let env = ["WINEPREFIX": testPrefixURL.path]
         let coordinator = UltimateSetupCoordinator()
-        let plan = coordinator.makeSteamSessionPlan(wineURL: testWineURL, steamURL: testSteamURL, prefixURL: testPrefixURL, environment: env)
+        let plan = coordinator.makeSteamSessionPlan(
+            wineURL: testWineURL, steamURL: testSteamURL,
+            prefixURL: testPrefixURL, environment: env,
+            renderArguments: []
+        )
         #expect(!plan.arguments.contains("-applaunch"))
     }
 
-    @Test("CloverPit plan includes app ID 3314790")
-    func cloverPitPlan_includesGameID() {
+    @Test("CloverPit plan includes app ID 3314790 and game flags")
+    func cloverPitPlan_includesGameFlags() {
         let env = ["WINEPREFIX": testPrefixURL.path]
         let coordinator = UltimateSetupCoordinator()
-        let plan = coordinator.makeCloverPitSessionPlan(wineURL: testWineURL, steamURL: testSteamURL, prefixURL: testPrefixURL, environment: env)
+        let plan = coordinator.makeCloverPitSessionPlan(
+            wineURL: testWineURL, steamURL: testSteamURL,
+            prefixURL: testPrefixURL, environment: env,
+            renderArguments: []
+        )
         #expect(plan.arguments.contains("3314790"))
+        #expect(plan.arguments.contains("-popupwindow"))
+        #expect(plan.arguments.contains("-screen-fullscreen"))
+        #expect(plan.arguments.contains("0"))
+    }
+
+    @Test("both plans use supervisedSession mode")
+    func bothPlans_supervisedSession() {
+        let env = ["WINEPREFIX": testPrefixURL.path]
+        let coordinator = UltimateSetupCoordinator()
+        let steamPlan = coordinator.makeSteamSessionPlan(
+            wineURL: testWineURL, steamURL: testSteamURL,
+            prefixURL: testPrefixURL, environment: env,
+            renderArguments: []
+        )
+        let gamePlan = coordinator.makeCloverPitSessionPlan(
+            wineURL: testWineURL, steamURL: testSteamURL,
+            prefixURL: testPrefixURL, environment: env,
+            renderArguments: []
+        )
+        #expect(steamPlan.mode == .supervisedSession)
+        #expect(gamePlan.mode == .supervisedSession)
     }
 
     @Test("both plans use canonical prefix working directory")
     func bothPlans_canonicalPrefix() {
         let env = ["WINEPREFIX": testPrefixURL.path]
         let coordinator = UltimateSetupCoordinator()
-        let steamPlan = coordinator.makeSteamSessionPlan(wineURL: testWineURL, steamURL: testSteamURL, prefixURL: testPrefixURL, environment: env)
-        let gamePlan = coordinator.makeCloverPitSessionPlan(wineURL: testWineURL, steamURL: testSteamURL, prefixURL: testPrefixURL, environment: env)
+        let steamPlan = coordinator.makeSteamSessionPlan(
+            wineURL: testWineURL, steamURL: testSteamURL,
+            prefixURL: testPrefixURL, environment: env,
+            renderArguments: []
+        )
+        let gamePlan = coordinator.makeCloverPitSessionPlan(
+            wineURL: testWineURL, steamURL: testSteamURL,
+            prefixURL: testPrefixURL, environment: env,
+            renderArguments: []
+        )
         #expect(steamPlan.workingDirectory == testPrefixURL)
         #expect(gamePlan.workingDirectory == testPrefixURL)
     }
 }
 
 @MainActor
-struct GameSessionModeValidationTests {
-    let testPlan = LaunchPlan(runtimeExecutable: URL(fileURLWithPath: "/usr/bin/wine"), arguments: [], mode: .waitForExit)
+struct SessionModeValidationTests {
     let testRuntimeURL = URL(fileURLWithPath: "/usr/lib/wine")
-    let testPrefixURL = URL(fileURLWithPath: "/tmp/prefix")
 
-    @Test("GameSessionSupervisor rejects waitForExit plan")
-    func rejectsWaitForExit() async throws {
-        // Test via the GameSessionSupervising protocol by verifying the validation logic
-        // exists. The coordinator's plan builders always use .supervisedSession,
-        // so any .waitForExit plan would be rejected.
-        let mode: LaunchMode = .supervisedSession
-        #expect(mode != .waitForExit)
+    @Test("supervisedSession plan passes validation")
+    func supervisedSession_valid() throws {
+        let plan = LaunchPlan(runtimeExecutable: testRuntimeURL, arguments: [], mode: .supervisedSession)
+        try GameSessionSupervisor.validateSessionPlan(plan)
     }
 
-    @Test("no detached launch mode remains in Ultimate")
-    func noDetachedInUltimate() {
-        let plan = LaunchPlan(runtimeExecutable: testRuntimeURL, arguments: [], mode: .supervisedSession)
-        #expect(plan.mode != .detached)
+    @Test("waitForExit plan fails validation")
+    func waitForExit_invalid() {
+        let plan = LaunchPlan(runtimeExecutable: testRuntimeURL, arguments: [], mode: .waitForExit)
+        #expect(throws: (any Error).self) {
+            try GameSessionSupervisor.validateSessionPlan(plan)
+        }
+    }
+
+    @Test("detached plan fails validation")
+    func detached_invalid() {
+        let plan = LaunchPlan(runtimeExecutable: testRuntimeURL, arguments: [], mode: .detached)
+        #expect(throws: (any Error).self) {
+            try GameSessionSupervisor.validateSessionPlan(plan)
+        }
     }
 }

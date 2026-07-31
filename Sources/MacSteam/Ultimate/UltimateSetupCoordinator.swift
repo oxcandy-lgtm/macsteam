@@ -132,6 +132,11 @@ final class UltimateSetupCoordinator {
         installerLog.append(line + "\n")
     }
 
+    /// Log a message with filesystem paths redacted via regex.
+    private func logSanitized(_ message: String) {
+        log("[Sanitized: \(message.replacingOccurrences(of: #"/[^\s/]+"#, with: "<sanitized>", options: .regularExpression))]")
+    }
+
     /// Generate a fresh 5-digit installer session ID.
     func generateInstallerID() {
         installerID = String(format: "%05d", Int.random(in: 10000...99999))
@@ -185,11 +190,12 @@ final class UltimateSetupCoordinator {
         wineURL: URL,
         steamURL: URL,
         prefixURL: URL,
-        environment: [String: String]
+        environment: [String: String],
+        renderArguments: [String]
     ) -> LaunchPlan {
         LaunchPlan(
             runtimeExecutable: wineURL,
-            arguments: [steamURL.path],
+            arguments: [steamURL.path] + renderArguments,
             mode: .supervisedSession,
             environment: environment,
             workingDirectory: prefixURL
@@ -200,15 +206,32 @@ final class UltimateSetupCoordinator {
         wineURL: URL,
         steamURL: URL,
         prefixURL: URL,
-        environment: [String: String]
+        environment: [String: String],
+        renderArguments: [String]
     ) -> LaunchPlan {
         LaunchPlan(
             runtimeExecutable: wineURL,
-            arguments: [steamURL.path, "-applaunch", "3314790"],
+            arguments: [steamURL.path] + renderArguments + [
+                "-applaunch",
+                "3314790",
+                "-popupwindow",
+                "-screen-fullscreen",
+                "0"
+            ],
             mode: .supervisedSession,
             environment: environment,
             workingDirectory: prefixURL
         )
+    }
+
+    // MARK: - Validation
+
+    static func validateSessionPlan(_ plan: LaunchPlan) throws {
+        guard plan.mode == .supervisedSession else {
+            throw SessionSupervisorError.validationFailed(
+                "Session launch requires supervisedSession mode"
+            )
+        }
     }
 
     // MARK: - Flow
@@ -838,7 +861,8 @@ final class UltimateSetupCoordinator {
                 wineURL: wineURL,
                 steamURL: steamExe,
                 prefixURL: prefixURL,
-                environment: environment
+                environment: environment,
+                renderArguments: steamUIRenderProfile.launchArguments
             )
 
             let _ = try await sessionSupervisor.launch(
@@ -965,7 +989,8 @@ final class UltimateSetupCoordinator {
                 wineURL: wineURL,
                 steamURL: steamExe,
                 prefixURL: prefixURL,
-                environment: environment
+                environment: environment,
+                renderArguments: steamUIRenderProfile.launchArguments
             )
 
             let session = try await sessionSupervisor.launch(
@@ -1006,53 +1031,53 @@ final class UltimateSetupCoordinator {
     /// Perform lifecycle cleanup across installer, session, and prefix processes.
     /// Returns "clean" on success, or a semicolon-separated error summary.
     private func performLifecycleCleanup(scope: UltimateCleanupScope) async -> String {
+        // Snapshot authority BEFORE any mutation
+        let installerSnapshotAtStart = await lifecycleInstaller.snapshot()
+        let sessionAuthorityAtStart = sessionSupervisor.activeSession != nil
+            || sessionSupervisor.needsRecovery
+            || sessionSupervisor.isStopping
+        let installerAuthorityAtStart = installerSnapshotAtStart != nil
+        let hadCleanupAuthorityAtStart = sessionAuthorityAtStart || installerAuthorityAtStart
+
         var failures: [String] = []
 
-        // Stage 1: InstallerSupervisor cleanup
+        // Stage 1: Installer cleanup
         do {
             try await lifecycleInstaller.stopAndClean()
         } catch {
-            failures.append("Installer cleanup: \(sanitize(error.localizedDescription))")
+            log("Installer cleanup failed: \(error.localizedDescription)")
+            failures.append("Installer cleanup failed")
         }
 
-        // Stage 2: GameSessionSupervisor stop
+        // Stage 2: Session stop
         if scope == .all || sessionSupervisor.activeSession != nil {
             do {
                 try await sessionSupervisor.stop()
             } catch {
-                failures.append("Session stop: \(sanitize(error.localizedDescription))")
+                log("Session cleanup failed: \(error.localizedDescription)")
+                failures.append("Session cleanup failed")
             }
         }
 
-        // Stage 3: PrefixProcessTerminator cleanup (best-effort)
-        if let runtimeURL, let prefixURL = prefixLayout?.root {
-            let layout = WineExecutableLayout.detect(from: runtimeURL)
+        // Stage 3: Prefix cleanup (best-effort, after all other stages)
+        if let activeRuntimeURL = runtimeURL, let prefixURL = prefixLayout?.root {
+            let layout = WineExecutableLayout.detect(from: activeRuntimeURL)
             do {
                 try await lifecycleInstaller.stopKnownPrefixProcesses(
                     wineExecutable: layout.wine,
                     wineserverURL: layout.wineserver,
                     prefixURL: prefixURL,
-                    runtimeURL: runtimeURL
+                    runtimeURL: activeRuntimeURL
                 )
             } catch {
-                failures.append("Prefix cleanup: \(sanitize(error.localizedDescription))")
+                log("Prefix cleanup failed: \(error.localizedDescription)")
+                failures.append("Prefix cleanup failed")
             }
-        } else if failures.isEmpty {
-            // No active operation AND no context — clean
-        } else {
+        } else if hadCleanupAuthorityAtStart {
             failures.append("Prefix cleanup context unavailable")
         }
 
-        if failures.isEmpty {
-            return "clean"
-        }
-        return failures.joined(separator: "; ")
-    }
-
-    /// Sanitize error messages for logging (strip paths, PIDs, env vars).
-    private func sanitize(_ message: String) -> String {
-        // Errors from known sources are already sanitized.
-        message
+        return failures.isEmpty ? "clean" : failures.joined(separator: "; ")
     }
 
     /// Stop the active game session.

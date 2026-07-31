@@ -147,7 +147,7 @@ if [ "$ULTIMATE_LIFECYCLE_ONLY" -eq 1 ]; then
     check "direct wineControl.taskList in stopAll" 'wineControl\.taskList' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
     check "PID in cleanup reason" '\[PID' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
     # Verify GameSessionSupervisor has mode validation (invert check: 1=clean, 0=violation)
-    if git -C "$REPO_ROOT" grep -q -E 'case[[:space:]]*\.supervisedSession[[:space:]]*=[[:space:]]*plan\.mode' -- Sources/MacSteam/Sessions/GameSessionSupervisor.swift 2>/dev/null; then
+    if git -C "$REPO_ROOT" grep -q -E 'validateSessionPlan' -- Sources/MacSteam/Sessions/GameSessionSupervisor.swift 2>/dev/null; then
         : # validation present — clean
     else
         echo "❌ session launch without supervisedSession — 1 found"

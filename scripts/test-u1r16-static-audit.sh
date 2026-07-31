@@ -218,7 +218,7 @@ run_audit_cleanup "cleanup_directpr" "direct ProcessRunner fixture" 1
 # clean supervised lifecycle → 0 (has supervisedSession guard → check passes)
 mk_repo "lifecycle_clean"
 add_file "lifecycle_clean" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" ''
-add_file "lifecycle_clean" "Sources/MacSteam/Sessions/GameSessionSupervisor.swift" 'actor GameSessionSupervisor { func launch(plan: LaunchPlan) { guard case .supervisedSession = plan.mode else { throw SessionSupervisorError.validationFailed("") } } }'
+add_file "lifecycle_clean" "Sources/MacSteam/Sessions/GameSessionSupervisor.swift" 'actor GameSessionSupervisor { static func validateSessionPlan(_ plan: LaunchPlan) throws { guard case .supervisedSession = plan.mode else { throw SessionSupervisorError.validationFailed("") } } func launch(plan: LaunchPlan) { try Self.validateSessionPlan(plan) } }'
 run_audit_lifecycle "lifecycle_clean" "clean supervised lifecycle" 0
 
 # detached Steam launch → 1

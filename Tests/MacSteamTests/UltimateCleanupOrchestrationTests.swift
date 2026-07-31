@@ -19,6 +19,7 @@ final class FakeGameSessionSupervisor: GameSessionSupervising {
     var stopError: (any Error)?
     var launchError: (any Error)?
     var lastPlan: LaunchPlan?
+    var stopShouldClearActiveSession = false
 
     func launch(
         plan: LaunchPlan,
@@ -45,10 +46,14 @@ final class FakeGameSessionSupervisor: GameSessionSupervising {
     func stop() async throws {
         stopCallCount += 1
         if let error = stopError { throw error }
+        if stopShouldClearActiveSession {
+            activeSession = nil
+            state = .stopped
+        }
     }
 }
 
-actor FakeInstallerLifecycleSupervisor: InstallerLifecycleSupervising {
+final class FakeInstallerLifecycleSupervisor: @unchecked Sendable, InstallerLifecycleSupervising {
     var snapshotResult: InstallerOperation?
     var stopAndCleanCallCount = 0
     var stopAndCleanError: (any Error)?
@@ -120,10 +125,10 @@ struct UltimateCleanupOrchestrationTests {
         let result = await coordinator.stopAllForApplicationTermination()
 
         #expect(result == .clean)
-        let stopCount = await installer.stopAndCleanCallCount
+        let stopCount = installer.stopAndCleanCallCount
         #expect(stopCount == 1)
         #expect(session.stopCallCount == 1)
-        let prefixCount = await installer.stopKnownPrefixCallCount
+        let prefixCount = installer.stopKnownPrefixCallCount
         #expect(prefixCount == 0)
     }
 
@@ -140,9 +145,9 @@ struct UltimateCleanupOrchestrationTests {
 
         #expect(result == .clean)
         #expect(session.stopCallCount == 1)
-        let stopAndCleanCount = await installer.stopAndCleanCallCount
+        let stopAndCleanCount = installer.stopAndCleanCallCount
         #expect(stopAndCleanCount == 1)
-        let prefixCount = await installer.stopKnownPrefixCallCount
+        let prefixCount = installer.stopKnownPrefixCallCount
         #expect(prefixCount == 1)
     }
 
@@ -152,7 +157,7 @@ struct UltimateCleanupOrchestrationTests {
         let session = FakeGameSessionSupervisor()
         let coordinator = makeCoordinator(session: session, installer: installer)
 
-        await installer.setStopAndCleanError(InstallerError.terminationFailed("installer busy"))
+        installer.stopAndCleanError = InstallerError.terminationFailed("installer busy")
         coordinator.runtimeURL = testRuntimeURL
         coordinator.prefixLayout = makePrefixLayout(root: testPrefixURL)
         // Give session a non-nil activeSession so it's definitely relevant
@@ -172,7 +177,7 @@ struct UltimateCleanupOrchestrationTests {
         // Session stop is still attempted even if installer fails
         #expect(session.stopCallCount == 1)
         // Prefix cleanup is still attempted
-        let prefixCount = await installer.stopKnownPrefixCallCount
+        let prefixCount = installer.stopKnownPrefixCallCount
         #expect(prefixCount == 1)
     }
 
@@ -182,7 +187,7 @@ struct UltimateCleanupOrchestrationTests {
         let session = FakeGameSessionSupervisor()
         let coordinator = makeCoordinator(session: session, installer: installer)
 
-        await installer.setStopAndCleanError(InstallerError.terminationFailed("installer busy"))
+        installer.stopAndCleanError = InstallerError.terminationFailed("installer busy")
         // No runtime/prefix — Stage 3 will append "Prefix cleanup context unavailable"
         // because failures is non-empty
 
@@ -210,7 +215,7 @@ struct UltimateCleanupOrchestrationTests {
 
         #expect(result != .clean)
         // Prefix cleanup is still attempted even if session stop fails
-        let prefixCount = await installer.stopKnownPrefixCallCount
+        let prefixCount = installer.stopKnownPrefixCallCount
         #expect(prefixCount == 1)
     }
 
@@ -228,7 +233,7 @@ struct UltimateCleanupOrchestrationTests {
 
         #expect(result != .clean)
         if case .incomplete(let reason) = result {
-            #expect(reason.contains("Session stop"))
+            #expect(reason.contains("Session cleanup failed"))
         } else {
             Issue.record("Expected .incomplete, got .clean")
         }
@@ -240,7 +245,7 @@ struct UltimateCleanupOrchestrationTests {
         let session = FakeGameSessionSupervisor()
         let coordinator = makeCoordinator(session: session, installer: installer)
 
-        await installer.setStopKnownPrefixError(InstallerError.terminationFailed("wineserver still running"))
+        installer.setStopKnownPrefixError(InstallerError.terminationFailed("wineserver still running"))
         coordinator.runtimeURL = testRuntimeURL
         coordinator.prefixLayout = makePrefixLayout(root: testPrefixURL)
 
@@ -261,7 +266,7 @@ struct UltimateCleanupOrchestrationTests {
         let coordinator = makeCoordinator(session: session, installer: installer)
 
         // First attempt: installer throws cleanupRequired-style error
-        await installer.setStopAndCleanError(InstallerError.terminationFailed("Prefix cleanup incomplete: wineserver still running"))
+        installer.stopAndCleanError = InstallerError.terminationFailed("Prefix cleanup incomplete: wineserver still running")
         let firstResult = await coordinator.stopAllForApplicationTermination()
         #expect(firstResult != .clean)
         if case .incomplete(let reason) = firstResult {
@@ -269,7 +274,7 @@ struct UltimateCleanupOrchestrationTests {
         }
 
         // Clear the error and retry — should succeed
-        await installer.setStopAndCleanError(nil)
+        installer.stopAndCleanError = nil
         let secondResult = await coordinator.stopAllForApplicationTermination()
         #expect(secondResult == .clean)
     }
@@ -281,12 +286,12 @@ struct UltimateCleanupOrchestrationTests {
         let coordinator = makeCoordinator(session: session, installer: installer)
 
         // First attempt: installer throws interrupted-style error
-        await installer.setStopAndCleanError(InstallerError.invalidPhaseTransition(from: .installerRunning, to: .interrupted))
+        installer.stopAndCleanError = InstallerError.invalidPhaseTransition(from: .installerRunning, to: .interrupted)
         let firstResult = await coordinator.stopAllForApplicationTermination()
         #expect(firstResult != .clean)
 
         // Clear the error and retry — should succeed
-        await installer.setStopAndCleanError(nil)
+        installer.stopAndCleanError = nil
         let secondResult = await coordinator.stopAllForApplicationTermination()
         #expect(secondResult == .clean)
     }
@@ -324,7 +329,8 @@ struct UltimateCleanupOrchestrationTests {
         let coordinator = makeCoordinator(session: session, installer: installer)
 
         // Simulate an active installer operation that fails
-        await installer.setStopAndCleanError(InstallerError.terminationFailed("operation in progress"))
+        installer.stopAndCleanError = InstallerError.terminationFailed("operation in progress")
+        installer.snapshotResult = InstallerOperation(runtimeSafeID: "test", prefixSafeID: "test", phase: .installerRunning)
         // No runtimeURL or prefixLayout set — prefix cleanup cannot proceed
         // Stage 3 will append "Prefix cleanup context unavailable"
 
@@ -349,7 +355,7 @@ struct UltimateCleanupOrchestrationTests {
         let result = await coordinator.stopAllForApplicationTermination()
 
         #expect(result == .clean)
-        let prefixCount = await installer.stopKnownPrefixCallCount
+        let prefixCount = installer.stopKnownPrefixCallCount
         #expect(prefixCount == 0)
     }
 
@@ -360,9 +366,9 @@ struct UltimateCleanupOrchestrationTests {
         let coordinator = makeCoordinator(session: session, installer: installer)
 
         // All three stages fail
-        await installer.setStopAndCleanError(InstallerError.terminationFailed("installer busy"))
+        installer.stopAndCleanError = InstallerError.terminationFailed("installer busy")
         session.stopError = SessionSupervisorError.stopFailed("session hung")
-        await installer.setStopKnownPrefixError(InstallerError.terminationFailed("wineserver busy"))
+        installer.setStopKnownPrefixError(InstallerError.terminationFailed("wineserver busy"))
         coordinator.runtimeURL = testRuntimeURL
         coordinator.prefixLayout = makePrefixLayout(root: testPrefixURL)
         session.activeSession = GameSession(
@@ -383,7 +389,7 @@ struct UltimateCleanupOrchestrationTests {
             let parts = reason.components(separatedBy: "; ")
             #expect(parts.count >= 3, "Expected at least 3 failure parts, got \(parts.count): \(reason)")
             #expect(parts.contains { $0.contains("Installer cleanup") })
-            #expect(parts.contains { $0.contains("Session stop") })
+            #expect(parts.contains { $0.contains("Session cleanup failed") })
             #expect(parts.contains { $0.contains("Prefix cleanup") })
         } else {
             Issue.record("Expected .incomplete, got .clean")
@@ -397,7 +403,7 @@ struct UltimateCleanupOrchestrationTests {
         let coordinator = makeCoordinator(session: session, installer: installer)
 
         // Error with no absolute path — verify the message is preserved cleanly
-        await installer.setStopAndCleanError(InstallerError.terminationFailed("steam.exe not responding"))
+        installer.stopAndCleanError = InstallerError.terminationFailed("operation in progress")
         coordinator.runtimeURL = testRuntimeURL
         coordinator.prefixLayout = makePrefixLayout(root: testPrefixURL)
 
@@ -428,7 +434,7 @@ struct UltimateCleanupOrchestrationTests {
             steamURL: steamURL,
             prefixURL: prefixURL,
             environment: env
-        )
+        , renderArguments: [])
 
         #expect(plan.runtimeExecutable == wineURL)
         #expect(plan.arguments == [steamURL.path])
@@ -450,10 +456,10 @@ struct UltimateCleanupOrchestrationTests {
             steamURL: steamURL,
             prefixURL: prefixURL,
             environment: env
-        )
+        , renderArguments: [])
 
         #expect(plan.runtimeExecutable == wineURL)
-        #expect(plan.arguments == [steamURL.path, "-applaunch", "3314790"])
+        #expect(plan.arguments == [steamURL.path, "-applaunch", "3314790", "-popupwindow", "-screen-fullscreen", "0"])
         #expect(plan.mode == .supervisedSession)
         #expect(plan.environment == env)
         #expect(plan.workingDirectory == prefixURL)
@@ -472,7 +478,7 @@ struct UltimateCleanupOrchestrationTests {
             steamURL: steamURL,
             prefixURL: prefixURL,
             environment: env
-        )
+        , renderArguments: [])
 
         #expect(plan.environment.isEmpty)
         #expect(plan.runtimeExecutable == wineURL)
@@ -491,9 +497,99 @@ struct UltimateCleanupOrchestrationTests {
             steamURL: steamURL,
             prefixURL: prefixURL,
             environment: env
-        )
+        , renderArguments: [])
 
         #expect(plan.environment.isEmpty)
-        #expect(plan.arguments == [steamURL.path, "-applaunch", "3314790"])
+        #expect(plan.arguments == [steamURL.path, "-applaunch", "3314790", "-popupwindow", "-screen-fullscreen", "0"])
+    }
+
+    // MARK: - Missing context tests
+
+    @Test("post-stop missing prefix context returns incomplete")
+    func postStop_missingContext() async {
+        let installer = FakeInstallerLifecycleSupervisor()
+        let session = FakeGameSessionSupervisor()
+        let coordinator = makeCoordinator(session: session, installer: installer)
+
+        // Session has activeSession but stop clears it AND context is missing
+        session.activeSession = GameSession(
+            sessionID: UUID(),
+            recipeID: "test",
+            runtimeID: "test",
+            prefixRoot: testPrefixURL,
+            rootPID: 42,
+            startedAt: Date(),
+            purpose: .game
+        )
+        session.stopShouldClearActiveSession = true
+        // Missing runtime/prefix context
+        coordinator.runtimeURL = nil
+        coordinator.prefixLayout = nil
+
+        let result = await coordinator.stopAllForApplicationTermination()
+
+        #expect(session.stopCallCount == 1)
+        #expect(result == .incomplete("Prefix cleanup context unavailable"))
+    }
+
+    @Test("post-installer-cleanup missing context returns incomplete")
+    func postInstaller_missingContext() async {
+        let installer = FakeInstallerLifecycleSupervisor()
+        installer.snapshotResult = InstallerOperation(runtimeSafeID: "test", prefixSafeID: "test", phase: .cleanupRequired)
+        let session = FakeGameSessionSupervisor()
+        let coordinator = makeCoordinator(session: session, installer: installer)
+
+        // Installer has snapshot but stopAndClean clears it AND context missing
+        coordinator.runtimeURL = nil
+        coordinator.prefixLayout = nil
+
+        let result = await coordinator.stopAllForApplicationTermination()
+
+        #expect(installer.stopAndCleanCallCount == 1)
+        #expect(result == .incomplete("Prefix cleanup context unavailable"))
+    }
+
+    @Test("redacted cleanup does not leak paths")
+    func redactedCleanup_noPathLeaks() async {
+        let installer = FakeInstallerLifecycleSupervisor()
+        installer.stopAndCleanError = InstallerError.terminationFailed(
+            "Failed at /Users/test/Library/Application Support/MacSteam/Prefixes/private"
+        ) 
+        let session = FakeGameSessionSupervisor()
+        let coordinator = makeCoordinator(session: session, installer: installer)
+        coordinator.runtimeURL = testRuntimeURL
+        coordinator.prefixLayout = makePrefixLayout(root: testPrefixURL)
+
+        let result = await coordinator.stopAllForApplicationTermination()
+
+        if case .incomplete(let reason) = result {
+            #expect(!reason.contains("/Users"))
+            #expect(!reason.contains("private"))
+            #expect(reason.contains("Installer"))
+        } else {
+            Issue.record("Expected .incomplete")
+        }
+    }
+
+    @Test("redacted cleanup does not leak PID")
+    func redactedCleanup_noPidLeaks() async {
+        let installer = FakeInstallerLifecycleSupervisor()
+        installer.stopAndCleanError = InstallerError.terminationFailed(
+            "Session already running (PID 4321"
+        )
+        let session = FakeGameSessionSupervisor()
+        let coordinator = makeCoordinator(session: session, installer: installer)
+        coordinator.runtimeURL = testRuntimeURL
+        coordinator.prefixLayout = makePrefixLayout(root: testPrefixURL)
+
+        let result = await coordinator.stopAllForApplicationTermination()
+
+        if case .incomplete(let reason) = result {
+            #expect(!reason.contains("4321"))
+            #expect(!reason.contains("PID"))
+            #expect(reason.contains("Installer"))
+        } else {
+            Issue.record("Expected .incomplete")
+        }
     }
 }

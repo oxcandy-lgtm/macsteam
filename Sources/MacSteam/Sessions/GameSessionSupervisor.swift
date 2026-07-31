@@ -106,6 +106,17 @@ final class GameSessionSupervisor {
     private var sessionLock: SessionLock?
     private var launchCommitted = false
 
+    // MARK: - Validation
+
+    /// Validate that a launch plan is suitable for a supervised session.
+    static func validateSessionPlan(_ plan: LaunchPlan) throws {
+        guard plan.mode == .supervisedSession else {
+            throw SessionSupervisorError.validationFailed(
+                "Session launch requires supervisedSession mode"
+            )
+        }
+    }
+
     // MARK: - Launch
 
     /// Launch a new session.
@@ -126,11 +137,7 @@ final class GameSessionSupervisor {
         runtimeID: String,
         purpose: SessionPurpose = .game
     ) async throws -> GameSession {
-        guard case .supervisedSession = plan.mode else {
-            throw SessionSupervisorError.validationFailed(
-                "Session launch requires supervisedSession mode"
-            )
-        }
+        try Self.validateSessionPlan(plan)
 
         guard state == .idle || state == .stopped else {
             let pid = activeSession?.rootPID ?? 0
