@@ -3794,6 +3794,490 @@ final class UltimateSetupCoordinator {
 '
 run_audit_navguard "acquisition_branch_evidence_wrong_binding_name" "evidence wrong binding name" 1 "prefix acquisition branch inventory violation"
 
+# ── U1R17-L source-span binding fixtures ──
+
+mk_repo "acquisition_branch_log_canonical_line_comment_decoy"
+seed_required_files "acquisition_branch_log_canonical_line_comment_decoy"
+add_file "acquisition_branch_log_canonical_line_comment_decoy" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            // log("Canonical prefix resolved (evidence isValid=\(evidence.isValid))")
+            log(sideEffect())
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_canonical_line_comment_decoy" "validated line comment decoy" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_adopted_branch_log_canonical_line_comment_decoy"
+seed_required_files "acquisition_adopted_branch_log_canonical_line_comment_decoy"
+add_file "acquisition_adopted_branch_log_canonical_line_comment_decoy" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            log("Canonical prefix resolved (evidence isValid=\(evidence.isValid))")
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            // log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            log(sideEffect())
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_adopted_branch_log_canonical_line_comment_decoy" "adopted line comment decoy" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_branch_log_canonical_block_comment_decoy"
+seed_required_files "acquisition_branch_log_canonical_block_comment_decoy"
+add_file "acquisition_branch_log_canonical_block_comment_decoy" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            /* log("Canonical prefix resolved (evidence isValid=\(evidence.isValid))") */
+            log("wrong text")
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_canonical_block_comment_decoy" "block comment decoy" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_branch_log_canonical_string_decoy"
+seed_required_files "acquisition_branch_log_canonical_string_decoy"
+add_file "acquisition_branch_log_canonical_string_decoy" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            log("see: Canonical prefix resolved (evidence isValid=\(evidence.isValid) end")
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_canonical_string_decoy" "string decoy" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_branch_log_decoy_outside_branch"
+seed_required_files "acquisition_branch_log_decoy_outside_branch"
+add_file "acquisition_branch_log_decoy_outside_branch" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            log("wrong")
+            return (existing, .existingCanonical)
+        }
+        // log("Canonical prefix resolved (evidence isValid=\(evidence.isValid))")
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_decoy_outside_branch" "decoy outside branch" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_branch_log_decoy_in_other_branch"
+seed_required_files "acquisition_branch_log_decoy_in_other_branch"
+add_file "acquisition_branch_log_decoy_in_other_branch" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            log("wrong")
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            // log("Canonical prefix resolved (evidence isValid=\(evidence.isValid))")
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_decoy_in_other_branch" "decoy in other branch" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_branch_log_multiline_string_decoy"
+seed_required_files "acquisition_branch_log_multiline_string_decoy"
+add_file "acquisition_branch_log_multiline_string_decoy" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            log("""Canonical prefix resolved (evidence isValid=\(evidence.isValid))""")
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_multiline_string_decoy" "multiline string decoy" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_branch_log_raw_string_decoy"
+seed_required_files "acquisition_branch_log_raw_string_decoy"
+add_file "acquisition_branch_log_raw_string_decoy" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            log(#"Canonical prefix resolved (evidence isValid=\(evidence.isValid))"#)
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_raw_string_decoy" "raw string decoy" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_branch_log_nested_block_comment_decoy"
+seed_required_files "acquisition_branch_log_nested_block_comment_decoy"
+add_file "acquisition_branch_log_nested_block_comment_decoy" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            /* /* log("Canonical prefix resolved (evidence isValid=\(evidence.isValid))") */ */
+            log("wrong")
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_nested_block_comment_decoy" "nested block comment decoy" 1 "prefix acquisition branch inventory violation"
+
+mk_repo "acquisition_branch_log_unterminated_block_comment"
+seed_required_files "acquisition_branch_log_unterminated_block_comment"
+add_file "acquisition_branch_log_unterminated_block_comment" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+        if let existing = validatedLayout {
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+            /* log("Canonical prefix resolved (evidence isValid=\(evidence.isValid))")
+            log("wrong")
+            return (existing, .existingCanonical)
+        }
+        if let adopted = adoptedLayout {
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+            log("Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))")
+            return (adopted, .adoptedSteam)
+        }
+        return nil
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_unterminated_block_comment" "unterminated block comment" 2 "required contract unparseable"
+
+mk_repo "acquisition_branch_log_positive_whitespace"
+seed_required_files "acquisition_branch_log_positive_whitespace"
+add_file "acquisition_branch_log_positive_whitespace" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout, let inspection = prefixInspection, inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+    func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    func establishPrefixEvidence(for layout: PrefixLayout, source: PrefixAcquisitionSource) { }
+    func establishExistingPrefixAcquisition(validatedLayout: PrefixLayout?, adoptedLayout: PrefixLayout?) -> (PrefixLayout, PrefixAcquisitionSource)? {
+
+        if let existing = validatedLayout {
+
+            let evidence = establishPrefixEvidence(for: existing, source: .existingCanonical)
+
+            log(  "Canonical prefix resolved (evidence isValid=\(evidence.isValid))"  )
+
+            return (existing, .existingCanonical)
+
+        }
+
+        if let adopted = adoptedLayout {
+
+            let evidence = establishPrefixEvidence(for: adopted, source: .adoptedSteam)
+
+            log(  "Adopted existing Steam prefix (evidence isValid=\(evidence.isValid))"  )
+
+            return (adopted, .adoptedSteam)
+
+        }
+
+        return nil
+
+    }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
+            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+        }
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        state = .prefixReady
+    }
+}
+
+'
+run_audit_navguard "acquisition_branch_log_positive_whitespace" "positive whitespace" 0 ""
+
+
 
 # ── Infrastructure failure ──
 # Infrastructure failure test (use fake git that exits 2)

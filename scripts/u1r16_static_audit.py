@@ -475,92 +475,246 @@ _VALIDATED_LOG_SUFFIX = ")"
 _ADOPTED_LOG_PREFIX = "Adopted existing Steam prefix (evidence isValid="
 _ADOPTED_LOG_SUFFIX = ")"
 
+# ── U1R17-L: source-preserving span parser ─────────────────────────────
 
-def _find_raw_log_in_branch(raw_content: str, layout_name: str):
-    """Find the raw ``log(...)`` call text inside the branch for *layout_name*.
+def mask_swift_full(raw: str) -> str:
+    """Comprehensive Swift lexer producing a same-length masked string.
 
-    Searches the full raw file content starting from the function
-    declaration.  Returns the raw call text (e.g. ``log("...")``) or
-    ``None`` when not found / unbalanced.
+    Replaces comments and string-literal content with spaces while
+    preserving newlines and all structural characters outside
+    comments / strings.  Output length == input length (1:1 offset
+    invariant, mechanically verified before return).
+
+    Recognised constructs (ambiguous / unparseable -> exit 2):
+      // line comments
+      /* nested block comments */
+      ordinary "..." strings (escapes, \( interpolation)
+      multiline triple-quote strings
+      raw #"..."# strings (arbitrary # count)
+      escaped characters
+      interpolation parentheses (nested strings inside)
     """
-    func_idx = raw_content.find("func establishExistingPrefixAcquisition")
-    if func_idx < 0:
-        return None
-    pat = re.compile(r"if\s+let\s+\w+\s*=\s*" + re.escape(layout_name) + r"\s*\{")
-    m = pat.search(raw_content, func_idx)
-    if not m:
-        return None
-    log_idx = raw_content.find("log(", m.end())
-    if log_idx < 0:
-        return None
-    # Balanced-paren extraction with string / interpolation awareness
-    paren_start = raw_content.find("(", log_idx)
-    if paren_start < 0:
-        return None
-    depth = 0
-    j = paren_start
-    n = len(raw_content)
-    while j < n:
-        c = raw_content[j]
-        if c == '"':
+    out = list(raw)
+    i = 0
+    n = len(raw)
+
+    def _mask(a: int, b: int) -> None:
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def _skip_interpolation(j: int) -> int:
+        r"""Skip \(...) starting at j (the backslash).
+        Returns index just past the closing ) ."""
+        depth = 1
+        j += 2  # past \(
+        while j < n and depth > 0:
+            c = raw[j]
+            if c == '"':
+                j = _skip_string(j, 0)
+                continue
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
             j += 1
+        if depth != 0:
+            infra("required contract unparseable: "
+                  "unbalanced interpolation parentheses")
+        return j
+
+    def _skip_string(j: int, hc: int) -> int:
+        r"""Skip a string literal whose opening quote is at j.
+
+        hc is the number of # delimiters (0 = ordinary).
+        Returns the index just past the closing delimiter.
+        """
+        # ── multiline (hc == 0 only) ──
+        if hc == 0 and raw[j : j + 3] == '"""':
+            j += 3
             while j < n:
-                if raw_content[j] == "\\":
-                    if j + 1 < n and raw_content[j + 1] == "(":
-                        # interpolation — skip to matching close paren
-                        j += 2
-                        idp = 1
-                        while j < n and idp > 0:
-                            ic = raw_content[j]
-                            if ic == '"':
-                                j += 1
-                                while j < n:
-                                    if raw_content[j] == "\\":
-                                        j += 2
-                                        continue
-                                    if raw_content[j] == '"':
-                                        j += 1
-                                        break
-                                    j += 1
-                                continue
-                            if ic == "(":
-                                idp += 1
-                            elif ic == ")":
-                                idp -= 1
-                            j += 1
+                if raw[j] == "\\":
+                    if j + 1 < n and raw[j + 1] == "(":
+                        j = _skip_interpolation(j)
                         continue
                     j += 2
                     continue
-                if raw_content[j] == '"':
+                if raw[j : j + 3] == '"""':
+                    return j + 3
+                j += 1
+            infra("required contract unparseable: "
+                  "unterminated multiline string literal")
+
+        # ── ordinary / raw single-line ──
+        j += 1  # past opening quote
+        while j < n:
+            c = raw[j]
+            if c == "\\" and hc == 0:
+                if j + 1 < n and raw[j + 1] == "(":
+                    j = _skip_interpolation(j)
+                    continue
+                j += 2
+                continue
+            if c == "\\" and hc > 0:
+                seq = "#" * hc
+                if (raw[j + 1 : j + 1 + hc] == seq
+                        and j + 1 + hc < n
+                        and raw[j + 1 + hc] == "("):
+                    depth = 1
+                    j = j + 1 + hc + 1  # past \#...(
+                    while j < n and depth > 0:
+                        ic = raw[j]
+                        if ic == '"':
+                            j = _skip_string(j, 0)
+                            continue
+                        if ic == "(":
+                            depth += 1
+                        elif ic == ")":
+                            depth -= 1
+                        j += 1
+                    if depth != 0:
+                        infra("required contract unparseable: "
+                              "unbalanced raw-string interpolation")
+                    continue
+                j += 1
+                continue
+            if c == '"':
+                if hc > 0:
+                    if raw[j + 1 : j + 1 + hc] == "#" * hc:
+                        return j + 1 + hc
+                    j += 1
+                    continue
+                return j + 1
+            j += 1
+        infra("required contract unparseable: "
+              "unterminated string literal")
+
+    while i < n:
+        c = raw[i]
+        # ── line comment ──
+        if c == "/" and i + 1 < n and raw[i + 1] == "/":
+            j = i
+            while j < n and raw[j] != "\n":
+                j += 1
+            _mask(i, j)
+            i = j
+            continue
+        # ── block comment (nested) ──
+        if c == "/" and i + 1 < n and raw[i + 1] == "*":
+            depth = 1
+            j = i + 2
+            while j < n and depth > 0:
+                if raw[j] == "/" and j + 1 < n and raw[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                    continue
+                if raw[j] == "*" and j + 1 < n and raw[j + 1] == "/":
+                    depth -= 1
+                    j += 2
+                    continue
+                j += 1
+            if depth != 0:
+                infra("required contract unparseable: "
+                      "unterminated block comment")
+            _mask(i, j)
+            i = j
+            continue
+        # ── raw string  #"..."#  ##"..."##  ... ──
+        if c == "#":
+            hc = 0
+            j = i
+            while j < n and raw[j] == "#":
+                hc += 1
+                j += 1
+            if j < n and raw[j] == '"':
+                end = _skip_string(j, hc)
+                _mask(i, end)
+                i = end
+                continue
+            i += 1
+            continue
+        # ── ordinary / multiline string ──
+        if c == '"':
+            end = _skip_string(i, 0)
+            _mask(i, end)
+            i = end
+            continue
+        # ── single-quote (compatibility with clean_swift) ──
+        if c == "'":
+            j = i + 1
+            while j < n:
+                if raw[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if raw[j] == "'":
                     j += 1
                     break
                 j += 1
+            _mask(i, j)
+            i = j
             continue
-        if c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-            if depth == 0:
-                return raw_content[log_idx:j + 1]
-        j += 1
-    return None  # unbalanced
+        i += 1
+
+    result = "".join(out)
+    if len(result) != n:
+        infra("required contract unparseable: "
+              "mask_swift_full length invariant violated")
+    return result
 
 
-def _validate_canonical_log(raw_content: str, layout_name: str,
-                            expected_prefix: str, expected_suffix: str,
-                            label: str, out: list[str], p: str) -> None:
-    """Prove the branch log is one exact
-    ``log("<prefix>\\(evidence.isValid)<suffix>")`` call.
+def direct_statement_spans(masked: str) -> list[tuple[int, int]]:
+    """Split masked text into direct-statement offset spans.
 
-    Parses the raw (uncleaned) source so that executable interpolation
-    is never erased before validation.
+    Same logic as ``direct_statements`` but returns ``(start, end)``
+    pairs.  Offsets are valid for both the masked text and the
+    corresponding raw text (1:1 length invariant).
     """
-    raw_call = _find_raw_log_in_branch(raw_content, layout_name)
-    if raw_call is None:
-        out.append(f"{p}: {label} branch must contain a parseable log(...) call")
-        return
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    start = 0
+    i = 0
+    n = len(masked)
+    while i < n:
+        c = masked[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif depth == 0 and c == ";":
+            spans.append((start, i))
+            start = i + 1
+        elif depth == 0 and c == "\n":
+            k = i + 1
+            while k < n and masked[k] in " \t":
+                k += 1
+            nxt = masked[k] if k < n else ""
+            j = i - 1
+            while j >= start and masked[j] in " \t":
+                j -= 1
+            prev = masked[j] if j >= start else ""
+            if nxt in CONTINUATION_LEAD or prev in CONTINUATION_TAIL:
+                pass
+            else:
+                spans.append((start, i))
+                start = i + 1
+        i += 1
+    if start < n:
+        spans.append((start, n))
+    return [(s, e) for s, e in spans if masked[s:e].strip()]
 
-    norm = " ".join(raw_call.split())
+
+def _validate_canonical_log_stmt(raw_stmt: str,
+                                 expected_prefix: str,
+                                 expected_suffix: str,
+                                 label: str, out: list[str],
+                                 p: str) -> None:
+    """Full-call canonical log parser on the exact raw statement span.
+
+    *raw_stmt* is the raw source text of statement[1] from the branch
+    body — no substring search, no file-level forward scan.  The entire
+    span is consumed by the parser.
+    """
+    norm = " ".join(raw_stmt.split())
 
     # ── whole-call shape: exactly log( <one string arg> ) ──
     if not norm.startswith("log(") or not norm.endswith(")"):
@@ -606,6 +760,9 @@ def _validate_canonical_log(raw_content: str, layout_name: str,
         out.append(f"{p}: {label} branch log literal text must be exactly "
                    f"'{expected_literal}' (got '{full_literal[:80]}')")
         return
+
+
+
 
 
 def guard(label: str):
@@ -1186,6 +1343,10 @@ def _(root: str) -> list[str]:
         return out
 
     # ── helper: validate one acquisition branch statement ──
+    # U1R17-L: span-based pipeline.  The branch body is located in the
+    # RAW source via mask_swift_full + direct_statement_spans so that
+    # statement[1] raw text is extracted from the exact branch-local
+    # span — never via substring search on the full file.
     def _check_branch(stmt_text: str, layout_name: str,
                       expected_source: str, expected_log_prefix: str,
                       expected_log_suffix: str, label: str) -> None:
@@ -1222,7 +1383,7 @@ def _(root: str) -> list[str]:
             out.append(f"{p}: {label} branch must not have trailing content "
                        f"after the body brace (got '{remainder[:60]}')")
             return
-        # ── D. Branch body: exactly 3 direct statements ──
+        # ── D. Branch body: exactly 3 direct statements (cleaned) ──
         body_stmts = direct_statements(body)
         if len(body_stmts) != 3:
             out.append(f"{p}: {label} branch body must have exactly 3 direct "
@@ -1244,25 +1405,66 @@ def _(root: str) -> list[str]:
             if ev_m.group(2) != expected_source:
                 out.append(f"{p}: {label} evidence 'source:' must be "
                            f"'{expected_source}' (got '{ev_m.group(2)}')")
-        # statement 2: canonical log (structural check on cleaned text)
-        mid_norm = " ".join(body_stmts[1].split())
-        if not re.match(r"^log\s*\(", mid_norm):
-            out.append(f"{p}: {label} branch statement 2 must be "
-                       f"a log(...) call (got '{mid_norm[:80]}')")
-        else:
-            paren_idx = mid_norm.index("(")
-            inner = balanced_parens(mid_norm, paren_idx)
-            if inner is None:
-                infra(f"required contract unparseable: "
-                      f"{label} branch log unbalanced parens")
-            after = mid_norm[paren_idx + len(inner) + 2:].strip()
-            if after:
-                out.append(f"{p}: {label} branch log must not have trailing "
-                           f"content after the call (got '{after[:60]}')")
-        # raw-text log content validation (interpolation-aware)
-        _validate_canonical_log(content, layout_name,
-                                expected_log_prefix, expected_log_suffix,
-                                label, out, p)
+        # ── U1R17-L: raw source-span binding for statement[1] ──
+        # Locate the branch body in the raw source via the span parser.
+        raw_func_body = required_body(
+            content, "func establishExistingPrefixAcquisition",
+            "UltimateSetupCoordinator.establishExistingPrefixAcquisition")
+        raw_masked = mask_swift_full(raw_func_body)
+        raw_spans = direct_statement_spans(raw_masked)
+        # Find the branch statement in the raw spans by matching the
+        # cleaned header pattern.
+        branch_raw_body = None
+        for (rs, re_) in raw_spans:
+            raw_chunk = raw_func_body[rs:re_]
+            raw_chunk_clean = clean_swift(raw_chunk)
+            chunk_stmts = direct_statements(raw_chunk_clean)
+            if not chunk_stmts:
+                continue
+            first = " ".join(chunk_stmts[0].split())
+            if re.match(r"^if\s+let\s+\w+\s*=\s*" + re.escape(layout_name) + r"\s*\{", first):
+                # Extract the branch body from the raw chunk
+                bi = raw_chunk.find("{")
+                if bi < 0:
+                    continue
+                d = 0
+                bj = bi
+                while bj < len(raw_chunk):
+                    if raw_chunk[bj] == "{":
+                        d += 1
+                    elif raw_chunk[bj] == "}":
+                        d -= 1
+                        if d == 0:
+                            break
+                    bj += 1
+                if d != 0:
+                    infra(f"required contract unparseable: "
+                          f"{label} branch unbalanced braces (raw)")
+                branch_raw_body = raw_chunk[bi + 1:bj]
+                break
+        if branch_raw_body is None:
+            infra(f"required contract unparseable: "
+                  f"{label} branch not found in raw source spans")
+        # Parse the raw branch body into statement spans
+        body_masked = mask_swift_full(branch_raw_body)
+        body_spans = direct_statement_spans(body_masked)
+        if len(body_spans) != 3:
+            infra(f"required contract unparseable: {label} branch raw body "
+                  f"must have exactly 3 statement spans "
+                  f"(found {len(body_spans)})")
+        # Ordering invariant
+        s0s, s0e = body_spans[0]
+        s1s, s1e = body_spans[1]
+        s2s, s2e = body_spans[2]
+        if not (s0e <= s1s and s1e <= s2s):
+            infra(f"required contract unparseable: {label} branch statement "
+                  f"spans out of order")
+        # Extract the exact raw text of statement[1]
+        raw_stmt1 = branch_raw_body[s1s:s1e]
+        # Full-call canonical log parser on the exact raw span
+        _validate_canonical_log_stmt(raw_stmt1,
+                                     expected_log_prefix, expected_log_suffix,
+                                     label, out, p)
         # statement 3: matching-pair return
         ret_norm = " ".join(body_stmts[2].split())
         ret_m = re.match(
