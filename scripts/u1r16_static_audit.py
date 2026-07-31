@@ -708,34 +708,71 @@ def _validate_canonical_log_stmt(raw_stmt: str,
                                  expected_suffix: str,
                                  label: str, out: list[str],
                                  p: str) -> None:
-    """Full-call canonical log parser on the exact raw statement span.
+    """Source-preserving canonical log parser on the exact raw statement span.
 
-    *raw_stmt* is the raw source text of statement[1] from the branch
-    body — no substring search, no file-level forward scan.  The entire
-    span is consumed by the parser.
+    Parses offset-by-offset: external syntax trivia (whitespace outside
+    string literals) is skipped, but literal content inside the string
+    argument is preserved byte-for-byte from source to comparison.
+    No full-statement normalization is performed (U1R17-M).
     """
-    norm = " ".join(raw_stmt.split())
+    n = len(raw_stmt)
+    i = 0
 
-    # ── whole-call shape: exactly log( <one string arg> ) ──
-    if not norm.startswith("log(") or not norm.endswith(")"):
+    # ── skip leading external trivia ──
+    while i < n and raw_stmt[i] in " \t\n\r":
+        i += 1
+
+    # ── identifier must be exactly 'log' ──
+    if raw_stmt[i:i + 3] != "log":
         out.append(f"{p}: {label} branch log must be a single log(...) call "
-                   f"(got '{norm[:80]}')")
+                   f"(got '{raw_stmt[:80]}')")
         return
+    i += 3
 
-    inner = norm[4:-1].strip()
+    # ── skip trivia between identifier and '(' ──
+    while i < n and raw_stmt[i] in " \t\n\r":
+        i += 1
 
-    # The single argument must be a string literal
-    if not inner.startswith('"'):
+    # ── consume opening '(' ──
+    if i >= n or raw_stmt[i] != "(":
+        out.append(f"{p}: {label} branch log must be a single log(...) call "
+                   f"(got '{raw_stmt[:80]}')")
+        return
+    i += 1
+
+    # ── skip trivia before string argument ──
+    while i < n and raw_stmt[i] in " \t\n\r":
+        i += 1
+
+    # ── argument must be an ordinary string literal ──
+    if i >= n or raw_stmt[i] != '"':
         out.append(f"{p}: {label} branch log argument must be a string literal "
-                   f"(got '{inner[:80]}')")
+                   f"(got '{raw_stmt[i:i + 80]}')")
         return
 
-    # Parse the string literal with interpolation awareness
-    segments, end_idx = parse_swift_string_segments(inner, 0)
-    trailing = inner[end_idx:].strip()
-    if trailing:
+    # ── parse string literal (source-preserving, no normalization) ──
+    segments, end_idx = parse_swift_string_segments(raw_stmt, i)
+    i = end_idx
+
+    # ── skip trivia after string literal ──
+    while i < n and raw_stmt[i] in " \t\n\r":
+        i += 1
+
+    # ── consume closing ')' ──
+    if i >= n or raw_stmt[i] != ")":
         out.append(f"{p}: {label} branch log must not have trailing content "
-                   f"after the string literal (got '{trailing[:60]}')")
+                   f"after the string literal (got '{raw_stmt[i:i + 60]}')")
+        return
+    i += 1
+
+    # ── skip trailing external trivia ──
+    while i < n and raw_stmt[i] in " \t\n\r":
+        i += 1
+
+    # ── require statement end ──
+    if i != n:
+        out.append(f"{p}: {label} branch log must not have trailing content "
+                   f"after the closing paren (got '{raw_stmt[i:i + 60]}')")
         return
 
     # ── exactly one interpolation ──
@@ -745,14 +782,14 @@ def _validate_canonical_log_stmt(raw_stmt: str,
                    f"(found {len(interpolations)})")
         return
 
-    # ── interpolation expression must be exactly evidence.isValid ──
+    # ── interpolation expression: syntax trivia normalized (code, not literal) ──
     interp_expr = " ".join(interpolations[0][1].split())
     if interp_expr != "evidence.isValid":
         out.append(f"{p}: {label} branch log interpolation must be exactly "
                    f"'evidence.isValid' (got '{interp_expr[:80]}')")
         return
 
-    # ── literal segments must match production contract ──
+    # ── literal segments: byte-for-byte source comparison (U1R17-M) ──
     literal_parts = [s[1] for s in segments if s[0] == "literal"]
     full_literal = "".join(literal_parts)
     expected_literal = expected_prefix + expected_suffix
