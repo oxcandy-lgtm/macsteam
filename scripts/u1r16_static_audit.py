@@ -394,6 +394,220 @@ def iter_swift_files(root: str, rel_dir: str):
                 yield os.path.join(dirpath, fn)
 
 
+
+# ── Swift string literal / interpolation parser (U1R17-K) ──────────────
+
+def parse_swift_string_segments(raw_text: str, start_idx: int):
+    """Parse a Swift string literal starting at ``start_idx`` (must be ``"``).
+
+    Returns ``(segments, end_idx)`` where *segments* is a list of
+    ``('literal', text)`` / ``('interpolation', expr_text)`` tuples and
+    *end_idx* is the index just past the closing ``"``.
+
+    Handles escaped characters, ``\\(`` interpolation openings, nested
+    parentheses inside interpolation, and nested string literals inside
+    interpolation.  Unbalanced syntax calls ``infra()`` (exit 2).
+    """
+    if start_idx >= len(raw_text) or raw_text[start_idx] != '"':
+        infra("required contract unparseable: expected string literal opening quote")
+    segments: list[tuple[str, str]] = []
+    i = start_idx + 1
+    n = len(raw_text)
+    lit: list[str] = []
+
+    while i < n:
+        c = raw_text[i]
+        if c == "\\":
+            if i + 1 >= n:
+                infra("required contract unparseable: unterminated escape in string literal")
+            nc = raw_text[i + 1]
+            if nc == "(":
+                # ── interpolation opening ──
+                if lit:
+                    segments.append(("literal", "".join(lit)))
+                    lit = []
+                interp_start = i + 2
+                depth = 1
+                j = interp_start
+                while j < n and depth > 0:
+                    ic = raw_text[j]
+                    if ic == '"':
+                        # nested string inside interpolation
+                        j += 1
+                        while j < n:
+                            if raw_text[j] == "\\":
+                                j += 2
+                                continue
+                            if raw_text[j] == '"':
+                                j += 1
+                                break
+                            j += 1
+                        continue
+                    if ic == "(":
+                        depth += 1
+                    elif ic == ")":
+                        depth -= 1
+                    j += 1
+                if depth != 0:
+                    infra("required contract unparseable: "
+                          "unbalanced interpolation in string literal")
+                segments.append(("interpolation", raw_text[interp_start:j - 1]))
+                i = j
+                continue
+            else:
+                lit.append(c)
+                lit.append(nc)
+                i += 2
+                continue
+        if c == '"':
+            if lit:
+                segments.append(("literal", "".join(lit)))
+            return segments, i + 1
+        lit.append(c)
+        i += 1
+
+    infra("required contract unparseable: unterminated string literal")
+
+
+# Production-canonical log literals (derived from base HEAD 6979eb5).
+_VALIDATED_LOG_PREFIX = "Canonical prefix resolved (evidence isValid="
+_VALIDATED_LOG_SUFFIX = ")"
+_ADOPTED_LOG_PREFIX = "Adopted existing Steam prefix (evidence isValid="
+_ADOPTED_LOG_SUFFIX = ")"
+
+
+def _find_raw_log_in_branch(raw_content: str, layout_name: str):
+    """Find the raw ``log(...)`` call text inside the branch for *layout_name*.
+
+    Searches the full raw file content starting from the function
+    declaration.  Returns the raw call text (e.g. ``log("...")``) or
+    ``None`` when not found / unbalanced.
+    """
+    func_idx = raw_content.find("func establishExistingPrefixAcquisition")
+    if func_idx < 0:
+        return None
+    pat = re.compile(r"if\s+let\s+\w+\s*=\s*" + re.escape(layout_name) + r"\s*\{")
+    m = pat.search(raw_content, func_idx)
+    if not m:
+        return None
+    log_idx = raw_content.find("log(", m.end())
+    if log_idx < 0:
+        return None
+    # Balanced-paren extraction with string / interpolation awareness
+    paren_start = raw_content.find("(", log_idx)
+    if paren_start < 0:
+        return None
+    depth = 0
+    j = paren_start
+    n = len(raw_content)
+    while j < n:
+        c = raw_content[j]
+        if c == '"':
+            j += 1
+            while j < n:
+                if raw_content[j] == "\\":
+                    if j + 1 < n and raw_content[j + 1] == "(":
+                        # interpolation — skip to matching close paren
+                        j += 2
+                        idp = 1
+                        while j < n and idp > 0:
+                            ic = raw_content[j]
+                            if ic == '"':
+                                j += 1
+                                while j < n:
+                                    if raw_content[j] == "\\":
+                                        j += 2
+                                        continue
+                                    if raw_content[j] == '"':
+                                        j += 1
+                                        break
+                                    j += 1
+                                continue
+                            if ic == "(":
+                                idp += 1
+                            elif ic == ")":
+                                idp -= 1
+                            j += 1
+                        continue
+                    j += 2
+                    continue
+                if raw_content[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return raw_content[log_idx:j + 1]
+        j += 1
+    return None  # unbalanced
+
+
+def _validate_canonical_log(raw_content: str, layout_name: str,
+                            expected_prefix: str, expected_suffix: str,
+                            label: str, out: list[str], p: str) -> None:
+    """Prove the branch log is one exact
+    ``log("<prefix>\\(evidence.isValid)<suffix>")`` call.
+
+    Parses the raw (uncleaned) source so that executable interpolation
+    is never erased before validation.
+    """
+    raw_call = _find_raw_log_in_branch(raw_content, layout_name)
+    if raw_call is None:
+        out.append(f"{p}: {label} branch must contain a parseable log(...) call")
+        return
+
+    norm = " ".join(raw_call.split())
+
+    # ── whole-call shape: exactly log( <one string arg> ) ──
+    if not norm.startswith("log(") or not norm.endswith(")"):
+        out.append(f"{p}: {label} branch log must be a single log(...) call "
+                   f"(got '{norm[:80]}')")
+        return
+
+    inner = norm[4:-1].strip()
+
+    # The single argument must be a string literal
+    if not inner.startswith('"'):
+        out.append(f"{p}: {label} branch log argument must be a string literal "
+                   f"(got '{inner[:80]}')")
+        return
+
+    # Parse the string literal with interpolation awareness
+    segments, end_idx = parse_swift_string_segments(inner, 0)
+    trailing = inner[end_idx:].strip()
+    if trailing:
+        out.append(f"{p}: {label} branch log must not have trailing content "
+                   f"after the string literal (got '{trailing[:60]}')")
+        return
+
+    # ── exactly one interpolation ──
+    interpolations = [s for s in segments if s[0] == "interpolation"]
+    if len(interpolations) != 1:
+        out.append(f"{p}: {label} branch log must have exactly one interpolation "
+                   f"(found {len(interpolations)})")
+        return
+
+    # ── interpolation expression must be exactly evidence.isValid ──
+    interp_expr = " ".join(interpolations[0][1].split())
+    if interp_expr != "evidence.isValid":
+        out.append(f"{p}: {label} branch log interpolation must be exactly "
+                   f"'evidence.isValid' (got '{interp_expr[:80]}')")
+        return
+
+    # ── literal segments must match production contract ──
+    literal_parts = [s[1] for s in segments if s[0] == "literal"]
+    full_literal = "".join(literal_parts)
+    expected_literal = expected_prefix + expected_suffix
+    if full_literal != expected_literal:
+        out.append(f"{p}: {label} branch log literal text must be exactly "
+                   f"'{expected_literal}' (got '{full_literal[:80]}')")
+        return
+
+
 def guard(label: str):
     def deco(fn):
         GUARDS.append((label, fn))
@@ -939,8 +1153,8 @@ def _(root: str) -> list[str]:
     """Complete executable-shape proof for establishExistingPrefixAcquisition.
 
     Router body direct executable statements must be exactly 3:
-      1. validated-layout branch  (exact header + exact 2-statement body)
-      2. adopted-layout branch    (exact header + exact 2-statement body)
+      1. validated-layout branch  (exact header + exact 3-statement body)
+      2. adopted-layout branch    (exact header + exact 3-statement body)
       3. terminal fallback        (exactly ``return nil``)
 
     No other direct statement may appear before, between, or after these
@@ -973,7 +1187,8 @@ def _(root: str) -> list[str]:
 
     # ── helper: validate one acquisition branch statement ──
     def _check_branch(stmt_text: str, layout_name: str,
-                      expected_source: str, label: str) -> None:
+                      expected_source: str, expected_log_prefix: str,
+                      expected_log_suffix: str, label: str) -> None:
         brace_idx = stmt_text.find("{")
         if brace_idx < 0:
             out.append(f"{p}: {label} branch must be an 'if let' statement "
@@ -1007,20 +1222,20 @@ def _(root: str) -> list[str]:
             out.append(f"{p}: {label} branch must not have trailing content "
                        f"after the body brace (got '{remainder[:60]}')")
             return
-        # ── D. Branch body: evidence + optional log + return ──
+        # ── D. Branch body: exactly 3 direct statements ──
         body_stmts = direct_statements(body)
-        if len(body_stmts) < 2 or len(body_stmts) > 3:
-            out.append(f"{p}: {label} branch body must have 2-3 direct "
+        if len(body_stmts) != 3:
+            out.append(f"{p}: {label} branch body must have exactly 3 direct "
                        f"statements (found {len(body_stmts)})")
             return
-        # statement 1: evidence call (optionally bound via let)
+        # statement 1: let evidence = establishPrefixEvidence(for: <var>, source: <source>)
         ev_norm = " ".join(body_stmts[0].split())
         ev_m = re.match(
-            r"^(?:let\s+\w+\s*=\s*)?establishPrefixEvidence\s*\(\s*for\s*:\s*(\w+)\s*,"
+            r"^let\s+evidence\s*=\s*establishPrefixEvidence\s*\(\s*for\s*:\s*(\w+)\s*,"
             r"\s*source\s*:\s*(\.\w+)\s*\)$", ev_norm)
         if not ev_m:
             out.append(f"{p}: {label} branch statement 1 must be "
-                       f"'establishPrefixEvidence(for: <var>, source: "
+                       f"'let evidence = establishPrefixEvidence(for: <var>, source: "
                        f"{expected_source})' (got '{ev_norm[:80]}')")
         else:
             if ev_m.group(1) != branch_var:
@@ -1029,17 +1244,27 @@ def _(root: str) -> list[str]:
             if ev_m.group(2) != expected_source:
                 out.append(f"{p}: {label} evidence 'source:' must be "
                            f"'{expected_source}' (got '{ev_m.group(2)}')")
-        # optional middle statement: only log(...) allowed
-        if len(body_stmts) == 3:
-            mid_norm = " ".join(body_stmts[1].split())
-            if not re.match(r"^log\s*\(", mid_norm):
-                out.append(f"{p}: {label} branch middle statement must be "
-                           f"a log(...) call (got '{mid_norm[:80]}')")
-            ret_idx = 2
+        # statement 2: canonical log (structural check on cleaned text)
+        mid_norm = " ".join(body_stmts[1].split())
+        if not re.match(r"^log\s*\(", mid_norm):
+            out.append(f"{p}: {label} branch statement 2 must be "
+                       f"a log(...) call (got '{mid_norm[:80]}')")
         else:
-            ret_idx = 1
-        # last statement: matching-pair return
-        ret_norm = " ".join(body_stmts[ret_idx].split())
+            paren_idx = mid_norm.index("(")
+            inner = balanced_parens(mid_norm, paren_idx)
+            if inner is None:
+                infra(f"required contract unparseable: "
+                      f"{label} branch log unbalanced parens")
+            after = mid_norm[paren_idx + len(inner) + 2:].strip()
+            if after:
+                out.append(f"{p}: {label} branch log must not have trailing "
+                           f"content after the call (got '{after[:60]}')")
+        # raw-text log content validation (interpolation-aware)
+        _validate_canonical_log(content, layout_name,
+                                expected_log_prefix, expected_log_suffix,
+                                label, out, p)
+        # statement 3: matching-pair return
+        ret_norm = " ".join(body_stmts[2].split())
         ret_m = re.match(
             r"^return\s*\(\s*(\w+)\s*,\s*(\.\w+)\s*\)$", ret_norm)
         if not ret_m:
@@ -1055,9 +1280,11 @@ def _(root: str) -> list[str]:
                            f"'{expected_source}' (got '{ret_m.group(2)}')")
 
     # ── B. Validated branch (statement 0) ──
-    _check_branch(stmts[0], "validatedLayout", ".existingCanonical", "validated")
+    _check_branch(stmts[0], "validatedLayout", ".existingCanonical",
+                  _VALIDATED_LOG_PREFIX, _VALIDATED_LOG_SUFFIX, "validated")
     # ── C. Adopted branch (statement 1) ──
-    _check_branch(stmts[1], "adoptedLayout", ".adoptedSteam", "adopted")
+    _check_branch(stmts[1], "adoptedLayout", ".adoptedSteam",
+                  _ADOPTED_LOG_PREFIX, _ADOPTED_LOG_SUFFIX, "adopted")
 
     # ── A (terminal). Statement 2: exactly ``return nil`` ──
     terminal = " ".join(stmts[2].split())
