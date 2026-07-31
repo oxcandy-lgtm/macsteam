@@ -936,18 +936,24 @@ def _(root: str) -> list[str]:
 
 @guard("prefix acquisition branch inventory violation")
 def _(root: str) -> list[str]:
-    """Router branch inventory: exactly one validatedLayout direct branch,
-    exactly one adoptedLayout direct branch, validated before adopted,
-    exactly one terminal direct `return nil` after both branches.
+    """Complete executable-shape proof for establishExistingPrefixAcquisition.
 
-    Only DIRECT statements (brace-depth 0) of the router body count as
-    branches or terminal returns. Tokens inside closures, local
-    functions, nested control flow, comments, or strings never count.
+    Router body direct executable statements must be exactly 3:
+      1. validated-layout branch  (exact header + exact 2-statement body)
+      2. adopted-layout branch    (exact header + exact 2-statement body)
+      3. terminal fallback        (exactly ``return nil``)
+
+    No other direct statement may appear before, between, or after these
+    three.  Closure / local-function / nested-control-flow / comment /
+    string tokens never count as direct statements.
+
+    Exit 1 + exact label for every semantic violation.
+    Exit 2 (infrastructure) for missing / unparseable structure.
     """
     content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
     if content is None:
         infra("required contract missing: UltimateSetupCoordinator.swift")
-    out = []
+    out: list[str] = []
     cleaned = clean_swift(content)
     if "func establishExistingPrefixAcquisition" not in cleaned:
         infra("required contract missing: "
@@ -956,32 +962,109 @@ def _(root: str) -> list[str]:
         cleaned, "func establishExistingPrefixAcquisition",
         "UltimateSetupCoordinator.establishExistingPrefixAcquisition"
     )
-    stmts = direct_statements(router_body)
-    validated_idxs = []
-    adopted_idxs = []
-    nil_idxs = []
-    for idx, s in enumerate(stmts):
-        if re.match(r"if\s+let\s+\w+\s*=\s*validatedLayout\b", s):
-            validated_idxs.append(idx)
-        elif re.match(r"if\s+let\s+\w+\s*=\s*adoptedLayout\b", s):
-            adopted_idxs.append(idx)
-        elif re.match(r"return\s+nil\b", s):
-            nil_idxs.append(idx)
     p = os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift")
-    if len(validated_idxs) != 1:
-        out.append(f"{p}: exactly one direct validatedLayout branch required "
-                   f"(found {len(validated_idxs)})")
-    if len(adopted_idxs) != 1:
-        out.append(f"{p}: exactly one direct adoptedLayout branch required "
-                   f"(found {len(adopted_idxs)})")
-    if validated_idxs and adopted_idxs and validated_idxs[0] > adopted_idxs[0]:
-        out.append(f"{p}: validatedLayout branch must precede adoptedLayout branch")
-    if len(nil_idxs) != 1:
-        out.append(f"{p}: exactly one terminal direct 'return nil' required "
-                   f"(found {len(nil_idxs)})")
-    elif nil_idxs[0] != len(stmts) - 1:
-        out.append(f"{p}: terminal 'return nil' must be the last direct statement "
-                   "after both branches")
+    stmts = direct_statements(router_body)
+
+    # ── A. Router top-level: exactly 3 direct statements ──
+    if len(stmts) != 3:
+        out.append(f"{p}: router must have exactly 3 direct executable "
+                   f"statements (found {len(stmts)})")
+        return out
+
+    # ── helper: validate one acquisition branch statement ──
+    def _check_branch(stmt_text: str, layout_name: str,
+                      expected_source: str, label: str) -> None:
+        brace_idx = stmt_text.find("{")
+        if brace_idx < 0:
+            out.append(f"{p}: {label} branch must be an 'if let' statement "
+                       f"with a body brace (got '{stmt_text[:60]}')")
+            return
+        header = " ".join(stmt_text[:brace_idx].split())
+        hm = re.match(
+            r"^if\s+let\s+(\w+)\s*=\s*" + re.escape(layout_name) + r"$", header)
+        if not hm:
+            out.append(f"{p}: {label} branch header must be exactly "
+                       f"'if let <var> = {layout_name}' (got '{header}')")
+            return
+        branch_var = hm.group(1)
+        # balanced body + reject trailing content (else / extra blocks)
+        depth = 0
+        j = brace_idx
+        n_s = len(stmt_text)
+        while j < n_s:
+            if stmt_text[j] == "{":
+                depth += 1
+            elif stmt_text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if depth != 0:
+            infra(f"required contract unparseable: {label} branch unbalanced braces")
+        body = stmt_text[brace_idx + 1:j]
+        remainder = stmt_text[j + 1:].strip()
+        if remainder:
+            out.append(f"{p}: {label} branch must not have trailing content "
+                       f"after the body brace (got '{remainder[:60]}')")
+            return
+        # ── D. Branch body: evidence + optional log + return ──
+        body_stmts = direct_statements(body)
+        if len(body_stmts) < 2 or len(body_stmts) > 3:
+            out.append(f"{p}: {label} branch body must have 2-3 direct "
+                       f"statements (found {len(body_stmts)})")
+            return
+        # statement 1: evidence call (optionally bound via let)
+        ev_norm = " ".join(body_stmts[0].split())
+        ev_m = re.match(
+            r"^(?:let\s+\w+\s*=\s*)?establishPrefixEvidence\s*\(\s*for\s*:\s*(\w+)\s*,"
+            r"\s*source\s*:\s*(\.\w+)\s*\)$", ev_norm)
+        if not ev_m:
+            out.append(f"{p}: {label} branch statement 1 must be "
+                       f"'establishPrefixEvidence(for: <var>, source: "
+                       f"{expected_source})' (got '{ev_norm[:80]}')")
+        else:
+            if ev_m.group(1) != branch_var:
+                out.append(f"{p}: {label} evidence 'for:' must bind "
+                           f"'{branch_var}' (got '{ev_m.group(1)}')")
+            if ev_m.group(2) != expected_source:
+                out.append(f"{p}: {label} evidence 'source:' must be "
+                           f"'{expected_source}' (got '{ev_m.group(2)}')")
+        # optional middle statement: only log(...) allowed
+        if len(body_stmts) == 3:
+            mid_norm = " ".join(body_stmts[1].split())
+            if not re.match(r"^log\s*\(", mid_norm):
+                out.append(f"{p}: {label} branch middle statement must be "
+                           f"a log(...) call (got '{mid_norm[:80]}')")
+            ret_idx = 2
+        else:
+            ret_idx = 1
+        # last statement: matching-pair return
+        ret_norm = " ".join(body_stmts[ret_idx].split())
+        ret_m = re.match(
+            r"^return\s*\(\s*(\w+)\s*,\s*(\.\w+)\s*\)$", ret_norm)
+        if not ret_m:
+            out.append(f"{p}: {label} branch return must be exactly "
+                       f"'return (<var>, {expected_source})' "
+                       f"(got '{ret_norm[:80]}')")
+        else:
+            if ret_m.group(1) != branch_var:
+                out.append(f"{p}: {label} return variable must be "
+                           f"'{branch_var}' (got '{ret_m.group(1)}')")
+            if ret_m.group(2) != expected_source:
+                out.append(f"{p}: {label} return source must be "
+                           f"'{expected_source}' (got '{ret_m.group(2)}')")
+
+    # ── B. Validated branch (statement 0) ──
+    _check_branch(stmts[0], "validatedLayout", ".existingCanonical", "validated")
+    # ── C. Adopted branch (statement 1) ──
+    _check_branch(stmts[1], "adoptedLayout", ".adoptedSteam", "adopted")
+
+    # ── A (terminal). Statement 2: exactly ``return nil`` ──
+    terminal = " ".join(stmts[2].split())
+    if terminal != "return nil":
+        out.append(f"{p}: terminal fallback must be exactly 'return nil' "
+                   f"(got '{terminal}')")
+
     return out
 
 
