@@ -3,16 +3,37 @@
 import SwiftUI
 import MacsTeamNavigationCore
 
+/// Production Inspect lane for the prefix page.
+///
+/// The view invokes this action for the Inspect button; production wires it
+/// to the coordinator's canonical inspection authority exactly once per run.
+/// Tests share this SAME action type (no source-string-only proof).
+struct PrefixInspectAction {
+    let run: () async -> Void
+
+    static func production(coordinator: UltimateSetupCoordinator) -> PrefixInspectAction {
+        PrefixInspectAction(run: { await coordinator.inspectCanonicalPrefix() })
+    }
+}
+
 /// View for creating and inspecting the CloverPit Wine prefix
 /// environment.
 ///
 /// The coordinator (``UltimateSetupCoordinator``) creates the managed
-/// directory structure; ``PrefixInspector`` validates the resulting
-/// environment.
+/// directory structure and owns ALL verification evidence; the view only
+/// derives its display from ``coordinator.prefixInspection``.
 struct PrefixSetupView: View {
     let coordinator: UltimateSetupCoordinator
 
+    /// The production Inspect lane (testable; view + tests share the type).
+    var inspectAction: PrefixInspectAction
+
     @State private var isInspecting = false
+
+    init(coordinator: UltimateSetupCoordinator) {
+        self.coordinator = coordinator
+        self.inspectAction = .production(coordinator: coordinator)
+    }
 
     /// Verification evidence is coordinator-owned (bound to the canonical
     /// prefix root). The view NEVER holds its own inspection authority.
@@ -200,8 +221,8 @@ struct PrefixSetupView: View {
         guard coordinator.prefixLayout?.root != nil else { return }
         isInspecting = true
         Task {
-            // Coordinator-owned canonical inspection (single authority).
-            await coordinator.inspectCanonicalPrefix()
+            // Production Inspect lane → coordinator-owned canonical inspection.
+            await inspectAction.run()
             isInspecting = false
         }
     }

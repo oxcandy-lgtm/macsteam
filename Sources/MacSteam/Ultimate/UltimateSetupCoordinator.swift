@@ -115,14 +115,18 @@ final class UltimateSetupCoordinator {
     /// Canonical prefix layout resolved by PrefixManager (single source of truth).
     var prefixLayout: PrefixLayout? {
         didSet {
-            // Verification evidence is bound to the layout's canonical root.
-            // When the layout root changes, stale evidence MUST be discarded —
-            // it can never vouch for a different prefix.
             if oldValue?.root != prefixLayout?.root {
                 prefixInspection = nil
             }
         }
     }
+
+    /// Injectable inspection provider (test seam for evidence-path proof).
+    ///
+    /// Production uses ``PrefixInspector``; tests inject a fake to prove
+    /// evidence is established on every acquisition path without a real
+    /// Wine prefix.
+    var prefixInspectorProvider: @MainActor () -> any PrefixInspecting = { PrefixInspector() }
 
     /// Whether verification evidence is bound to the CURRENT canonical prefix root.
     ///
@@ -146,14 +150,18 @@ final class UltimateSetupCoordinator {
     /// Establish verification evidence for the current canonical prefix layout.
     ///
     /// Always binds `prefixInspection` to the layout's canonical root so the
-    /// completion gate can prove evidence ↔ layout correspondence.
+    /// completion gate can prove evidence ↔ layout correspondence. Runs on
+    /// EVERY acquisition path BEFORE any early return (e.g. Steam-ready).
     @discardableResult
-    private func establishPrefixEvidence(for layout: PrefixLayout) -> PrefixInspection {
+    func establishPrefixEvidence(
+        for layout: PrefixLayout,
+        source: PrefixAcquisitionSource
+    ) -> PrefixInspection {
         self.prefixLayout = layout
-        let inspector = PrefixInspector()
+        let inspector = prefixInspectorProvider()
         let inspection = inspector.inspect(url: layout.root)
         self.prefixInspection = inspection
-        log("Prefix evidence: root=\(layout.root.path) isValid=\(inspection.isValid) bound=\(canonicalPrefixEvidenceValid)")
+        log("Prefix evidence [\(source.rawValue)]: root=\(layout.root.path) isValid=\(inspection.isValid) bound=\(canonicalPrefixEvidenceValid)")
         return inspection
     }
 
@@ -164,7 +172,7 @@ final class UltimateSetupCoordinator {
             log("Prefix evidence: no canonical prefix layout resolved")
             return
         }
-        establishPrefixEvidence(for: layout)
+        establishPrefixEvidence(for: layout, source: .existingCanonical)
         log("Prefix evidence refreshed: isValid=\(prefixInspection?.isValid ?? false)")
     }
 
@@ -511,7 +519,7 @@ final class UltimateSetupCoordinator {
                 layout = existing
                 // Existing canonical prefix — establish evidence BEFORE any
                 // early return (inspection must never be skipped).
-                establishPrefixEvidence(for: existing)
+                establishPrefixEvidence(for: existing, source: .existingCanonical)
                 log("Canonical prefix resolved")
                 log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
 
@@ -528,7 +536,7 @@ final class UltimateSetupCoordinator {
                 if let adopted = adoptExistingSteamPrefix() {
                     layout = adopted
                     // Adopted prefix — establish evidence BEFORE the steam check.
-                    establishPrefixEvidence(for: adopted)
+                    establishPrefixEvidence(for: adopted, source: .adoptedSteam)
                     log("Adopted existing prefix with Steam installation")
                     log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
                     if layout.signature().steamExePresent {
@@ -610,9 +618,8 @@ final class UltimateSetupCoordinator {
                 return
             }
 
-            // Inspect prefix
-            let inspector = PrefixInspector()
-            self.prefixInspection = inspector.inspect(url: prefixDir)
+            // Inspect prefix (newly-initialized path — evidence BEFORE state change)
+            establishPrefixEvidence(for: layout, source: .newlyInitialized)
 
             // Reconcile Steam install lifecycle from disk state
             reconcileSteamInstallLifecycle()

@@ -125,11 +125,16 @@ struct UltimateSetupView: View {
         .padding()
     }
 
-    /// Title + step derived from the SAME page value as the body.
+    /// The page's production presentation contract — the SINGLE source for
+    /// content identity, title, step, footer page, and Steam mode.
+    private var presentation: UltimatePagePresentation {
+        UltimatePageResolver.presentation(for: coordinator.currentPage)
+    }
+
+    /// Title + step derived from the SAME presentation as the body.
     private var pageTitle: String {
-        let page = coordinator.currentPage
-        return "Step \(UltimatePageResolver.stepNumber(for: page)) of "
-            + "\(UltimatePageResolver.pageCount) — \(UltimatePageResolver.title(for: page))"
+        "Step \(presentation.stepNumber) of "
+            + "\(UltimatePageResolver.pageCount) — \(presentation.title)"
     }
 
     private var progressIndicator: some View {
@@ -137,8 +142,7 @@ struct UltimateSetupView: View {
             ForEach(InstallerPage.allCases, id: \.self) { page in
                 stepDot(
                     label: shortLabel(for: page),
-                    active: UltimatePageResolver.stepNumber(for: page)
-                        <= UltimatePageResolver.stepNumber(for: coordinator.currentPage)
+                    active: UltimatePageResolver.stepNumber(for: page) <= presentation.stepNumber
                 )
             }
         }
@@ -167,11 +171,11 @@ struct UltimateSetupView: View {
         .frame(width: 48)
     }
 
-    // MARK: - Content (single authority: currentPage)
+    // MARK: - Content (single authority: currentPage via presentation)
 
     @ViewBuilder
     private var content: some View {
-        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
+        switch presentation.contentKind {
         case .runtime:
             RuntimeSetupView(coordinator: coordinator)
         case .environment:
@@ -180,13 +184,13 @@ struct UltimateSetupView: View {
             // Production-separated installer surface (page .steamInstaller).
             SteamSetupView(
                 coordinator: coordinator,
-                mode: UltimatePageResolver.steamMode(for: coordinator.currentPage)
+                mode: presentation.steamMode ?? .installer
             )
         case .steamClient:
             // Production-separated client surface (page .steamClient).
             SteamSetupView(
                 coordinator: coordinator,
-                mode: UltimatePageResolver.steamMode(for: coordinator.currentPage)
+                mode: presentation.steamMode ?? .client
             )
         case .cloverPit:
             CloverPitLaunchView(coordinator: coordinator)

@@ -12,7 +12,21 @@ struct PrefixInspection {
 }
 
 /// Inspects a Wine prefix directory to determine its structure and contents.
-struct PrefixInspector {
+protocol PrefixInspecting {
+    func inspect(url: URL) -> PrefixInspection
+}
+
+/// The three production acquisition paths for a canonical prefix layout.
+///
+/// Every path MUST establish verification evidence BEFORE any early return;
+/// the static audit requires all three sources to appear in the coordinator.
+enum PrefixAcquisitionSource: String, Sendable {
+    case existingCanonical
+    case adoptedSteam
+    case newlyInitialized
+}
+
+struct PrefixInspector: PrefixInspecting {
     private let fm = FileManager.default
 
     /// Inspect the prefix at the given URL.

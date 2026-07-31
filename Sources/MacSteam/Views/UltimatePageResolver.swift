@@ -30,6 +30,23 @@ enum SteamSetupMode: String, CaseIterable, Sendable {
     case client
 }
 
+/// Pure presentation contract shared by production and tests.
+///
+/// `UltimateSetupView` derives its ENTIRE page identity from this
+/// descriptor — content kind, title, step number, footer page, Steam
+/// mode, and canonical-navigation capability all come from the SAME
+/// `currentPage` value. Tests pin the same contract; there is no
+/// test-only parallel mapping.
+struct UltimatePagePresentation: Equatable, Sendable {
+    let page: InstallerPage
+    let contentKind: PageContentKind
+    let title: String
+    let stepNumber: Int
+    let footerPage: InstallerPage
+    let steamMode: SteamSetupMode?
+    let hasCanonicalNavigation: Bool
+}
+
 /// Single resolver mapping ``InstallerPage`` to UI identity.
 ///
 /// Production views and tests share this resolver — a page can never
@@ -51,16 +68,30 @@ struct UltimatePageResolver {
     ///
     /// `.steamInstaller` always renders the installer surface and
     /// `.steamClient` always renders the client surface — the two are
-    /// never merged into one undifferentiated case.
-    static func steamMode(for page: InstallerPage) -> SteamSetupMode {
+    /// never merged into one undifferentiated case. Non-Steam pages
+    /// have no Steam surface (`nil`).
+    static func steamMode(for page: InstallerPage) -> SteamSetupMode? {
         switch page {
         case .steamInstaller: return .installer
         case .steamClient: return .client
-        default:
-            // Non-Steam pages have no Steam surface; callers only invoke
-            // this for the two Steam pages (tests assert the mapping).
-            return .installer
+        default: return nil
         }
+    }
+
+    /// The full presentation contract for a page.
+    ///
+    /// Every field is derived from the SAME page value. All pages carry
+    /// canonical navigation (Back/Stop & Clean/Next via `coordinator.send`).
+    static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
+        UltimatePagePresentation(
+            page: page,
+            contentKind: contentKind(for: page),
+            title: title(for: page),
+            stepNumber: stepNumber(for: page),
+            footerPage: page,
+            steamMode: steamMode(for: page),
+            hasCanonicalNavigation: true
+        )
     }
 
     /// Human-readable title for the page (used in header + diagnostics).

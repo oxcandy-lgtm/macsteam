@@ -278,38 +278,52 @@ run_audit_diagnostic "diag_unused_alias" "unused alias log" 0
 # ── Navigation authority guard fixtures ──
 
 run_audit_navguard() {
-    local repo="$1" label="$2" expected="$3"
-    local rc=0
-    GIT_WORK_TREE="$FIXTURE/$repo" GIT_DIR="$FIXTURE/$repo/.git" bash "$AUDIT" --navigation-guards-only >/dev/null 2>&1 || rc=$?
+    local repo="$1" label="$2" expected="$3" guardlabel="$4"
+    local rc=0 out
+    out=$(GIT_WORK_TREE="$FIXTURE/$repo" GIT_DIR="$FIXTURE/$repo/.git" bash "$AUDIT" --navigation-guards-only 2>&1) || rc=$?
     if [ "$rc" -eq "$expected" ]; then
-        pass "$label"
+        if [ "$expected" -eq 0 ] || echo "$out" | grep -qF "$guardlabel"; then
+            pass "$label"
+        else
+            fail "$label (expected guard '$guardlabel' in output, not found)"
+        fi
     else
         fail "$label (expected exit $expected, got $rc)"
     fi
 }
 
-# clean → 0 (correct single-authority wiring)
+# clean → 0 (correct single-authority wiring, descriptor consumed, all sources)
 mk_repo "nav_clean"
 add_file "nav_clean" "Sources/MacSteam/Views/UltimateSetupView.swift" '
 struct UltimateSetupView: View {
+    var presentation: UltimatePagePresentation { UltimatePageResolver.presentation(for: .runtime) }
     @ViewBuilder
     var content: some View {
-        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
+        switch presentation.contentKind {
         case .steamInstaller: EmptyView()
         case .steamClient: EmptyView()
         default: EmptyView()
         }
     }
-    var diagnosticsPageView: some View { InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: .diagnostics, onNavigate: { _ in }) }
+    var diagnosticsPageView: some View { InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: .diagnostics, onNavigate: { intent in await coordinator.send(intent) }) }
 }
 '
 add_file "nav_clean" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
 final class UltimateSetupCoordinator {
     var canonicalPrefixEvidenceValid: Bool { true }
-    func computePageCompletion() -> [String: Bool] { ["environment": canonicalPrefixEvidenceValid] }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = canonicalPrefixEvidenceValid
+        return completion
+    }
+    func createPrefix() {
+        establishPrefixEvidence(for: layout, source: .existingCanonical)
+        establishPrefixEvidence(for: layout, source: .adoptedSteam)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+    }
 }
 '
-run_audit_navguard "nav_clean" "clean navigation guards" 0
+run_audit_navguard "nav_clean" "clean navigation guards" 0 ""
 
 # root dispatch on coordinator.state → 1
 mk_repo "nav_root_state"
@@ -321,7 +335,7 @@ struct UltimateSetupView: View {
     }
 }
 '
-run_audit_navguard "nav_root_state" "root dispatch on state" 1
+run_audit_navguard "nav_root_state" "root dispatch on state" 1 "root dispatch on coordinator.state in UltimateSetupView"
 
 # merged Steam pages → 1
 mk_repo "nav_merged_steam"
@@ -336,7 +350,7 @@ struct UltimateSetupView: View {
     }
 }
 '
-run_audit_navguard "nav_merged_steam" "merged steam case" 1
+run_audit_navguard "nav_merged_steam" "merged steam case" 1 "Steam pages merged into one case in UltimateSetupView"
 
 # direct recheckCloverPit in SteamSetupView → 1
 mk_repo "nav_recheck_direct"
@@ -347,7 +361,7 @@ struct SteamSetupView: View {
     }
 }
 '
-run_audit_navguard "nav_recheck_direct" "direct recheckCloverPit" 1
+run_audit_navguard "nav_recheck_direct" "direct recheckCloverPit" 1 "SteamSetupView direct recheckCloverPit (canonical lane violation)"
 
 # try? cleanup swallow → 1
 mk_repo "nav_try_swallow"
@@ -358,7 +372,7 @@ struct SteamSetupView: View {
     }
 }
 '
-run_audit_navguard "nav_try_swallow" "try? cleanup swallow" 1
+run_audit_navguard "nav_try_swallow" "try? cleanup swallow" 1 "navigation cleanup swallowed with try? in Views"
 
 # local PrefixInspector in PrefixSetupView → 1
 mk_repo "nav_local_inspector"
@@ -367,7 +381,7 @@ struct PrefixSetupView: View {
     private let prefixInspector = PrefixInspector()
 }
 '
-run_audit_navguard "nav_local_inspector" "local prefix inspector" 1
+run_audit_navguard "nav_local_inspector" "local prefix inspector" 1 "local PrefixInspector authority in PrefixSetupView"
 
 # unstable log identity → 1
 mk_repo "nav_unstable_log"
@@ -379,7 +393,7 @@ struct UltimateSetupView: View {
     }
 }
 '
-run_audit_navguard "nav_unstable_log" "unstable log identity" 1
+run_audit_navguard "nav_unstable_log" "unstable log identity" 1 "ForEach(logLines, id: \\.self) in Views (unstable log identity)"
 
 # diagnostics footer missing → 1
 mk_repo "nav_diag_footer_missing"
@@ -388,7 +402,7 @@ struct UltimateSetupView: View {
     var diagnosticsPageView: some View { Text("Diagnostics") }
 }
 '
-run_audit_navguard "nav_diag_footer_missing" "diagnostics footer missing" 1
+run_audit_navguard "nav_diag_footer_missing" "diagnostics footer missing" 1 "Diagnostics page missing canonical footer in UltimateSetupView"
 
 # environment completion unbound → 1
 mk_repo "nav_env_unbound"
@@ -397,7 +411,151 @@ final class UltimateSetupCoordinator {
     func computePageCompletion() -> [String: Bool] { ["environment": prefixInspection?.isValid == true] }
 }
 '
-run_audit_navguard "nav_env_unbound" "environment completion unbound" 1
+run_audit_navguard "nav_env_unbound" "environment completion unbound" 1 "environment completion not bound to canonicalPrefixEvidenceValid"
+
+# ── U1R17-D strengthened-guard fixtures ──
+
+# view writes coordinator.currentPage → 1
+mk_repo "view_currentPage_write"
+add_file "view_currentPage_write" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    func jump() { coordinator.currentPage = .diagnostics }
+}
+'
+run_audit_navguard "view_currentPage_write" "view currentPage write" 1 "coordinator.currentPage write in Views"
+
+# PrefixSetupView owns @State inspection → 1
+mk_repo "prefix_state_inspection"
+add_file "prefix_state_inspection" "Sources/MacSteam/Views/PrefixSetupView.swift" '
+struct PrefixSetupView: View {
+    @State private var inspection: PrefixInspection?
+}
+'
+run_audit_navguard "prefix_state_inspection" "prefix state inspection" 1 "@State inspection in PrefixSetupView"
+
+# footer exists elsewhere but NOT inside diagnosticsPageView body → 1
+mk_repo "footer_elsewhere_not_in_diagnostics"
+add_file "footer_elsewhere_not_in_diagnostics" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    var body: some View {
+        VStack {
+            InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: .runtime, onNavigate: { _ in })
+            diagnosticsPageView
+        }
+    }
+    var diagnosticsPageView: some View { Text("Diagnostics") }
+}
+'
+run_audit_navguard "footer_elsewhere_not_in_diagnostics" "footer elsewhere not in diagnostics" 1 "Diagnostics page missing canonical footer in UltimateSetupView"
+
+# symbol exists elsewhere but the .environment gate is unbound → 1
+mk_repo "environment_symbol_elsewhere_but_gate_unbound"
+add_file "environment_symbol_elsewhere_but_gate_unbound" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool { true }
+    func computePageCompletion() -> [String: Bool] {
+        var completion: [String: Bool] = [:]
+        completion[.environment] = prefixInspection?.isValid == true
+        return completion
+    }
+}
+'
+run_audit_navguard "environment_symbol_elsewhere_but_gate_unbound" "environment symbol elsewhere but gate unbound" 1 "environment completion not bound to canonicalPrefixEvidenceValid"
+
+# both steam modes map to installer → 1
+mk_repo "steam_both_modes_installer"
+add_file "steam_both_modes_installer" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
+struct UltimatePageResolver {
+    static func steamMode(for page: InstallerPage) -> SteamSetupMode? {
+        switch page {
+        case .steamInstaller: return .installer
+        case .steamClient: return .installer
+        default: return nil
+        }
+    }
+}
+'
+run_audit_navguard "steam_both_modes_installer" "steam both modes installer" 1 "steamMode resolver does not map installer/client distinctly"
+
+# steam client resolves to installer mode → 1
+mk_repo "steam_resolver_client_maps_installer"
+add_file "steam_resolver_client_maps_installer" "Sources/MacSteam/Views/UltimatePageResolver.swift" '
+struct UltimatePageResolver {
+    static func steamMode(for page: InstallerPage) -> SteamSetupMode? {
+        switch page {
+        case .steamInstaller: return .installer
+        case .steamClient: return .installer
+        default: return nil
+        }
+    }
+}
+'
+run_audit_navguard "steam_resolver_client_maps_installer" "steam resolver client maps installer" 1 "steamMode resolver does not map installer/client distinctly"
+
+# Inspect action bypasses the coordinator lane → 1
+mk_repo "prefix_inspect_action_bypasses_coordinator"
+add_file "prefix_inspect_action_bypasses_coordinator" "Sources/MacSteam/Views/PrefixSetupView.swift" '
+struct PrefixSetupView: View {
+    var body: some View {
+        Button("Inspect") { runLocalInspection() }
+    }
+    func runLocalInspection() {
+        inspection = prefixInspector.inspect(url: root)
+    }
+}
+'
+run_audit_navguard "prefix_inspect_action_bypasses_coordinator" "inspect bypasses coordinator" 1 "prefix Inspect lane bypasses coordinator"
+
+# existing canonical path skips evidence → 1
+mk_repo "existing_prefix_skips_evidence"
+add_file "existing_prefix_skips_evidence" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    func createPrefix() {
+        establishPrefixEvidence(for: layout, source: .adoptedSteam)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+    }
+}
+'
+run_audit_navguard "existing_prefix_skips_evidence" "existing prefix skips evidence" 1 "evidence establishment missing a prefix acquisition source"
+
+# adopted prefix path skips evidence → 1
+mk_repo "adopted_prefix_skips_evidence"
+add_file "adopted_prefix_skips_evidence" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    func createPrefix() {
+        establishPrefixEvidence(for: layout, source: .existingCanonical)
+        establishPrefixEvidence(for: layout, source: .newlyInitialized)
+    }
+}
+'
+run_audit_navguard "adopted_prefix_skips_evidence" "adopted prefix skips evidence" 1 "evidence establishment missing a prefix acquisition source"
+
+# new prefix path skips evidence → 1
+mk_repo "new_prefix_skips_evidence"
+add_file "new_prefix_skips_evidence" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    func createPrefix() {
+        establishPrefixEvidence(for: layout, source: .existingCanonical)
+        establishPrefixEvidence(for: layout, source: .adoptedSteam)
+    }
+}
+'
+run_audit_navguard "new_prefix_skips_evidence" "new prefix skips evidence" 1 "evidence establishment missing a prefix acquisition source"
+
+# root does not consume the presentation descriptor → 1
+mk_repo "presentation_not_consumed_by_root"
+add_file "presentation_not_consumed_by_root" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    @ViewBuilder
+    var content: some View {
+        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
+        case .runtime: EmptyView()
+        default: EmptyView()
+        }
+    }
+}
+'
+run_audit_navguard "presentation_not_consumed_by_root" "presentation not consumed" 1 "presentation descriptor not consumed by root view"
 
 # ── Infrastructure failure ──
 # Infrastructure failure test (use fake git that exits 2)
