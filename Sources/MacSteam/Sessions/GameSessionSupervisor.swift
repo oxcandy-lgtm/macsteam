@@ -102,9 +102,14 @@ final class GameSessionSupervisor {
     private let processSupervisor = ProcessSupervisor()
     private let wineserverController = WineServerController()
     private let receiptStore = SessionReceiptStore()
+    private let windowObserver: SessionWindowObserver
 
     private var sessionLock: SessionLock?
     private var launchCommitted = false
+
+    init(windowProvider: any WindowInfoProviding = WindowServerProvider()) {
+        self.windowObserver = SessionWindowObserver(provider: windowProvider)
+    }
 
     // MARK: - Validation
 
@@ -139,6 +144,8 @@ final class GameSessionSupervisor {
     ) async throws -> GameSession {
         try Self.validateSessionPlan(plan)
 
+        windowObserver.invalidate()
+
         guard state == .idle || state == .stopped else {
             let pid = activeSession?.rootPID ?? 0
             throw SessionSupervisorError.sessionAlreadyRunning(existingPID: pid)
@@ -154,6 +161,7 @@ final class GameSessionSupervisor {
         // Rollback closure: release lock + reset on failure
         defer {
             if !launchCommitted {
+                windowObserver.invalidate()
                 sessionLock?.release()
                 sessionLock = nil
                 activeSession = nil
@@ -219,6 +227,7 @@ final class GameSessionSupervisor {
 
         // 6. Final state
         state = .runningUnknown
+        startWindowMonitor()
 
         return session
     }
@@ -238,6 +247,7 @@ final class GameSessionSupervisor {
     /// 8. State → stopped
     func stop() async throws {
         guard let session = activeSession else { return }
+        windowObserver.invalidate()
         state = .stopping
 
         do {
@@ -303,6 +313,7 @@ final class GameSessionSupervisor {
         guard let session = activeSession,
               let handle = activeHandle else { return }
 
+        windowObserver.invalidate()
         state = .stopping
 
         do {
@@ -423,6 +434,7 @@ final class GameSessionSupervisor {
                 )
                 self.activeRuntimeControl = LiveRuntimeControl(control: runtimeControl)
                 state = .runningUnknown
+                startWindowMonitor()
             }
         } else {
             // Receipt exists but server is stopped → stale receipt
@@ -431,18 +443,30 @@ final class GameSessionSupervisor {
         }
     }
 
-    // MARK: - Session state transitions
+    // MARK: - Window observation
 
-    /// User confirmed visible window.
-    func confirmWindowVisible() {
-        guard case .runningUnknown = state else { return }
-        state = .runningVisible
+    private func startWindowMonitor() {
+        guard let session = activeSession else { return }
+        let target = WindowTarget.derive(purpose: session.purpose, recipeID: session.recipeID)
+        let sessionID = session.sessionID
+        windowObserver.startMonitoring(
+            sessionID: sessionID,
+            target: target,
+            applyState: { [weak self] observedState in
+                guard let self = self else { return }
+                guard self.activeSession?.sessionID == sessionID else { return }
+                self.applyWindowObservation(observedState)
+            }
+        )
     }
 
-    /// User reported window disappeared (e.g. X button).
-    func reportWindowHidden() {
-        guard case .runningVisible = state else { return }
-        state = .runningHidden
+    private func applyWindowObservation(_ observedState: GameSessionState) {
+        switch state {
+        case .runningUnknown, .runningVisible, .runningHidden:
+            state = observedState
+        default:
+            break
+        }
     }
 
     // MARK: - Query
@@ -465,6 +489,8 @@ final class GameSessionSupervisor {
     }
 
     var sessionAlreadyRunning: Bool { isRunning }
+
+    var isWindowMonitoring: Bool { windowObserver.isMonitoring }
 }
 
 extension GameSessionSupervisor: GameSessionSupervising {}
