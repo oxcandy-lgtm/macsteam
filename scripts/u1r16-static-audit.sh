@@ -167,13 +167,46 @@ fi
 
 # ── Diagnostic log redaction only ──
 if [ "$DIAGNOSTIC_LOG_REDACTION_ONLY" -eq 1 ]; then
-    # Verify no raw error.localizedDescription is logged in cleanup paths
-    # Detect: log("Installer cleanup failed: \(er...")
-    # The colon+space after "failed" distinguishes error interpolation from fixed message
-    if git -C "$REPO_ROOT" grep -q -n -E 'log\("[a-zA-Z]+ cleanup failed: ' -- Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift 2>/dev/null; then
-        echo "❌ raw error in cleanup log — 1 found"
-        VIOLATIONS=$((VIOLATIONS + 1))
-    fi
+    # Detect raw error taint reaching the cleanup log sink (direct + 1-hop alias).
+    # Only lines whose sink is "cleanup failed" are in scope.
+    # Fixed stage messages and unused aliases are NOT violations.
+    python3 -c "
+import re, sys
+path = '$REPO_ROOT/Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift'
+try:
+    with open(path) as f:
+        lines = f.read().split('\n')
+except FileNotFoundError:
+    sys.exit(0)
+
+violations = 0
+
+# 1) Direct: log(\"... cleanup failed: \\(error.localizedDescription)...\")
+direct_re = re.compile(r'cleanup failed:.*\\\\\\(error\\.localizedDescription\\)')
+for ln in lines:
+    if direct_re.search(ln):
+        violations += 1
+
+# 2) One-hop alias: let/var name = error.localizedDescription
+#    → a later line logs it inside a \"cleanup failed\" sink
+alias_re = re.compile(r'(?:let|var)\\s+(\\w+)\\s*=\\s*error\\.localizedDescription')
+for i, ln in enumerate(lines):
+    m = alias_re.search(ln)
+    if not m:
+        continue
+    name = m.group(1)
+    sink_re = re.compile(r'cleanup failed:.*\\\\\\(%s\\)' % re.escape(name))
+    for j in range(i, len(lines)):
+        if sink_re.search(lines[j]):
+            violations += 1
+            break
+
+sys.exit(1 if violations > 0 else 0)
+"; rc=$?; case $rc in
+    0) ;;
+    1) echo "❌ raw error taint reaches cleanup log — detected"; VIOLATIONS=$((VIOLATIONS + 1)) ;;
+    *) echo "ERROR: diagnostic scanner infrastructure failure"; exit 2 ;;
+esac
 
     if [ "$VIOLATIONS" -eq 0 ]; then
         echo "✅ Diagnostic log redaction audit PASSED — 0 violations"

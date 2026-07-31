@@ -259,6 +259,22 @@ mk_repo "diag_direct"
 add_file "diag_direct" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" 'log("Installer cleanup failed: \(error.localizedDescription)")'
 run_audit_diagnostic "diag_direct" "direct error log" 1
 
+# indirect log via 1-hop alias → 1
+mk_repo "diag_indirect"
+add_file "diag_indirect" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+let detail = error.localizedDescription
+log("Installer cleanup failed: \(detail)")
+'
+run_audit_diagnostic "diag_indirect" "indirect error log" 1
+
+# unused alias → 0 (alias created but never logged)
+mk_repo "diag_unused_alias"
+add_file "diag_unused_alias" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+let detail = error.localizedDescription
+log("Installer cleanup failed")
+'
+run_audit_diagnostic "diag_unused_alias" "unused alias log" 0
+
 # ── Infrastructure failure ──
 # Infrastructure failure test (use fake git that exits 2)
 INFRA_DIR="$FIXTURE/infra"
