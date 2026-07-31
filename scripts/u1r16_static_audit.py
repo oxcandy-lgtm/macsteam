@@ -775,27 +775,41 @@ def _validate_canonical_log_stmt(raw_stmt: str,
                    f"after the closing paren (got '{raw_stmt[i:i + 60]}')")
         return
 
-    # ── exactly one interpolation ──
-    interpolations = [s for s in segments if s[0] == "interpolation"]
-    if len(interpolations) != 1:
-        out.append(f"{p}: {label} branch log must have exactly one interpolation "
-                   f"(found {len(interpolations)})")
+    # ── exact ordered 3-segment grammar (U1R17-N) ──
+    # segments must be exactly:
+    #   [("literal", expected_prefix),
+    #    ("interpolation", "evidence.isValid"),
+    #    ("literal", expected_suffix)]
+    # Prohibited: literal-join, interpolation-count-only, set comparison,
+    # reconstructed-string regex, substring search.
+    if len(segments) != 3:
+        out.append(f"{p}: {label} branch log must have exactly 3 segments "
+                   f"(found {len(segments)})")
         return
 
-    # ── interpolation expression: syntax trivia normalized (code, not literal) ──
-    interp_expr = " ".join(interpolations[0][1].split())
+    # segment[0]: literal prefix (byte-for-byte)
+    if segments[0][0] != "literal" or segments[0][1] != expected_prefix:
+        out.append(f"{p}: {label} branch log segment[0] must be literal "
+                   f"'{expected_prefix}' (got ({segments[0][0]}, "
+                   f"'{segments[0][1][:80]}'))")
+        return
+
+    # segment[1]: interpolation (syntax trivia normalized)
+    if segments[1][0] != "interpolation":
+        out.append(f"{p}: {label} branch log segment[1] must be interpolation "
+                   f"(got {segments[1][0]})")
+        return
+    interp_expr = " ".join(segments[1][1].split())
     if interp_expr != "evidence.isValid":
         out.append(f"{p}: {label} branch log interpolation must be exactly "
                    f"'evidence.isValid' (got '{interp_expr[:80]}')")
         return
 
-    # ── literal segments: byte-for-byte source comparison (U1R17-M) ──
-    literal_parts = [s[1] for s in segments if s[0] == "literal"]
-    full_literal = "".join(literal_parts)
-    expected_literal = expected_prefix + expected_suffix
-    if full_literal != expected_literal:
-        out.append(f"{p}: {label} branch log literal text must be exactly "
-                   f"'{expected_literal}' (got '{full_literal[:80]}')")
+    # segment[2]: literal suffix (byte-for-byte)
+    if segments[2][0] != "literal" or segments[2][1] != expected_suffix:
+        out.append(f"{p}: {label} branch log segment[2] must be literal "
+                   f"'{expected_suffix}' (got ({segments[2][0]}, "
+                   f"'{segments[2][1][:80]}'))")
         return
 
 
