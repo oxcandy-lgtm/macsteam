@@ -934,6 +934,57 @@ def _(root: str) -> list[str]:
     return out
 
 
+@guard("prefix acquisition branch inventory violation")
+def _(root: str) -> list[str]:
+    """Router branch inventory: exactly one validatedLayout direct branch,
+    exactly one adoptedLayout direct branch, validated before adopted,
+    exactly one terminal direct `return nil` after both branches.
+
+    Only DIRECT statements (brace-depth 0) of the router body count as
+    branches or terminal returns. Tokens inside closures, local
+    functions, nested control flow, comments, or strings never count.
+    """
+    content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
+    if content is None:
+        infra("required contract missing: UltimateSetupCoordinator.swift")
+    out = []
+    cleaned = clean_swift(content)
+    if "func establishExistingPrefixAcquisition" not in cleaned:
+        infra("required contract missing: "
+              "UltimateSetupCoordinator.establishExistingPrefixAcquisition")
+    router_body = required_body(
+        cleaned, "func establishExistingPrefixAcquisition",
+        "UltimateSetupCoordinator.establishExistingPrefixAcquisition"
+    )
+    stmts = direct_statements(router_body)
+    validated_idxs = []
+    adopted_idxs = []
+    nil_idxs = []
+    for idx, s in enumerate(stmts):
+        if re.match(r"if\s+let\s+\w+\s*=\s*validatedLayout\b", s):
+            validated_idxs.append(idx)
+        elif re.match(r"if\s+let\s+\w+\s*=\s*adoptedLayout\b", s):
+            adopted_idxs.append(idx)
+        elif re.match(r"return\s+nil\b", s):
+            nil_idxs.append(idx)
+    p = os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift")
+    if len(validated_idxs) != 1:
+        out.append(f"{p}: exactly one direct validatedLayout branch required "
+                   f"(found {len(validated_idxs)})")
+    if len(adopted_idxs) != 1:
+        out.append(f"{p}: exactly one direct adoptedLayout branch required "
+                   f"(found {len(adopted_idxs)})")
+    if validated_idxs and adopted_idxs and validated_idxs[0] > adopted_idxs[0]:
+        out.append(f"{p}: validatedLayout branch must precede adoptedLayout branch")
+    if len(nil_idxs) != 1:
+        out.append(f"{p}: exactly one terminal direct 'return nil' required "
+                   f"(found {len(nil_idxs)})")
+    elif nil_idxs[0] != len(stmts) - 1:
+        out.append(f"{p}: terminal 'return nil' must be the last direct statement "
+                   "after both branches")
+    return out
+
+
 @guard("prefix acquisition evidence control-flow dominance violation")
 def _(root: str) -> list[str]:
     """Evidence calls must dominate production returns / state transition.
