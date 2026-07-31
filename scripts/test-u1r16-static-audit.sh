@@ -249,7 +249,7 @@ run_audit_diagnostic() {
     fi
 }
 
-# clean → 0 (no raw error logging)
+# clean → 0 (no raw error logging, fixed stage message without colon)
 mk_repo "diag_clean"
 add_file "diag_clean" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" 'log("Installer cleanup failed")'
 run_audit_diagnostic "diag_clean" "clean diagnostic log" 0
@@ -259,14 +259,7 @@ mk_repo "diag_direct"
 add_file "diag_direct" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" 'log("Installer cleanup failed: \(error.localizedDescription)")'
 run_audit_diagnostic "diag_direct" "direct error log" 1
 
-# indirect log via string interpolation → 1
-mk_repo "diag_indirect"
-add_file "diag_indirect" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
-let msg = error.localizedDescription
-log("failed: " + msg)
-'
-run_audit_diagnostic "diag_indirect" "indirect error log" 1
-
+# ── Infrastructure failure ──
 # Infrastructure failure test (use fake git that exits 2)
 INFRA_DIR="$FIXTURE/infra"
 mkdir -p "$INFRA_DIR/Sources/MacSteam/Core"

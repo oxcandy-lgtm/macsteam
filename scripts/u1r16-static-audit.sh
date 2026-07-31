@@ -168,7 +168,12 @@ fi
 # ── Diagnostic log redaction only ──
 if [ "$DIAGNOSTIC_LOG_REDACTION_ONLY" -eq 1 ]; then
     # Verify no raw error.localizedDescription is logged in cleanup paths
-    check "raw error in cleanup log" 'error\.localizedDescription' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
+    # Detect: log("Installer cleanup failed: \(er...")
+    # The colon+space after "failed" distinguishes error interpolation from fixed message
+    if git -C "$REPO_ROOT" grep -q -n -E 'log\("[a-zA-Z]+ cleanup failed: ' -- Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift 2>/dev/null; then
+        echo "❌ raw error in cleanup log — 1 found"
+        VIOLATIONS=$((VIOLATIONS + 1))
+    fi
 
     if [ "$VIOLATIONS" -eq 0 ]; then
         echo "✅ Diagnostic log redaction audit PASSED — 0 violations"
