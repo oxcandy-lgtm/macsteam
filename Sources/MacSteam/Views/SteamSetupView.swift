@@ -2,6 +2,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import MacsTeamNavigationCore
 
 /// View for the Windows Steam installer flow.
 ///
@@ -252,30 +253,13 @@ struct SteamSetupView: View {
     // MARK: - Navigation
 
     private var navigationButtons: some View {
-        HStack {
-            if coordinator.state != .steamReady {
-                Button("Back") {
-                    Task {
-                        await coordinator.send(.back)
-                    }
-                }
-                .controlSize(.small)
-                .disabled(isWorking)
+        InstallerNavigationFooter(
+            validator: DefaultInstallerNavigationValidator(),
+            currentPage: coordinator.currentPage,
+            onNavigate: { intent in
+                await coordinator.send(intent)
             }
-
-            Spacer()
-
-            if coordinator.state == .steamReady {
-                Button("Next: Check CloverPit →") {
-                    Task {
-                        try? await coordinator.stopSteamSetupSessionIfNeeded()
-                        await coordinator.recheckCloverPit()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-            }
-        }
+        )
     }
 
     // MARK: - Step row

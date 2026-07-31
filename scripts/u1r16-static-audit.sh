@@ -234,6 +234,10 @@ if [ "$PROCESS_RUNNER_ONLY" -eq 0 ]; then
     check "Navigation TODOs" 'TODO:.*navigate|TODO:.*advance|TODO:.*dismiss' Sources/MacSteam/Views
     check "Fake timers in Views" 'asyncAfter' Sources/MacSteam/Views
 
+    # Root page dispatch must derive from currentPage — never from state.
+    # In-page progress may read state, but the ROOT view must not switch on it.
+    check "root dispatch on coordinator.state" 'switch coordinator\.state' Sources/MacSteam/Views/UltimateSetupView.swift
+
     echo -n "coordinator.state assignment in Views... "
     python3 "$DIR/scripts/u1r16_static_audit.py" 2>&1
 

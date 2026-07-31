@@ -36,6 +36,16 @@ public actor InstallerNavigationReducer {
         allPagesComplete[page] = complete
     }
 
+    /// Adopt the coordinator's current page as the authoritative position.
+    ///
+    /// `coordinator.currentPage` is the single navigation authority; the
+    /// reducer is a transition validator. Every intent re-syncs the reducer
+    /// to the authority before dispatching, so an externally-changed page
+    /// can never leave the reducer and the authority out of step.
+    public func adopt(page: InstallerPage) {
+        currentPage = page
+    }
+
     /// Set whether an active operation is running (external state mutation).
     public func setActiveOperation(_ active: Bool) {
         hasActiveOperation = active

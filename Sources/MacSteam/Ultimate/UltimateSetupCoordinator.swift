@@ -1110,10 +1110,32 @@ final class UltimateSetupCoordinator {
 
     /// Single navigation entry point for all UI pages.
     func send(_ intent: InstallerNavigationIntent) async {
+        // coordinator.currentPage is the single authority — the reducer
+        // adopts it before every intent so the two can never diverge.
+        await navigationReducer.adopt(page: currentPage)
+
         let result: InstallerNavigationResult
 
         switch intent {
         case .next:
+            // Next with an active operation requires real cleanup first
+            // (fail-closed: never advance past a running session).
+            if hasActiveOperation {
+                let outcome = await stopAllForApplicationTermination()
+                if outcome != .clean {
+                    currentPage = currentPage // stay
+                    lastNavigationResult = InstallerNavigationResult(
+                        accepted: false,
+                        newPage: nil,
+                        blocker: InstallerNavigationBlocker(
+                            code: "cleanup_required",
+                            message: "Cleanup incomplete: \(outcome)"
+                        )
+                    )
+                    return
+                }
+            }
+
             // Update reducer's state from actual coordinator state
             let completion = computePageCompletion()
             for (page, complete) in completion {
@@ -1181,7 +1203,9 @@ final class UltimateSetupCoordinator {
     func computePageCompletion() -> [InstallerPage: Bool] {
         var completion: [InstallerPage: Bool] = [:]
         completion[.runtime] = runtimeURL != nil && runtimeInspection?.isUsable == true
-        completion[.environment] = prefixLayout?.root != nil
+        // Environment completes only with successful verification evidence
+        // for the CURRENT canonical prefix (not mere layout resolution).
+        completion[.environment] = prefixInspection?.isValid == true
         completion[.steamInstaller] = selectedInstaller != nil || steamInstallLifecycle == .verifiedComplete
         completion[.steamClient] = steamInstallLifecycle == .verifiedComplete
         completion[.cloverPit] = cloverPitInspection?.isReady == true

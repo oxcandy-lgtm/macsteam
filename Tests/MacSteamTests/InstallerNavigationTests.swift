@@ -211,8 +211,17 @@ struct CoordinatorNavigationTests {
         coordinator.runtimeInspection = RuntimeInspection(runtimeID: "test", isUsable: true)
         #expect(coordinator.computePageCompletion()[.runtime] == true)
 
-        // Environment completion derives from the resolved prefix layout.
+        // Environment completion derives from VERIFICATION EVIDENCE of the
+        // canonical prefix — mere layout resolution is not sufficient.
         coordinator.prefixLayout = makePrefixLayout(root: testPrefixURL)
+        #expect(coordinator.computePageCompletion()[.environment] == false)
+        coordinator.prefixInspection = PrefixInspection(
+            prefixURL: testPrefixURL,
+            driveCExists: true,
+            hasWinePrefix: true,
+            hasSteam: false,
+            isValid: true
+        )
         #expect(coordinator.computePageCompletion()[.environment] == true)
     }
 

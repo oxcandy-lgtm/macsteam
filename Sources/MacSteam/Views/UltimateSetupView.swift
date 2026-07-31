@@ -5,8 +5,11 @@ import MacsTeamNavigationCore
 
 /// Root view for the MacSteam Ultimate U1 setup flow.
 ///
-/// Replaces `LauncherView` as the app entry point during U1.  CrossOver-specific
-/// selection is removed from the main UI (moved to advanced settings).
+/// # Navigation authority
+/// The rendered page is derived EXCLUSIVELY from ``coordinator.currentPage``
+/// through ``UltimatePageResolver`` — the header title, step number, and
+/// body all come from the same page value. `coordinator.state` is only used
+/// for in-page progress display (never for page dispatch).
 struct UltimateSetupView: View {
     @Bindable var coordinator: UltimateSetupCoordinator
     @State private var showingSettings = false
@@ -50,7 +53,8 @@ struct UltimateSetupView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(logLines, id: \.self) { line in
+                        // Stable identity: enumerate by offset, never by content.
+                        ForEach(Array(logLines.enumerated()), id: \.offset) { _, line in
                             Text(line)
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(.secondary)
@@ -121,32 +125,37 @@ struct UltimateSetupView: View {
         .padding()
     }
 
-    /// Human-readable title for the current page (step X of N).
+    /// Title + step derived from the SAME page value as the body.
     private var pageTitle: String {
-        let pages = InstallerPage.allCases
-        let names: [InstallerPage: String] = [
-            .runtime: "Compatibility Runtime",
-            .environment: "Environment Setup",
-            .steamInstaller: "Steam Installer",
-            .steamClient: "Steam Client",
-            .cloverPit: "CloverPit",
-            .diagnostics: "Diagnostics"
-        ]
-        let idx = pages.firstIndex(of: coordinator.currentPage).map { $0 + 1 } ?? 0
-        let name = names[coordinator.currentPage] ?? "Setup"
-        return "Step \(idx) of \(pages.count) — \(name)"
+        let page = coordinator.currentPage
+        return "Step \(UltimatePageResolver.stepNumber(for: page)) of "
+            + "\(UltimatePageResolver.pageCount) — \(UltimatePageResolver.title(for: page))"
     }
 
     private var progressIndicator: some View {
         HStack(spacing: 4) {
-            stepDot(index: 0, label: "Runtime", active: coordinator.state == .runtimeReady || beyond(.runtimeReady))
-            stepDot(index: 1, label: "Prefix", active: coordinator.state == .prefixReady || beyond(.prefixReady))
-            stepDot(index: 2, label: "Steam", active: coordinator.state == .steamReady || beyond(.steamReady))
-            stepDot(index: 3, label: "Launch", active: coordinator.state == .cloverPitReady || beyond(.cloverPitReady))
+            ForEach(InstallerPage.allCases, id: \.self) { page in
+                stepDot(
+                    label: shortLabel(for: page),
+                    active: UltimatePageResolver.stepNumber(for: page)
+                        <= UltimatePageResolver.stepNumber(for: coordinator.currentPage)
+                )
+            }
         }
     }
 
-    private func stepDot(index: Int, label: String, active: Bool) -> some View {
+    private func shortLabel(for page: InstallerPage) -> String {
+        switch page {
+        case .runtime: return "Runtime"
+        case .environment: return "Prefix"
+        case .steamInstaller: return "Installer"
+        case .steamClient: return "Steam"
+        case .cloverPit: return "CloverPit"
+        case .diagnostics: return "Diag"
+        }
+    }
+
+    private func stepDot(label: String, active: Bool) -> some View {
         VStack(spacing: 2) {
             Circle()
                 .fill(active ? Color.green : Color.gray.opacity(0.3))
@@ -155,265 +164,89 @@ struct UltimateSetupView: View {
                 .font(.system(size: 8))
                 .foregroundStyle(active ? .primary : .secondary)
         }
-        .frame(width: 44)
+        .frame(width: 48)
     }
 
-    private func beyond(_ state: UltimateSetupState) -> Bool {
-        let order: [UltimateSetupState] = [.inspecting, .runtimeRequired, .runtimeInvalid, .runtimeReady,
-            .prefixRequired, .prefixReady, .steamInstallerRequired, .steamInstallerVerified,
-            .steamInstallationPending, .steamReady, .cloverPitNotInstalled, .cloverPitReady,
-            .launching, .launchSubmitted, .processObserved]
-        guard let currentIdx = order.firstIndex(of: coordinator.state),
-              let targetIdx = order.firstIndex(of: state) else { return false }
-        return currentIdx > targetIdx
-    }
-
-    // MARK: - Content
+    // MARK: - Content (single authority: currentPage)
 
     @ViewBuilder
     private var content: some View {
-        switch coordinator.state {
-        case .inspecting:
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("Inspecting system…")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxHeight: .infinity)
-
-        case .runtimeRequired, .runtimeInvalid:
+        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
+        case .runtime:
             RuntimeSetupView(coordinator: coordinator)
-
-        case .runtimeReady:
-            runtimeReadyView
-            nextButton("Create Prefix →", action: { Task { await coordinator.send(.next) } })
-
-        case .prefixRequired:
+        case .environment:
             PrefixSetupView(coordinator: coordinator)
-
-        case .prefixReady:
-            prefixReadyView
-            nextButton("Select Steam Installer →", action: { Task { await coordinator.send(.next) } })
-
-        case .steamInstallerRequired, .steamInstallerVerified,
-                .steamInstallationPending, .steamReady:
+        case .steamInstaller, .steamClient:
             SteamSetupView(coordinator: coordinator)
-
-        case .cloverPitNotInstalled:
-            cloverPitNotInstalledView
-
-        case .cloverPitReady:
+        case .cloverPit:
             CloverPitLaunchView(coordinator: coordinator)
-
-        case .launching, .launchSubmitted, .processObserved:
-            launchingView
+        case .diagnostics:
+            diagnosticsPageView
         }
     }
 
-    // MARK: - Subviews
+    // MARK: - Diagnostics page
 
-    private var runtimeReadyView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Runtime ready", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            if let inspection = coordinator.runtimeInspection {
-                Group {
-                    Text("Version: \(inspection.version ?? "unknown")")
-                    Text("Arch: \(inspection.architecture ?? "unknown")")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding()
-    }
+    private var diagnosticsPageView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Diagnostics", systemImage: "stethoscope")
+                .font(.title3)
+                .fontWeight(.semibold)
 
-    private var prefixReadyView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Prefix created", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            Text("CloverPit environment ready")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding()
-    }
-
-    private var steamVerifiedView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Installer verified", systemImage: "checkmark.shield.fill")
-                .foregroundStyle(.green)
-            if let installer = coordinator.selectedInstaller {
-                Text("\(installer.fileName) (\(installer.fileSize / 1024 / 1024) MB)")
-                    .font(.caption)
-                Text("SHA-256: \(installer.sha256.prefix(16))…")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding()
-    }
-
-    private var steamPendingView: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("Installing Steam…")
-            Text("Follow the Steam installer window.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("Check again") {
-                Task { await coordinator.recheckSteam() }
-            }
-            .buttonStyle(.bordered)
-        }
-        .frame(maxHeight: .infinity)
-    }
-
-    private var steamReadyView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Steam ready", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            Text("Windows Steam detected in prefix.")
-                .font(.caption)
-            Text("Install CloverPit via Steam if not already installed.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Spacer()
-            HStack {
-                Toggle("Software web rendering", isOn: .init(
-                    get: { coordinator.steamUIRenderProfile == .cefSoftwareRendering },
-                    set: { coordinator.steamUIRenderProfile = $0 ? .cefSoftwareRendering : .automatic }
-                ))
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                Text("(\(coordinator.steamUIRenderProfile.rawValue))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Button("Open Windows Steam") {
-                Task { await coordinator.launchWindowsSteam() }
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .padding()
-    }
-
-    private var cloverPitNotInstalledView: some View {
-        VStack(spacing: 12) {
-            if let inspection = coordinator.cloverPitInspection {
-                switch inspection.installState {
-                case .installed:
-                    // Should not reach here (would be .cloverPitReady)
-                    Label("CloverPit ready", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                case .downloading:
-                    Image(systemName: "arrowshape.down.circle")
-                        .font(.largeTitle)
-                        .foregroundStyle(.blue)
-                    Text("CloverPit download detected")
-                        .font(.headline)
-                    Text("Steam is still preparing the game.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Finish the installation in Windows Steam, then re-check.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Button("Open Windows Steam") {
-                        Task { await coordinator.launchWindowsSteam() }
+            GroupBox(label: Label("Page completion evidence", systemImage: "checklist")) {
+                VStack(alignment: .leading, spacing: 4) {
+                    let completion = coordinator.computePageCompletion()
+                    ForEach(InstallerPage.allCases, id: \.self) { page in
+                        HStack {
+                            Text("\(UltimatePageResolver.title(for: page))")
+                                .font(.caption)
+                            Spacer()
+                            Text(completion[page] == true ? "complete" : "incomplete")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(completion[page] == true ? .green : .secondary)
+                        }
                     }
-                    .buttonStyle(.bordered)
-                case .manifestOnly:
-                    Image(systemName: "doc.text")
-                        .font(.largeTitle)
-                        .foregroundStyle(.orange)
-                    Text("CloverPit manifest found")
-                        .font(.headline)
-                    Text("The game manifest exists but the installed files are incomplete.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case .staged:
-                    Image(systemName: "externaldrive.badge.exclamationmark")
-                        .font(.largeTitle)
-                        .foregroundStyle(.orange)
-                    Text("CloverPit files outside Steam library")
-                        .font(.headline)
-                    Text("Game files were found outside the active Windows Steam library.")
-                        .font(.caption)
-                    Text("MacsTeam will not launch an incomplete or unregistered copy.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                case .inconsistent:
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundStyle(.orange)
-                    Text("CloverPit installation incomplete")
-                        .font(.headline)
-                    Text("Some game files are missing or incomplete.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case .notFound:
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundStyle(.orange)
-                    Text("CloverPit not detected")
-                    Text("Install CloverPit via Steam, then check again.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
-            } else {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.largeTitle)
-                    .foregroundStyle(.orange)
-                Text("CloverPit not detected")
-                Text("Install CloverPit via Steam, then check again.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .padding(4)
             }
-            Button("Re-check") {
-                Task { await coordinator.recheckCloverPit() }
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .frame(maxHeight: .infinity)
-    }
 
-    private var launchingView: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text(statusText)
-                .font(.headline)
-            if coordinator.state == .processObserved {
-                Text("Waiting for game window…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("I see the CloverPit window") {
-                    coordinator.confirmWindow()
+            GroupBox(label: Label("Session state", systemImage: "gearshape.2")) {
+                VStack(alignment: .leading, spacing: 4) {
+                    row("State", coordinator.state.rawValue)
+                    row("Steam lifecycle", coordinator.steamInstallLifecycle.rawValue)
+                    row("Prefix evidence",
+                        coordinator.prefixInspection == nil ? "none"
+                            : (coordinator.prefixInspection?.isValid == true ? "valid" : "invalid"))
+                    row("CloverPit", coordinator.cloverPitInspection?.isReady == true
+                        ? "ready" : "not ready")
                 }
-                .buttonStyle(.borderedProminent)
+                .padding(4)
             }
-        }
-        .frame(maxHeight: .infinity)
-    }
 
-    private var statusText: String {
-        switch coordinator.state {
-        case .launching: return "Launching…"
-        case .launchSubmitted: return "Launch submitted"
-        case .processObserved: return "Process observed"
-        default: return ""
-        }
-    }
+            GroupBox(label: Label("Environment", systemImage: "info.circle")) {
+                VStack(alignment: .leading, spacing: 4) {
+                    row("Instance", coordinator.installerID.isEmpty ? "—" : "#\(coordinator.installerID)")
+#if DEBUG
+                    row("PID", "\(ProcessInfo.processInfo.processIdentifier)")
+#endif
+                }
+                .padding(4)
+            }
 
-    private func nextButton(_ title: String, action: @escaping () -> Void) -> some View {
-        HStack {
             Spacer()
-            Button(title, action: action)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
         }
-        .padding()
+        .padding(24)
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+        }
     }
 }
