@@ -205,6 +205,16 @@ struct PrefixAcquisitionEvidenceTests {
         #expect(fake.inspectCallCount == 1)
     }
 
+    @Test("every page carries canonical navigation capability via derivation")
+    func allPages_haveCanonicalNavigation() {
+        for page in InstallerPage.allCases {
+            let presentation = UltimatePageResolver.presentation(for: page)
+            #expect(presentation.hasCanonicalNavigation == true)
+            #expect(presentation.hasCanonicalNavigation
+                    == UltimatePageResolver.hasCanonicalNavigation(for: page))
+        }
+    }
+
     @Test("production router: neither existing nor adopted selects the new path")
     func router_noExistingOrAdopted_returnsNil() async {
         let coordinator = UltimateSetupCoordinator()

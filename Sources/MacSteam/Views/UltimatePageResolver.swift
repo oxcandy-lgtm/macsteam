@@ -82,6 +82,18 @@ struct UltimatePageResolver {
     ///
     /// Every field is derived from the SAME page value. All pages carry
     /// canonical navigation (Back/Stop & Clean/Next via `coordinator.send`).
+    /// Every installer page participates in the canonical navigation lane
+    /// (Back/Next via coordinator.send). Kept as a real per-page derivation
+    /// so the presentation's capability flag is production data, not an
+    /// unconditional decoration.
+    static func hasCanonicalNavigation(for page: InstallerPage) -> Bool {
+        switch page {
+        case .runtime, .environment, .steamInstaller, .steamClient,
+             .cloverPit, .diagnostics:
+            return true
+        }
+    }
+
     static func presentation(for page: InstallerPage) -> UltimatePagePresentation {
         UltimatePagePresentation(
             page: page,
@@ -90,7 +102,7 @@ struct UltimatePageResolver {
             stepNumber: stepNumber(for: page),
             footerPage: page,
             steamMode: steamMode(for: page),
-            hasCanonicalNavigation: true
+            hasCanonicalNavigation: hasCanonicalNavigation(for: page)
         )
     }
 

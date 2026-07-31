@@ -145,6 +145,46 @@ def _(root: str) -> list[str]:
     return []
 
 
+@guard("content must dispatch on presentation.contentKind")
+def _(root: str) -> list[str]:
+    content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
+    if content is None:
+        infra("required contract missing: UltimateSetupView.swift")
+    if "var content" not in content:
+        return []
+    body = required_body(content, "var content", "UltimateSetupView.content")
+    if "presentation.contentKind" not in body:
+        return [f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
+                "content does not dispatch on presentation.contentKind"]
+    return []
+
+
+@guard("step indicator must derive from presentation.stepNumber")
+def _(root: str) -> list[str]:
+    content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
+    if content is None:
+        infra("required contract missing: UltimateSetupView.swift")
+    if "progressIndicator" not in content:
+        return []
+    body = required_body(content, "var progressIndicator",
+                         "UltimateSetupView.progressIndicator")
+    if "presentation.stepNumber" not in body:
+        return [f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
+                "step indicator does not derive from presentation.stepNumber"]
+    return []
+
+
+@guard("navigation capability (hasCanonicalNavigation) ignored")
+def _(root: str) -> list[str]:
+    content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
+    if content is None:
+        infra("required contract missing: UltimateSetupView.swift")
+    if "presentation.hasCanonicalNavigation" not in content:
+        return [f"{os.path.join(VIEWS, 'UltimateSetupView.swift')}: "
+                "hasCanonicalNavigation is decorative — not consumed by the root"]
+    return []
+
+
 @guard("pageTitle must derive from presentation")
 def _(root: str) -> list[str]:
     content = read_file(root, os.path.join(VIEWS, "UltimateSetupView.swift"))
@@ -177,23 +217,18 @@ def _(root: str) -> list[str]:
         infra("required contract missing: UltimatePageResolver.swift")
     body = required_body(content, "func steamMode", "UltimatePageResolver.steamMode")
     out = []
-    sections = re.split(r"\n(?=\s*(?:case|default)\b)", body)
-    for section in sections:
-        s = section.strip()
-        if not s:
-            continue
-        if re.search(r"case\s+\.steamInstaller\b", s):
-            if "return .installer" not in s:
-                out.append(f"{os.path.join(VIEWS, 'UltimatePageResolver.swift')}: "
-                           "steamInstaller case must return .installer")
-        elif re.search(r"case\s+\.steamClient\b", s):
-            if "return .client" not in s:
-                out.append(f"{os.path.join(VIEWS, 'UltimatePageResolver.swift')}: "
-                           "steamClient case must return .client")
-        elif s.startswith("default"):
-            if "return nil" not in s:
-                out.append(f"{os.path.join(VIEWS, 'UltimatePageResolver.swift')}: "
-                           "default case must return nil")
+    # Case/return ownership is analyzed per case: the DIRECT return of each
+    # case must sit on the same line as the case pattern. Nested/unreachable
+    # return tokens elsewhere do not satisfy the mapping.
+    if not re.search(r"case\s+\.steamInstaller\s*:\s*return\s+\.installer", body):
+        out.append(f"{os.path.join(VIEWS, 'UltimatePageResolver.swift')}: "
+                   "steamInstaller case must directly return .installer")
+    if not re.search(r"case\s+\.steamClient\s*:\s*return\s+\.client", body):
+        out.append(f"{os.path.join(VIEWS, 'UltimatePageResolver.swift')}: "
+                   "steamClient case must directly return .client")
+    if not re.search(r"default\s*:\s*return\s+nil", body):
+        out.append(f"{os.path.join(VIEWS, 'UltimatePageResolver.swift')}: "
+                   "default case must directly return nil")
     return out
 
 
@@ -372,6 +407,20 @@ def _(root: str) -> list[str]:
             if f"source: {src}" not in router_body:
                 out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
                            f"acquisition router branch {src} lacks matching evidence")
+        # The SELECTED layout must be the layout passed to the helper —
+        # a mismatched argument means evidence binds a different prefix.
+        for m in re.finditer(r"if\s+let\s+(\w+)\s*=\s*(validatedLayout|adoptedLayout)",
+                             router_body):
+            branch_var = m.group(1)
+            rest = router_body[m.end():]
+            em = re.search(r"establishPrefixEvidence\(\s*for:\s*([^,\s]+)", rest)
+            if not em:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           f"router branch {branch_var} never establishes evidence")
+            elif em.group(1) != branch_var:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           f"router branch {branch_var} passes layout "
+                           f"'{em.group(1)}' instead of the selected layout")
     # Router call must precede the Steam-ready early return in createPrefix.
     pos_router = body.find("establishExistingPrefixAcquisition")
     pos_ready = body.find("state = .steamReady")

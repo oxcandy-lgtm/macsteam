@@ -317,14 +317,17 @@ struct UltimateSetupView: View {
 
             // Diagnostics participates in the canonical navigation lane:
             // Back → CloverPit via coordinator.send(.back). Footer page comes
-            // from the SAME presentation as the body.
-            InstallerNavigationFooter(
-                validator: DefaultInstallerNavigationValidator(),
-                currentPage: presentation.footerPage,
-                onNavigate: { intent in
-                    await coordinator.send(intent)
-                }
-            )
+            // from the SAME presentation as the body; the lane itself is
+            // gated by the presentation's navigation capability.
+            if presentation.hasCanonicalNavigation {
+                InstallerNavigationFooter(
+                    validator: DefaultInstallerNavigationValidator(),
+                    currentPage: presentation.footerPage,
+                    onNavigate: { intent in
+                        await coordinator.send(intent)
+                    }
+                )
+            }
         }
         .padding(24)
     }
