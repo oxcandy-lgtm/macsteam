@@ -9,10 +9,12 @@ cd "$REPO_ROOT" || exit 2
 PROCESS_RUNNER_ONLY=0
 CLEANUP_ONLY=0
 ULTIMATE_LIFECYCLE_ONLY=0
+DIAGNOSTIC_LOG_REDACTION_ONLY=0
 for arg in "$@"; do
     [ "$arg" = "--process-runner-only" ] && PROCESS_RUNNER_ONLY=1
     [ "$arg" = "--cleanup-only" ] && CLEANUP_ONLY=1
     [ "$arg" = "--ultimate-lifecycle-only" ] && ULTIMATE_LIFECYCLE_ONLY=1
+    [ "$arg" = "--diagnostic-log-redaction-only" ] && DIAGNOSTIC_LOG_REDACTION_ONLY=1
 done
 
 VIOLATIONS=0
@@ -89,7 +91,7 @@ if [ "$CLEANUP_ONLY" -eq 1 ]; then
     check "no-handle early return in stopAndClean" 'guard activeHandle else' Sources/MacSteam/Installer/InstallerSupervisor.swift
     check "concrete ProcessSupervisor" 'processSupervisor: ProcessSupervisor([^)]|$)' Sources/MacSteam/Installer/InstallerSupervisor.swift
     check "clock-based deadline in pollForExit" 'ContinuousClock.now' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
-    check "op[.]phase direct assignment" 'op\\.phase[[:space:]]*=' Sources/MacSteam/Installer/InstallerSupervisor.swift
+    check "op[.]phase direct assignment" 'op\.phase[[:space:]]*=' Sources/MacSteam/Installer/InstallerSupervisor.swift
 
     # ProcessRunner direct use in PrefixProcessTerminator
     check "direct ProcessRunner in PrefixProcessTerminator" 'ProcessRunner[[:space:]]*\(' Sources/MacSteam/Processes/PrefixProcessTerminator.swift
@@ -159,6 +161,20 @@ if [ "$ULTIMATE_LIFECYCLE_ONLY" -eq 1 ]; then
         exit 0
     else
         echo "❌ Ultimate lifecycle audit — $VIOLATIONS violation(s)"
+        exit 1
+    fi
+fi
+
+# ── Diagnostic log redaction only ──
+if [ "$DIAGNOSTIC_LOG_REDACTION_ONLY" -eq 1 ]; then
+    # Verify no raw error.localizedDescription is logged in cleanup paths
+    check "raw error in cleanup log" 'error\.localizedDescription' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift
+
+    if [ "$VIOLATIONS" -eq 0 ]; then
+        echo "✅ Diagnostic log redaction audit PASSED — 0 violations"
+        exit 0
+    else
+        echo "❌ Diagnostic log redaction audit — $VIOLATIONS violation(s)"
         exit 1
     fi
 fi

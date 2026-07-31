@@ -137,6 +137,12 @@ final class UltimateSetupCoordinator {
         log("[Sanitized: \(message.replacingOccurrences(of: #"/[^\s/]+"#, with: "<sanitized>", options: .regularExpression))]")
     }
 
+    /// Log a cleanup failure with a fixed stage message (no raw error detail).
+    /// Fail-closed: error descriptions are never written to the diagnostic log.
+    private func logCleanupFailure(stage: String, error: any Error) {
+        log("\(stage) cleanup failed")
+    }
+
     /// Generate a fresh 5-digit installer session ID.
     func generateInstallerID() {
         installerID = String(format: "%05d", Int.random(in: 10000...99999))
@@ -1045,7 +1051,7 @@ final class UltimateSetupCoordinator {
         do {
             try await lifecycleInstaller.stopAndClean()
         } catch {
-            log("Installer cleanup failed: \(error.localizedDescription)")
+            logCleanupFailure(stage: "Installer", error: error)
             failures.append("Installer cleanup failed")
         }
 
@@ -1054,7 +1060,7 @@ final class UltimateSetupCoordinator {
             do {
                 try await sessionSupervisor.stop()
             } catch {
-                log("Session cleanup failed: \(error.localizedDescription)")
+                logCleanupFailure(stage: "Session", error: error)
                 failures.append("Session cleanup failed")
             }
         }
@@ -1070,7 +1076,7 @@ final class UltimateSetupCoordinator {
                     runtimeURL: activeRuntimeURL
                 )
             } catch {
-                log("Prefix cleanup failed: \(error.localizedDescription)")
+                logCleanupFailure(stage: "Prefix", error: error)
                 failures.append("Prefix cleanup failed")
             }
         } else if hadCleanupAuthorityAtStart {

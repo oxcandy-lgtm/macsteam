@@ -236,6 +236,37 @@ mk_repo "lifecycle_novalid"
 add_file "lifecycle_novalid" "Sources/MacSteam/Sessions/GameSessionSupervisor.swift" 'actor GameSessionSupervisor { func launch(plan: LaunchPlan) { let mode = plan.mode } }'
 run_audit_lifecycle "lifecycle_novalid" "missing session mode validation" 1
 
+# ── Diagnostic log redaction fixtures ──
+
+run_audit_diagnostic() {
+    local repo="$1" label="$2" expected="$3"
+    local rc=0
+    GIT_WORK_TREE="$FIXTURE/$repo" GIT_DIR="$FIXTURE/$repo/.git" bash "$AUDIT" --diagnostic-log-redaction-only >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq "$expected" ]; then
+        pass "$label"
+    else
+        fail "$label (expected exit $expected, got $rc)"
+    fi
+}
+
+# clean → 0 (no raw error logging)
+mk_repo "diag_clean"
+add_file "diag_clean" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" 'log("Installer cleanup failed")'
+run_audit_diagnostic "diag_clean" "clean diagnostic log" 0
+
+# direct log of error.localizedDescription → 1
+mk_repo "diag_direct"
+add_file "diag_direct" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" 'log("Installer cleanup failed: \(error.localizedDescription)")'
+run_audit_diagnostic "diag_direct" "direct error log" 1
+
+# indirect log via string interpolation → 1
+mk_repo "diag_indirect"
+add_file "diag_indirect" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+let msg = error.localizedDescription
+log("failed: " + msg)
+'
+run_audit_diagnostic "diag_indirect" "indirect error log" 1
+
 # Infrastructure failure test (use fake git that exits 2)
 INFRA_DIR="$FIXTURE/infra"
 mkdir -p "$INFRA_DIR/Sources/MacSteam/Core"
