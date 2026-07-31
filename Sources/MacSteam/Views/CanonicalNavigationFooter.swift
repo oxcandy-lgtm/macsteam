@@ -14,6 +14,7 @@ import SwiftUI
 /// cloverPit / diagnostics) MUST use this helper (or satisfy all three of
 /// those requirements in its own navigation body). The scanner verifies
 /// this scope per surface.
+@MainActor
 @ViewBuilder
 func canonicalNavigationFooter(
     presentation: UltimatePagePresentation,
