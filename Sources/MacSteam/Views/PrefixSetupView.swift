@@ -12,10 +12,13 @@ import MacsTeamNavigationCore
 struct PrefixSetupView: View {
     let coordinator: UltimateSetupCoordinator
 
-    @State private var inspection: PrefixInspection?
     @State private var isInspecting = false
 
-    private let prefixInspector = PrefixInspector()
+    /// Verification evidence is coordinator-owned (bound to the canonical
+    /// prefix root). The view NEVER holds its own inspection authority.
+    private var inspection: PrefixInspection? {
+        coordinator.prefixInspection
+    }
 
     private var prefixPath: String {
         coordinator.prefixLayout?.root.path ?? ""
@@ -194,10 +197,11 @@ struct PrefixSetupView: View {
     // MARK: - Actions
 
     private func inspectPrefix() {
-        guard let root = coordinator.prefixLayout?.root else { return }
+        guard coordinator.prefixLayout?.root != nil else { return }
         isInspecting = true
         Task {
-            inspection = prefixInspector.inspect(url: root)
+            // Coordinator-owned canonical inspection (single authority).
+            await coordinator.inspectCanonicalPrefix()
             isInspecting = false
         }
     }

@@ -19,6 +19,17 @@ enum PageContentKind: String, CaseIterable, Sendable {
     case diagnostics
 }
 
+/// Concrete surface mode for the two Steam pages.
+///
+/// The Steam pages are PRODUCTION-SEPARATED surfaces: installer
+/// (download/select/verify/install) and client (verified evidence,
+/// launch, re-check, status). A single undifferentiated screen is
+/// rejected by the static audit.
+enum SteamSetupMode: String, CaseIterable, Sendable {
+    case installer
+    case client
+}
+
 /// Single resolver mapping ``InstallerPage`` to UI identity.
 ///
 /// Production views and tests share this resolver — a page can never
@@ -33,6 +44,22 @@ struct UltimatePageResolver {
         case .steamClient: return .steamClient
         case .cloverPit: return .cloverPit
         case .diagnostics: return .diagnostics
+        }
+    }
+
+    /// Production surface mode for the Steam pages.
+    ///
+    /// `.steamInstaller` always renders the installer surface and
+    /// `.steamClient` always renders the client surface — the two are
+    /// never merged into one undifferentiated case.
+    static func steamMode(for page: InstallerPage) -> SteamSetupMode {
+        switch page {
+        case .steamInstaller: return .installer
+        case .steamClient: return .client
+        default:
+            // Non-Steam pages have no Steam surface; callers only invoke
+            // this for the two Steam pages (tests assert the mapping).
+            return .installer
         }
     }
 

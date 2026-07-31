@@ -113,7 +113,60 @@ final class UltimateSetupCoordinator {
     var runtimeURL: URL?
 
     /// Canonical prefix layout resolved by PrefixManager (single source of truth).
-    var prefixLayout: PrefixLayout?
+    var prefixLayout: PrefixLayout? {
+        didSet {
+            // Verification evidence is bound to the layout's canonical root.
+            // When the layout root changes, stale evidence MUST be discarded —
+            // it can never vouch for a different prefix.
+            if oldValue?.root != prefixLayout?.root {
+                prefixInspection = nil
+            }
+        }
+    }
+
+    /// Whether verification evidence is bound to the CURRENT canonical prefix root.
+    ///
+    /// Completion requires ALL of:
+    /// 1. a resolved canonical layout,
+    /// 2. successful inspection evidence (isValid),
+    /// 3. the evidence's recorded prefixURL canonically equal to the layout root
+    ///    (symlink-resolved, standardized — never raw string comparison).
+    var canonicalPrefixEvidenceValid: Bool {
+        guard let layout = prefixLayout,
+              let inspection = prefixInspection,
+              inspection.isValid else { return false }
+        return canonicalURL(inspection.prefixURL) == canonicalURL(layout.root)
+    }
+
+    /// Symlink-resolved, standardized URL used for evidence↔layout binding.
+    private func canonicalURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    /// Establish verification evidence for the current canonical prefix layout.
+    ///
+    /// Always binds `prefixInspection` to the layout's canonical root so the
+    /// completion gate can prove evidence ↔ layout correspondence.
+    @discardableResult
+    private func establishPrefixEvidence(for layout: PrefixLayout) -> PrefixInspection {
+        self.prefixLayout = layout
+        let inspector = PrefixInspector()
+        let inspection = inspector.inspect(url: layout.root)
+        self.prefixInspection = inspection
+        log("Prefix evidence: root=\(layout.root.path) isValid=\(inspection.isValid) bound=\(canonicalPrefixEvidenceValid)")
+        return inspection
+    }
+
+    /// Re-run verification evidence for the current canonical prefix
+    /// (coordinator-owned — the Inspect action goes through this authority).
+    func inspectCanonicalPrefix() async {
+        guard let layout = prefixLayout else {
+            log("Prefix evidence: no canonical prefix layout resolved")
+            return
+        }
+        establishPrefixEvidence(for: layout)
+        log("Prefix evidence refreshed: isValid=\(prefixInspection?.isValid ?? false)")
+    }
 
     // MARK: - Installer Session State
 
@@ -456,7 +509,9 @@ final class UltimateSetupCoordinator {
             let layout: PrefixLayout
             if let existing = try? prefixManager.validatedLayout(for: recipe) {
                 layout = existing
-                self.prefixLayout = layout
+                // Existing canonical prefix — establish evidence BEFORE any
+                // early return (inspection must never be skipped).
+                establishPrefixEvidence(for: existing)
                 log("Canonical prefix resolved")
                 log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
 
@@ -472,7 +527,8 @@ final class UltimateSetupCoordinator {
                 // U1R15: Scan for existing Steam prefixes before creating new ones
                 if let adopted = adoptExistingSteamPrefix() {
                     layout = adopted
-                    self.prefixLayout = adopted
+                    // Adopted prefix — establish evidence BEFORE the steam check.
+                    establishPrefixEvidence(for: adopted)
                     log("Adopted existing prefix with Steam installation")
                     log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
                     if layout.signature().steamExePresent {
@@ -1203,9 +1259,9 @@ final class UltimateSetupCoordinator {
     func computePageCompletion() -> [InstallerPage: Bool] {
         var completion: [InstallerPage: Bool] = [:]
         completion[.runtime] = runtimeURL != nil && runtimeInspection?.isUsable == true
-        // Environment completes only with successful verification evidence
-        // for the CURRENT canonical prefix (not mere layout resolution).
-        completion[.environment] = prefixInspection?.isValid == true
+        // Environment completes only with verification evidence bound to the
+        // CURRENT canonical prefix root (layout + isValid + canonical URL match).
+        completion[.environment] = canonicalPrefixEvidenceValid
         completion[.steamInstaller] = selectedInstaller != nil || steamInstallLifecycle == .verifiedComplete
         completion[.steamClient] = steamInstallLifecycle == .verifiedComplete
         completion[.cloverPit] = cloverPitInspection?.isReady == true

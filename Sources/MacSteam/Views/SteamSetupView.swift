@@ -6,16 +6,18 @@ import MacsTeamNavigationCore
 
 /// View for the Windows Steam installer flow.
 ///
-/// NX Dispatch U1R11 — all actions wired through ``UltimateSetupCoordinator``.
-/// No local fake timers.  Handles the full Steam lifecycle:
-///  1. Download Steam installer (open browser)
-///  2. Select & verify SteamSetup.exe
-///  3. Install via coordinator
-///  4. Re-check / detect installation
+/// Rendered as TWO production-separated surfaces:
+/// - ``mode == .installer`` (page `.steamInstaller`): download, select,
+///   verify, and install `SteamSetup.exe` — installer-specific blockers.
+/// - ``mode == .client`` (page `.steamClient`): verified installed-client
+///   evidence, launch, re-check, client status — client-specific blockers.
 ///
-/// Back → `prefixReady`, Next → `cloverPitNotInstalled`.
+/// All navigation goes through `coordinator.send(intent)` (canonical lane);
+/// there are no local fake timers or direct state mutations.
 struct SteamSetupView: View {
     let coordinator: UltimateSetupCoordinator
+    let mode: SteamSetupMode
+
     @State private var installerURL: URL? = nil
     @State private var fileSize: UInt64 = 0
     @State private var isVerified = false
@@ -28,14 +30,14 @@ struct SteamSetupView: View {
         VStack(alignment: .leading, spacing: 16) {
             header
             Divider()
-
-            if coordinator.state == .steamReady {
-                steamReadyContent
-            } else {
-                stepsContent
+            switch mode {
+            case .installer:
+                installerContent
+            case .client:
+                clientContent
             }
-
             Spacer()
+            blockerBanner
             navigationButtons
         }
         .padding(24)
@@ -51,10 +53,12 @@ struct SteamSetupView: View {
                 .font(.title2)
                 .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Windows Steam Setup")
+                Text(mode == .installer ? "Steam Installer" : "Steam Client")
                     .font(.title3)
                     .fontWeight(.semibold)
-                Text(statusSubtitle)
+                Text(mode == .installer
+                    ? "Download, verify, and install SteamSetup.exe"
+                    : "Detect, launch, and manage Windows Steam")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -62,63 +66,9 @@ struct SteamSetupView: View {
         }
     }
 
-    private var statusSubtitle: String {
-        switch coordinator.state {
-        case .steamReady:
-            return "Windows Steam is installed and ready"
-        case .steamInstallationPending:
-            return "Installing Steam inside the prefix"
-        case .steamInstallerVerified:
-            return "Installer selected — ready to install"
-        default:
-            return "Install Steam inside the CloverPit environment"
-        }
-    }
+    // MARK: - Installer surface (page .steamInstaller)
 
-    // MARK: - Steam Ready
-
-    private var steamReadyContent: some View {
-        VStack(spacing: 12) {
-            Label("Windows Steam ready", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .font(.headline)
-
-            Text("Steam is installed in the prefix.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if let insp = coordinator.steamInspection, insp.steamInstalled {
-                Text("Steam executable detected")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            // Installation status (interrupted/installing)
-            steamInstallStatusView
-
-            HStack(spacing: 12) {
-                Button(steamButtonLabel) {
-                    Task { await coordinator.launchWindowsSteam() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isSteamButtonDisabled)
-
-                Button("Re-check") {
-                    isWorking = true
-                    Task {
-                        await coordinator.recheckSteam()
-                        isWorking = false
-                    }
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-        .padding()
-    }
-
-    // MARK: - Steps (not yet installed)
-
-    private var stepsContent: some View {
+    private var installerContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             stepView(
                 number: 1,
@@ -151,61 +101,118 @@ struct SteamSetupView: View {
             )
             .disabled(!isVerified || coordinator.state == .steamInstallationPending)
 
-            stepView(
-                number: 4,
-                title: "Detect Windows Steam",
-                detail: step4Detail,
-                state: step4State,
-                action: {
+            installerErrorSection
+        }
+    }
+
+    /// Installer-specific blocker/error handling (retry / stop / back).
+    @ViewBuilder
+    private var installerErrorSection: some View {
+        if let error = coordinator.error {
+            Divider()
+            HStack {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Text(error.localizedDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                Button("Retry") {
+                    coordinator.error = nil
+                    isWorking = true
+                    Task {
+                        await coordinator.installSteam()
+                        isWorking = false
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Stop Steam") {
+                    Task {
+                        await coordinator.send(.stopAndClean)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Back") {
+                    Task {
+                        await coordinator.send(.back)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+
+    // MARK: - Client surface (page .steamClient)
+
+    private var clientContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Verified installed-client evidence (from canonical prefix)
+            HStack(spacing: 10) {
+                Image(systemName: coordinator.steamInspection?.steamInstalled == true
+                    ? "checkmark.circle.fill" : "circle.dashed")
+                    .font(.title3)
+                    .foregroundStyle(coordinator.steamInspection?.steamInstalled == true ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(coordinator.steamInspection?.steamInstalled == true
+                        ? "Windows Steam installed" : "Steam client not detected yet")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Text(clientEvidenceDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            // Client lifecycle status (installing / interrupted)
+            steamInstallStatusView
+
+            HStack(spacing: 12) {
+                Button(steamButtonLabel) {
+                    Task { await coordinator.launchWindowsSteam() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSteamButtonDisabled)
+
+                Button("Re-check") {
                     isWorking = true
                     Task {
                         await coordinator.recheckSteam()
                         isWorking = false
                     }
                 }
-            )
-            .disabled(coordinator.state != .steamInstallationPending)
+                .buttonStyle(.bordered)
+            }
 
-            // Error / crash info
-            if let error = coordinator.error {
-                Divider()
-                HStack {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                    Text(error.localizedDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                HStack(spacing: 8) {
-                    Button("Retry") {
-                        coordinator.error = nil
-                        isWorking = true
-                        Task {
-                            await coordinator.installSteam()
-                            isWorking = false
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    Button("Stop Steam") {
-                        Task {
-                            await coordinator.send(.stopAndClean)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    Button("Back") {
-                        Task {
-                            await coordinator.send(.back)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
+            // Client-specific blocker
+            if case .recoveryRequired = coordinator.steamClientState {
+                Label(
+                    "Steam client needs recovery. Use Stop & Clean before continuing.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
             }
         }
+        .padding()
+    }
+
+    private var clientEvidenceDetail: String {
+        guard let insp = coordinator.steamInspection else {
+            return "Re-check after installation"
+        }
+        return insp.steamInstalled
+            ? "Steam executable detected in canonical prefix"
+            : "Steam executable not found yet"
     }
 
     // MARK: - Step state helpers
@@ -234,23 +241,16 @@ struct SteamSetupView: View {
         }
     }
 
-    private var step4State: StepUIState {
-        switch coordinator.state {
-        case .steamReady:
-            return .completed
-        default:
-            return coordinator.state == .steamInstallationPending ? .ready : .pending
+    // MARK: - Navigation (canonical lane)
+
+    @ViewBuilder
+    private var blockerBanner: some View {
+        if let result = coordinator.lastNavigationResult, !result.accepted, let blocker = result.blocker {
+            Label(blocker.message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
-
-    private var step4Detail: String {
-        guard let insp = coordinator.steamInspection else {
-            return "Check whether Steam was installed correctly"
-        }
-        return insp.steamInstalled ? "Windows Steam detected" : "Steam not found yet"
-    }
-
-    // MARK: - Navigation
 
     private var navigationButtons: some View {
         InstallerNavigationFooter(
@@ -370,9 +370,7 @@ struct SteamSetupView: View {
     }
 }
 
-// MARK: - Step UI state
-
-// MARK: - Steam button state
+// MARK: - Steam client button state
 
 private extension SteamSetupView {
     var steamButtonLabel: String {

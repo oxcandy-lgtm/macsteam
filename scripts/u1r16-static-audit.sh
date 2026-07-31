@@ -10,11 +10,13 @@ PROCESS_RUNNER_ONLY=0
 CLEANUP_ONLY=0
 ULTIMATE_LIFECYCLE_ONLY=0
 DIAGNOSTIC_LOG_REDACTION_ONLY=0
+NAVIGATION_GUARDS_ONLY=0
 for arg in "$@"; do
     [ "$arg" = "--process-runner-only" ] && PROCESS_RUNNER_ONLY=1
     [ "$arg" = "--cleanup-only" ] && CLEANUP_ONLY=1
     [ "$arg" = "--ultimate-lifecycle-only" ] && ULTIMATE_LIFECYCLE_ONLY=1
     [ "$arg" = "--diagnostic-log-redaction-only" ] && DIAGNOSTIC_LOG_REDACTION_ONLY=1
+    [ "$arg" = "--navigation-guards-only" ] && NAVIGATION_GUARDS_ONLY=1
 done
 
 VIOLATIONS=0
@@ -217,6 +219,18 @@ esac
     fi
 fi
 
+# ── Navigation guards only ──
+if [ "$NAVIGATION_GUARDS_ONLY" -eq 1 ]; then
+    echo -n "navigation authority guards... "
+    python3 "$DIR/scripts/u1r16_static_audit.py" --repo-root "$REPO_ROOT" 2>&1
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "✅ Navigation guards audit PASSED — 0 violations"
+        exit 0
+    fi
+    exit "$rc"
+fi
+
 # ── Known lifecycle violations (scoped) ──
 if [ "$PROCESS_RUNNER_ONLY" -eq 0 ]; then
     check "steam://open/main" 'steam://open/main' Sources/MacSteam
@@ -234,12 +248,13 @@ if [ "$PROCESS_RUNNER_ONLY" -eq 0 ]; then
     check "Navigation TODOs" 'TODO:.*navigate|TODO:.*advance|TODO:.*dismiss' Sources/MacSteam/Views
     check "Fake timers in Views" 'asyncAfter' Sources/MacSteam/Views
 
-    # Root page dispatch must derive from currentPage — never from state.
-    # In-page progress may read state, but the ROOT view must not switch on it.
-    check "root dispatch on coordinator.state" 'switch coordinator\.state' Sources/MacSteam/Views/UltimateSetupView.swift
-
-    echo -n "coordinator.state assignment in Views... "
-    python3 "$DIR/scripts/u1r16_static_audit.py" 2>&1
+    # Navigation authority + structural guards (Python scanner, fail-closed).
+    # Covers: state writes in views, root dispatch on state, merged Steam
+    # pages, direct recheckCloverPit, try? cleanup swallow, local prefix
+    # inspector, unstable log IDs, missing diagnostics footer, and missing
+    # canonical prefix binding for environment completion.
+    echo -n "navigation authority guards... "
+    python3 "$DIR/scripts/u1r16_static_audit.py" --repo-root "$REPO_ROOT" 2>&1
 
     if [ "$VIOLATIONS" -eq 0 ]; then
         echo "✅ Static audit PASSED — 0 violations" >&2

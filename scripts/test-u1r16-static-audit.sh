@@ -275,6 +275,130 @@ log("Installer cleanup failed")
 '
 run_audit_diagnostic "diag_unused_alias" "unused alias log" 0
 
+# ── Navigation authority guard fixtures ──
+
+run_audit_navguard() {
+    local repo="$1" label="$2" expected="$3"
+    local rc=0
+    GIT_WORK_TREE="$FIXTURE/$repo" GIT_DIR="$FIXTURE/$repo/.git" bash "$AUDIT" --navigation-guards-only >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq "$expected" ]; then
+        pass "$label"
+    else
+        fail "$label (expected exit $expected, got $rc)"
+    fi
+}
+
+# clean → 0 (correct single-authority wiring)
+mk_repo "nav_clean"
+add_file "nav_clean" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    @ViewBuilder
+    var content: some View {
+        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
+        case .steamInstaller: EmptyView()
+        case .steamClient: EmptyView()
+        default: EmptyView()
+        }
+    }
+    var diagnosticsPageView: some View { InstallerNavigationFooter(validator: DefaultInstallerNavigationValidator(), currentPage: .diagnostics, onNavigate: { _ in }) }
+}
+'
+add_file "nav_clean" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    var canonicalPrefixEvidenceValid: Bool { true }
+    func computePageCompletion() -> [String: Bool] { ["environment": canonicalPrefixEvidenceValid] }
+}
+'
+run_audit_navguard "nav_clean" "clean navigation guards" 0
+
+# root dispatch on coordinator.state → 1
+mk_repo "nav_root_state"
+add_file "nav_root_state" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    @ViewBuilder
+    var content: some View {
+        switch coordinator.state { default: EmptyView() }
+    }
+}
+'
+run_audit_navguard "nav_root_state" "root dispatch on state" 1
+
+# merged Steam pages → 1
+mk_repo "nav_merged_steam"
+add_file "nav_merged_steam" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    @ViewBuilder
+    var content: some View {
+        switch UltimatePageResolver.contentKind(for: coordinator.currentPage) {
+        case .steamInstaller, .steamClient: EmptyView()
+        default: EmptyView()
+        }
+    }
+}
+'
+run_audit_navguard "nav_merged_steam" "merged steam case" 1
+
+# direct recheckCloverPit in SteamSetupView → 1
+mk_repo "nav_recheck_direct"
+add_file "nav_recheck_direct" "Sources/MacSteam/Views/SteamSetupView.swift" '
+struct SteamSetupView: View {
+    var body: some View {
+        Button("Next") { Task { await coordinator.recheckCloverPit() } }
+    }
+}
+'
+run_audit_navguard "nav_recheck_direct" "direct recheckCloverPit" 1
+
+# try? cleanup swallow → 1
+mk_repo "nav_try_swallow"
+add_file "nav_try_swallow" "Sources/MacSteam/Views/SteamSetupView.swift" '
+struct SteamSetupView: View {
+    var body: some View {
+        Button("Next") { Task { try? await coordinator.stopSteamSetupSessionIfNeeded() } }
+    }
+}
+'
+run_audit_navguard "nav_try_swallow" "try? cleanup swallow" 1
+
+# local PrefixInspector in PrefixSetupView → 1
+mk_repo "nav_local_inspector"
+add_file "nav_local_inspector" "Sources/MacSteam/Views/PrefixSetupView.swift" '
+struct PrefixSetupView: View {
+    private let prefixInspector = PrefixInspector()
+}
+'
+run_audit_navguard "nav_local_inspector" "local prefix inspector" 1
+
+# unstable log identity → 1
+mk_repo "nav_unstable_log"
+add_file "nav_unstable_log" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    var logLines: [String] { [] }
+    var body: some View {
+        ForEach(logLines, id: \.self) { line in Text(line) }
+    }
+}
+'
+run_audit_navguard "nav_unstable_log" "unstable log identity" 1
+
+# diagnostics footer missing → 1
+mk_repo "nav_diag_footer_missing"
+add_file "nav_diag_footer_missing" "Sources/MacSteam/Views/UltimateSetupView.swift" '
+struct UltimateSetupView: View {
+    var diagnosticsPageView: some View { Text("Diagnostics") }
+}
+'
+run_audit_navguard "nav_diag_footer_missing" "diagnostics footer missing" 1
+
+# environment completion unbound → 1
+mk_repo "nav_env_unbound"
+add_file "nav_env_unbound" "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" '
+final class UltimateSetupCoordinator {
+    func computePageCompletion() -> [String: Bool] { ["environment": prefixInspection?.isValid == true] }
+}
+'
+run_audit_navguard "nav_env_unbound" "environment completion unbound" 1
+
 # ── Infrastructure failure ──
 # Infrastructure failure test (use fake git that exits 2)
 INFRA_DIR="$FIXTURE/infra"

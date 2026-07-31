@@ -176,8 +176,18 @@ struct UltimateSetupView: View {
             RuntimeSetupView(coordinator: coordinator)
         case .environment:
             PrefixSetupView(coordinator: coordinator)
-        case .steamInstaller, .steamClient:
-            SteamSetupView(coordinator: coordinator)
+        case .steamInstaller:
+            // Production-separated installer surface (page .steamInstaller).
+            SteamSetupView(
+                coordinator: coordinator,
+                mode: UltimatePageResolver.steamMode(for: coordinator.currentPage)
+            )
+        case .steamClient:
+            // Production-separated client surface (page .steamClient).
+            SteamSetupView(
+                coordinator: coordinator,
+                mode: UltimatePageResolver.steamMode(for: coordinator.currentPage)
+            )
         case .cloverPit:
             CloverPitLaunchView(coordinator: coordinator)
         case .diagnostics:
@@ -185,7 +195,7 @@ struct UltimateSetupView: View {
         }
     }
 
-    // MARK: - Diagnostics page
+    // MARK: - Diagnostics page (complete navigation + evidence)
 
     private var diagnosticsPageView: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -193,47 +203,121 @@ struct UltimateSetupView: View {
                 .font(.title3)
                 .fontWeight(.semibold)
 
-            GroupBox(label: Label("Page completion evidence", systemImage: "checklist")) {
-                VStack(alignment: .leading, spacing: 4) {
-                    let completion = coordinator.computePageCompletion()
-                    ForEach(InstallerPage.allCases, id: \.self) { page in
-                        HStack {
-                            Text("\(UltimatePageResolver.title(for: page))")
-                                .font(.caption)
-                            Spacer()
-                            Text(completion[page] == true ? "complete" : "incomplete")
-                                .font(.caption.monospaced())
-                                .foregroundStyle(completion[page] == true ? .green : .secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    GroupBox(label: Label("Page completion evidence", systemImage: "checklist")) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            let completion = coordinator.computePageCompletion()
+                            ForEach(InstallerPage.allCases, id: \.self) { page in
+                                HStack {
+                                    Text("\(UltimatePageResolver.title(for: page))")
+                                        .font(.caption)
+                                    Spacer()
+                                    Text(completion[page] == true ? "complete" : "incomplete")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(completion[page] == true ? .green : .secondary)
+                                }
+                            }
                         }
+                        .padding(4)
+                    }
+
+                    GroupBox(label: Label("Runtime evidence", systemImage: "shippingbox.fill")) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            row("Type", coordinator.runtimeSourceType ?? "—")
+                            row("Version", coordinator.runtimeExactVersion ?? "—")
+                            row("Architecture", coordinator.runtimeArchitecture ?? "—")
+                            row("Usable", coordinator.runtimeInspection?.isUsable == true ? "yes" : "no")
+                        }
+                        .padding(4)
+                    }
+
+                    GroupBox(label: Label("Canonical prefix evidence", systemImage: "folder.fill")) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            row("Layout", coordinator.prefixLayout?.root.path ?? "none")
+                            row("Inspection",
+                                coordinator.prefixInspection == nil ? "none"
+                                    : (coordinator.prefixInspection?.isValid == true ? "valid" : "invalid"))
+                            row("Bound to canonical root",
+                                coordinator.canonicalPrefixEvidenceValid ? "yes" : "no")
+                        }
+                        .padding(4)
+                    }
+
+                    GroupBox(label: Label("Steam evidence", systemImage: "steeringwheel")) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            row("Lifecycle", coordinator.steamInstallLifecycle.rawValue)
+                            row("Installed",
+                                coordinator.steamInspection?.steamInstalled == true ? "yes" : "no")
+                            row("Client state", "\(coordinator.steamClientState)")
+                        }
+                        .padding(4)
+                    }
+
+                    GroupBox(label: Label("CloverPit", systemImage: "gamecontroller.fill")) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            row("Readiness",
+                                coordinator.cloverPitInspection?.isReady == true ? "ready" : "not ready")
+                        }
+                        .padding(4)
+                    }
+
+                    GroupBox(label: Label("Environment", systemImage: "info.circle")) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            row("Instance",
+                                coordinator.installerID.isEmpty ? "—" : "#\(coordinator.installerID)")
+                            row("Current page", coordinator.currentPage.rawValue)
+                            row("Coordinator state", coordinator.state.rawValue)
+#if DEBUG
+                            row("PID", "\(ProcessInfo.processInfo.processIdentifier)")
+#endif
+                        }
+                        .padding(4)
+                    }
+
+                    GroupBox(label: Label("Installer log", systemImage: "doc.plaintext")) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Spacer()
+                                Button("Copy Log") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(
+                                        coordinator.installerLog, forType: .string
+                                    )
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 2) {
+                                    ForEach(Array(logLines.enumerated()), id: \.offset) { _, line in
+                                        Text(line)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                            }
+                            .frame(maxHeight: 140)
+                            .background(Color.secondary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        .padding(4)
                     }
                 }
-                .padding(4)
+                .padding(.vertical, 4)
             }
 
-            GroupBox(label: Label("Session state", systemImage: "gearshape.2")) {
-                VStack(alignment: .leading, spacing: 4) {
-                    row("State", coordinator.state.rawValue)
-                    row("Steam lifecycle", coordinator.steamInstallLifecycle.rawValue)
-                    row("Prefix evidence",
-                        coordinator.prefixInspection == nil ? "none"
-                            : (coordinator.prefixInspection?.isValid == true ? "valid" : "invalid"))
-                    row("CloverPit", coordinator.cloverPitInspection?.isReady == true
-                        ? "ready" : "not ready")
+            // Diagnostics participates in the canonical navigation lane:
+            // Back → CloverPit via coordinator.send(.back).
+            InstallerNavigationFooter(
+                validator: DefaultInstallerNavigationValidator(),
+                currentPage: coordinator.currentPage,
+                onNavigate: { intent in
+                    await coordinator.send(intent)
                 }
-                .padding(4)
-            }
-
-            GroupBox(label: Label("Environment", systemImage: "info.circle")) {
-                VStack(alignment: .leading, spacing: 4) {
-                    row("Instance", coordinator.installerID.isEmpty ? "—" : "#\(coordinator.installerID)")
-#if DEBUG
-                    row("PID", "\(ProcessInfo.processInfo.processIdentifier)")
-#endif
-                }
-                .padding(4)
-            }
-
-            Spacer()
+            )
         }
         .padding(24)
     }
