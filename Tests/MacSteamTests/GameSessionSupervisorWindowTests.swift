@@ -196,4 +196,80 @@ struct GameSessionSupervisorWindowTests {
 
         try? await supervisor.forceStop()
     }
+
+    @Test("duplicate launch does not invalidate existing monitor") @MainActor
+    func duplicateLaunchDoesNotInvalidateExistingMonitor() async throws {
+        let provider = MockWindowProvider()
+        let supervisor = GameSessionSupervisor(windowProvider: provider)
+        let prefixDir = try makeTempPrefix()
+        defer {
+            SessionReceiptStore().remove(prefix: prefixDir)
+            try? FileManager.default.removeItem(at: prefixDir)
+        }
+
+        let plan = LaunchPlan(
+            runtimeExecutable: URL(fileURLWithPath: "/bin/sleep"),
+            arguments: ["5"],
+            mode: .supervisedSession
+        )
+
+        let firstSession = try await supervisor.launch(
+            plan: plan,
+            runtimeControl: FalseWineserverRuntime(),
+            prefixRoot: prefixDir,
+            recipeID: "cloverpit",
+            runtimeID: "test",
+            purpose: .game
+        )
+
+        #expect(supervisor.state == .runningUnknown)
+        #expect(supervisor.isWindowMonitoring)
+        let originalPID = firstSession.rootPID
+
+        func expectDuplicateRejected() async {
+            do {
+                _ = try await supervisor.launch(
+                    plan: plan,
+                    runtimeControl: FalseWineserverRuntime(),
+                    prefixRoot: prefixDir,
+                    recipeID: "cloverpit",
+                    runtimeID: "test",
+                    purpose: .game
+                )
+                #expect(Bool(false), "Expected sessionAlreadyRunning")
+            } catch SessionSupervisorError.sessionAlreadyRunning(let existingPID) {
+                #expect(existingPID == originalPID)
+            } catch {
+                #expect(Bool(false), "Unexpected error: \(error)")
+            }
+        }
+
+        func expectSessionPreserved(_ expectedState: GameSessionState) {
+            #expect(supervisor.activeSession?.sessionID == firstSession.sessionID)
+            #expect(supervisor.state == expectedState)
+            #expect(supervisor.isWindowMonitoring)
+        }
+
+        await expectDuplicateRejected()
+        expectSessionPreserved(.runningUnknown)
+
+        provider.windows = [cloverPitWindow()]
+        #expect(await waitForState(supervisor, .runningVisible))
+        #expect(supervisor.isRunning)
+
+        await expectDuplicateRejected()
+        expectSessionPreserved(.runningVisible)
+
+        provider.windows = []
+        #expect(await waitForState(supervisor, .runningHidden))
+        #expect(supervisor.isRunning)
+
+        await expectDuplicateRejected()
+        expectSessionPreserved(.runningHidden)
+
+        try? await supervisor.forceStop()
+        #expect(!supervisor.isWindowMonitoring)
+        SessionReceiptStore().remove(prefix: prefixDir)
+        #expect(SessionReceiptStore().read(prefix: prefixDir) == nil)
+    }
 }

@@ -144,12 +144,12 @@ final class GameSessionSupervisor {
     ) async throws -> GameSession {
         try Self.validateSessionPlan(plan)
 
-        windowObserver.invalidate()
-
         guard state == .idle || state == .stopped else {
             let pid = activeSession?.rootPID ?? 0
             throw SessionSupervisorError.sessionAlreadyRunning(existingPID: pid)
         }
+
+        windowObserver.invalidate()
 
         // Mark launching immediately
         state = .launching
