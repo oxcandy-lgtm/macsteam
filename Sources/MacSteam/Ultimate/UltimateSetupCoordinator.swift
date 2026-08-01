@@ -1730,7 +1730,7 @@ final class UltimateSetupCoordinator {
                 lines: DiagnosticRedactor.redactLines(installerLog)
             ),
             failureClassification: FailureClassificationDiagnostic(
-                errorCase: error.map { String(describing: $0) },
+                errorCase: error.map { Self.errorCaseLabel($0) },
                 hasError: error != nil,
                 setupState: state.displayName
             ),
@@ -1756,6 +1756,33 @@ final class UltimateSetupCoordinator {
         case .recoveryRequired: return "recoveryRequired"
         case .failed: return "failed"
         }
+    }
+
+    nonisolated private static func errorCaseLabel(_ error: UltimateSetupError) -> String {
+        switch error {
+        case .runtimeNotFound: return "runtimeNotFound"
+        case .runtimeInspectionFailed: return "runtimeInspectionFailed"
+        case .prefixCreationFailed: return "prefixCreationFailed"
+        case .installerSelectionFailed: return "installerSelectionFailed"
+        case .installerVerificationFailed: return "installerVerificationFailed"
+        case .steamInstallationFailed: return "steamInstallationFailed"
+        case .cloverPitNotDetected: return "cloverPitNotDetected"
+        case .launchFailed: return "launchFailed"
+        case .ownershipRequired: return "ownershipRequired"
+        case .processTimeout: return "processTimeout"
+        case .processCancelled: return "processCancelled"
+        case .ambiguousAdoption: return "ambiguousAdoption"
+        }
+    }
+
+    /// Single production authority: generate, sanitize, and export a diagnostic
+    /// bundle to the trusted MacSteam diagnostics root.
+    func exportDiagnosticBundle(filename: String = "diagnostic-bundle.json") async throws -> URL {
+        let bundle = await generateDiagnosticBundle()
+        let target = try DiagnosticTrustedRoot.validatedTarget(filename: filename)
+        try DiagnosticBundleWriter.write(bundle, to: target)
+        log("Diagnostic bundle exported (schema v\(bundle.schemaVersion))")
+        return target
     }
 
     private func inspectSteamInstallation() -> SteamInstallationInspection {

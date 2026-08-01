@@ -101,7 +101,7 @@ struct DiagnosticBundleTests {
     func redactHomePath() {
         let home = NSHomeDirectory()
         let input = "prefix at \(home)/Library/prefix"
-        let result = DiagnosticRedactor.redact(input)
+        let result = DiagnosticRedactor.sanitize(input)
         #expect(!result.contains(home))
         #expect(result.contains("$HOME"))
     }
@@ -111,14 +111,14 @@ struct DiagnosticBundleTests {
         let user = NSUserName()
         guard !user.isEmpty else { return }
         let input = "owned by \(user) on this machine"
-        let result = DiagnosticRedactor.redact(input)
+        let result = DiagnosticRedactor.sanitize(input)
         #expect(!result.contains(user))
     }
 
     @Test("redactor masks tokens")
     func redactTokens() {
         let input = "token gh" + "p_abc123DEF456 and key AKI" + "A1234567890123456"
-        let result = DiagnosticRedactor.redact(input)
+        let result = DiagnosticRedactor.sanitize(input)
         #expect(!result.contains("gh" + "p_"))
         #expect(!result.contains("AKI" + "A"))
     }
@@ -126,7 +126,7 @@ struct DiagnosticBundleTests {
     @Test("redactor truncates long strings")
     func redactTruncation() {
         let input = String(repeating: "x", count: 1000)
-        let result = DiagnosticRedactor.redact(input)
+        let result = DiagnosticRedactor.sanitize(input)
         #expect(result.count <= DiagnosticSizeLimits.maxStringChars + 1)
     }
 
@@ -259,5 +259,153 @@ struct DiagnosticBundleTests {
 
         let data = try Data(contentsOf: target)
         #expect(data.count <= DiagnosticSizeLimits.maxBundleBytes)
+    }
+
+    // MARK: - Trusted root containment
+
+    @Test("validatedTarget rejects path traversal")
+    func trustedRootRejectsTraversal() {
+        #expect(throws: DiagnosticBundleWriter.WriteError.self) {
+            try DiagnosticTrustedRoot.validatedTarget(filename: "../escape.json")
+        }
+    }
+
+    @Test("validatedTarget rejects absolute path")
+    func trustedRootRejectsAbsolute() {
+        #expect(throws: DiagnosticBundleWriter.WriteError.self) {
+            try DiagnosticTrustedRoot.validatedTarget(filename: "/tmp/evil.json")
+        }
+    }
+
+    @Test("validatedTarget rejects nested path")
+    func trustedRootRejectsNested() {
+        #expect(throws: DiagnosticBundleWriter.WriteError.self) {
+            try DiagnosticTrustedRoot.validatedTarget(filename: "sub/dir/bundle.json")
+        }
+    }
+
+    @Test("validatedTarget accepts simple filename")
+    func trustedRootAcceptsSimple() throws {
+        let target = try DiagnosticTrustedRoot.validatedTarget(filename: "bundle.json")
+        #expect(target.path.hasPrefix(DiagnosticTrustedRoot.root.path))
+        #expect(target.lastPathComponent == "bundle.json")
+    }
+
+    // MARK: - Symlink chain rejection
+
+    @Test("writer rejects intermediate symlink in path chain")
+    func writerRejectsIntermediateSymlink() throws {
+        let scratch = makeScratchDir()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let realDir = scratch.appendingPathComponent("real-dir")
+        try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+        let linkDir = scratch.appendingPathComponent("link-dir")
+        try FileManager.default.createSymbolicLink(at: linkDir, withDestinationURL: realDir)
+        let target = linkDir.appendingPathComponent("bundle.json")
+
+        #expect(throws: DiagnosticBundleWriter.WriteError.self) {
+            try DiagnosticBundleWriter.write(makeBundle(), to: target)
+        }
+    }
+
+    // MARK: - Tmp cleanup
+
+    @Test("no tmp files remain after failed write")
+    func tmpCleanupOnFailure() throws {
+        let scratch = makeScratchDir()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let link = scratch.appendingPathComponent("link.json")
+        let real = scratch.appendingPathComponent("real.json")
+        try "{}".write(to: real, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        try? DiagnosticBundleWriter.write(makeBundle(), to: link)
+
+        let contents = try FileManager.default.contentsOfDirectory(atPath: scratch.path)
+        let tmpFiles = contents.filter { $0.hasSuffix(".tmp") }
+        #expect(tmpFiles.isEmpty, "tmp files remaining: \(tmpFiles)")
+    }
+
+    // MARK: - Central sanitizer
+
+    @Test("sanitizer strips password patterns")
+    func sanitizerPassword() {
+        let input = "login pass" + "word=secret123 done"
+        let result = DiagnosticRedactor.sanitize(input)
+        #expect(!result.contains("secret123"))
+    }
+
+    @Test("sanitizer strips cookie patterns")
+    func sanitizerCookie() {
+        let input = "set cookie" + "=abc123; path=/"
+        let result = DiagnosticRedactor.sanitize(input)
+        #expect(!result.contains("abc123"))
+    }
+
+    @Test("sanitizer strips authorization patterns")
+    func sanitizerAuthorization() {
+        let input = "header Authoriz" + "ation: Bearer tok123"
+        let result = DiagnosticRedactor.sanitize(input)
+        #expect(!result.contains("tok123"))
+    }
+
+    @Test("sanitizer replaces absolute paths")
+    func sanitizerAbsolutePath() {
+        let result = DiagnosticRedactor.sanitize("/etc/passwd")
+        #expect(result == "<path>")
+    }
+
+    @Test("sanitizeArray enforces bounds")
+    func sanitizeArrayBounds() {
+        let items = (0..<100).map { "item-\($0)" }
+        let result = DiagnosticRedactor.sanitizeArray(items)
+        #expect(result.count == DiagnosticSizeLimits.maxArrayElements)
+    }
+
+    // MARK: - Sanitized bundle
+
+    @Test("sanitized bundle passes violation scan")
+    func sanitizedBundleClean() throws {
+        let bundle = makeBundle().sanitized()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(bundle)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(DiagnosticRedactor.scanForViolations(json).isEmpty)
+    }
+
+    // MARK: - Static CI guard
+
+    @Test("no String(describing: Error) in diagnostic source")
+    func noErrorDescribingInDiagnostics() throws {
+        let sourceDir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/MacSteam/Diagnostics")
+        let files = try FileManager.default.contentsOfDirectory(atPath: sourceDir.path)
+        for file in files where file.hasSuffix(".swift") {
+            let content = try String(contentsOfFile: sourceDir.appendingPathComponent(file).path, encoding: .utf8)
+            #expect(!content.contains("String(describing:"), "\(file) must not use String(describing:) for errors")
+        }
+    }
+
+    // MARK: - Export authority
+
+    @Test("exportDiagnosticBundle writes to trusted root")
+    func exportAuthority() async throws {
+        let coordinator = UltimateSetupCoordinator()
+        let target = try await coordinator.exportDiagnosticBundle(filename: "test-export-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: target) }
+
+        #expect(target.path.hasPrefix(DiagnosticTrustedRoot.root.path))
+        let attrs = try FileManager.default.attributesOfItem(atPath: target.path)
+        #expect((attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+
+        let data = try Data(contentsOf: target)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(DiagnosticBundle.self, from: data)
+        #expect(decoded.schemaVersion == 1)
     }
 }
