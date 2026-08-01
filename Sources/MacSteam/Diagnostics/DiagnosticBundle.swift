@@ -207,16 +207,32 @@ enum DiagnosticRedactor {
             (#"AKI[A][0-9A-Z]{16}"#, "***"),
             (#"xox[baprs]-[A-Za-z0-9][A-Za-z0-9-]+"#, "***"),
             (#"Bearer\s+[A-Za-z0-9._-]+"#, "***"),
-            (#"access_token[=:][A-Za-z0-9]+"#, "***"),
-            (#"(?i)password[=:]\s*\S+"#, "***"),
-            (#"(?i)cookie[=:]\s*\S+"#, "***"),
-            (#"(?i)authorization[=:]\s*\S+"#, "***"),
-            (#"(?i)steamguard[=:]\s*\S+"#, "***"),
-            (#"(?i)sessionid[=:]\s*\S+"#, "***"),
-            (#"(?i)machineauth[=:]\s*\S+"#, "***"),
+            (#"access_token[=:]\s*\S+"#, "***"),
+            (#"(?i)password[=:\s]\s*\S+"#, "***"),
+            (#"(?i)cookie[=:\s]\s*\S+"#, "***"),
+            (#"(?i)authorization[=:\s]\s*\S+"#, "***"),
+            (#"(?i)steamguard[=:\s]\s*\S+"#, "***"),
+            (#"(?i)sessionid[=:\s]\s*\S+"#, "***"),
+            (#"(?i)machineauth[=:\s]\s*\S+"#, "***"),
+            (#"(?i)--password[=\s]\s*\S+"#, "***"),
+            (#"(?i)--token[=\s]\s*\S+"#, "***"),
             (#"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"#, "***@***.***"),
         ]
     }()
+
+    private static let credentialAssignmentPatterns: [String] = [
+        #"(?i)[A-Z_]*SECRET[A-Z_]*[=:]\s*\S+"#,
+        #"(?i)[A-Z_]*API_KEY[=:]\s*\S+"#,
+        #"(?i)\bTOKEN[=:\s]\s*\S+"#,
+        #"(?i)PASSWORD[=:\s]\s*\S+"#,
+        #"(?i)STEAM_PASSWORD[=:\s]\s*\S+"#,
+        #"(?i)COOKIE[=:\s]\s*\S+"#,
+        #"(?i)AUTHORIZATION[=:\s]\s*\S+"#,
+        #"(?i)SESSIONID[=:\s]\s*\S+"#,
+        #"(?i)MACHINEAUTH[=:\s]\s*\S+"#,
+        #"(?i)--password[=\s]\s*\S+"#,
+        #"(?i)--token[=\s]\s*\S+"#,
+    ]
 
     static func sanitize(_ text: String) -> String {
         var result = PathRedactor.redactPath(text)
@@ -253,6 +269,17 @@ enum DiagnosticRedactor {
         return bounded.map { sanitize($0) }
     }
 
+    static func scanForCredentialAssignments(_ text: String) -> [String] {
+        var found: [String] = []
+        for pattern in credentialAssignmentPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil {
+                found.append(pattern)
+            }
+        }
+        return found
+    }
+
     static func scanForViolations(_ json: String) -> [String] {
         var violations: [String] = []
         let home = NSHomeDirectory()
@@ -269,14 +296,8 @@ enum DiagnosticRedactor {
                 break
             }
         }
-        let envPatterns = [#"(?i)\"[A-Z_]*(KEY|SECRET|TOKEN|PASSWORD|COOKIE)[A-Z_]*\"\s*:"#]
-        for pattern in envPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               regex.firstMatch(in: json, range: NSRange(json.startIndex..., in: json)) != nil {
-                violations.append("env_or_credential_key")
-                break
-            }
-        }
+        let credHits = scanForCredentialAssignments(json)
+        if !credHits.isEmpty { violations.append("credential_assignment") }
         return violations
     }
 }
@@ -289,8 +310,24 @@ enum DiagnosticTrustedRoot {
             .appendingPathComponent("Library/Application Support/MacSteam/Diagnostics")
     }
 
+    static let maxFilenameLength = 255
+
     static func validatedTarget(filename: String) throws -> URL {
+        try validateFilename(filename)
+        try validateFullPathChain()
+        let target = root.appendingPathComponent(filename)
+        try validateDestination(target)
+        return target
+    }
+
+    static func validateFilename(_ filename: String) throws {
+        guard !filename.isEmpty, filename.count <= maxFilenameLength else {
+            throw DiagnosticBundleWriter.WriteError.pathTraversal
+        }
         guard !filename.contains("..") else {
+            throw DiagnosticBundleWriter.WriteError.pathTraversal
+        }
+        guard !filename.contains("/"), !filename.contains("\\") else {
             throw DiagnosticBundleWriter.WriteError.pathTraversal
         }
         guard !filename.hasPrefix("/") else {
@@ -299,28 +336,57 @@ enum DiagnosticTrustedRoot {
         guard filename == (filename as NSString).lastPathComponent else {
             throw DiagnosticBundleWriter.WriteError.pathTraversal
         }
-        let target = root.appendingPathComponent(filename)
-        try validateNoSymlinks(from: root, to: target)
-        return target
+        for scalar in filename.unicodeScalars {
+            if scalar.value < 0x20 || scalar.value == 0x7F {
+                throw DiagnosticBundleWriter.WriteError.pathTraversal
+            }
+        }
     }
 
-    static func validateNoSymlinks(from root: URL, to target: URL) throws {
+    static func validateFullPathChain() throws {
         let fm = FileManager.default
-        let canonicalRoot = root.resolvingSymlinksInPath()
-        var current = root
-        let relativeComponents = target.path
-            .replacingOccurrences(of: root.path + "/", with: "")
-            .components(separatedBy: "/")
-        for component in relativeComponents {
+        let components = root.pathComponents
+        var current = URL(fileURLWithPath: "/")
+        for component in components where component != "/" {
             current = current.appendingPathComponent(component)
             if (try? fm.destinationOfSymbolicLink(atPath: current.path)) != nil {
                 throw DiagnosticBundleWriter.WriteError.symlinkRejected
             }
+            if fm.fileExists(atPath: current.path) {
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: current.path, isDirectory: &isDir), isDir.boolValue else {
+                    throw DiagnosticBundleWriter.WriteError.notRegularDirectory
+                }
+            }
         }
-        let canonicalTarget = target.resolvingSymlinksInPath()
-        guard canonicalTarget.path.hasPrefix(canonicalRoot.path + "/") else {
-            throw DiagnosticBundleWriter.WriteError.directoryEscape
+    }
+
+    static func validateDestination(_ target: URL) throws {
+        let fm = FileManager.default
+        if (try? fm.destinationOfSymbolicLink(atPath: target.path)) != nil {
+            throw DiagnosticBundleWriter.WriteError.symlinkRejected
         }
+        if fm.fileExists(atPath: target.path) {
+            var isDir: ObjCBool = false
+            fm.fileExists(atPath: target.path, isDirectory: &isDir)
+            if isDir.boolValue {
+                throw DiagnosticBundleWriter.WriteError.notRegularFile
+            }
+            let attrs = try? fm.attributesOfItem(atPath: target.path)
+            if let type = attrs?[.type] as? FileAttributeType,
+               type != .typeRegular {
+                throw DiagnosticBundleWriter.WriteError.notRegularFile
+            }
+        }
+    }
+
+    static func revalidateBeforeWrite(_ target: URL) throws {
+        let fm = FileManager.default
+        let parent = target.deletingLastPathComponent()
+        if (try? fm.destinationOfSymbolicLink(atPath: parent.path)) != nil {
+            throw DiagnosticBundleWriter.WriteError.symlinkRejected
+        }
+        try validateDestination(target)
     }
 }
 
@@ -331,6 +397,8 @@ enum DiagnosticBundleWriter {
         case symlinkRejected
         case directoryEscape
         case pathTraversal
+        case notRegularDirectory
+        case notRegularFile
         case redactionViolation([String])
         case sizeExceeded(Int)
         case encodingFailed
@@ -340,6 +408,8 @@ enum DiagnosticBundleWriter {
             case .symlinkRejected: return "Symlink detected in path chain"
             case .directoryEscape: return "Target path escapes trusted root"
             case .pathTraversal: return "Path traversal detected"
+            case .notRegularDirectory: return "Path component is not a regular directory"
+            case .notRegularFile: return "Target is not a regular file"
             case .redactionViolation(let v): return "Redaction violations: \(v.joined(separator: ", "))"
             case .sizeExceeded(let n): return "Bundle size \(n) exceeds limit"
             case .encodingFailed: return "JSON encoding failed"
@@ -351,11 +421,7 @@ enum DiagnosticBundleWriter {
         let fm = FileManager.default
         let parent = targetURL.deletingLastPathComponent()
 
-        try DiagnosticTrustedRoot.validateNoSymlinks(from: parent, to: targetURL)
-
-        if (try? fm.destinationOfSymbolicLink(atPath: targetURL.path)) != nil {
-            throw WriteError.symlinkRejected
-        }
+        try DiagnosticTrustedRoot.revalidateBeforeWrite(targetURL)
 
         let sanitized = bundle.sanitized()
         let encoder = JSONEncoder()
@@ -382,6 +448,9 @@ enum DiagnosticBundleWriter {
         do {
             try data.write(to: tempURL, options: .atomic)
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
+            if fm.fileExists(atPath: targetURL.path) {
+                try fm.removeItem(at: targetURL)
+            }
             try fm.moveItem(at: tempURL, to: targetURL)
         } catch {
             try? fm.removeItem(at: tempURL)

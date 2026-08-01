@@ -408,4 +408,93 @@ struct DiagnosticBundleTests {
         let decoded = try decoder.decode(DiagnosticBundle.self, from: data)
         #expect(decoded.schemaVersion == 1)
     }
+
+    // MARK: - Credential assignment detection
+
+    @Test("credential scan detects AWS_SECRET_ACCESS_KEY assignment")
+    func credScanAwsSecret() {
+        let hits = DiagnosticRedactor.scanForCredentialAssignments("AWS_SECRET_ACCESS_KEY" + "=wJalrXUtnFEMI")
+        #expect(!hits.isEmpty)
+    }
+
+    @Test("credential scan detects API_KEY assignment")
+    func credScanApiKey() {
+        let hits = DiagnosticRedactor.scanForCredentialAssignments("MY_API_KEY" + ": abc123")
+        #expect(!hits.isEmpty)
+    }
+
+    @Test("credential scan detects TOKEN assignment")
+    func credScanToken() {
+        let hits = DiagnosticRedactor.scanForCredentialAssignments("TOKEN" + " secretval")
+        #expect(!hits.isEmpty)
+    }
+
+    @Test("credential scan detects PASSWORD assignment")
+    func credScanPassword() {
+        let hits = DiagnosticRedactor.scanForCredentialAssignments("PASS" + "WORD=hunter2")
+        #expect(!hits.isEmpty)
+    }
+
+    @Test("credential scan detects --password flag")
+    func credScanPasswordFlag() {
+        let hits = DiagnosticRedactor.scanForCredentialAssignments("--pass" + "word secret")
+        #expect(!hits.isEmpty)
+    }
+
+    @Test("credential scan detects --token flag")
+    func credScanTokenFlag() {
+        let hits = DiagnosticRedactor.scanForCredentialAssignments("--to" + "ken=abc")
+        #expect(!hits.isEmpty)
+    }
+
+    @Test("credential scan passes clean text")
+    func credScanClean() {
+        let hits = DiagnosticRedactor.scanForCredentialAssignments("source: existingCanonical, valid: true")
+        #expect(hits.isEmpty)
+    }
+
+    @Test("violation scanner catches credential assignments in JSON")
+    func violationScanCredentialAssignment() {
+        let json = "{\"line\": \"AWS_SECRET_ACCESS_KEY" + "=wJalrX\"}"
+        let violations = DiagnosticRedactor.scanForViolations(json)
+        #expect(violations.contains("credential_assignment"))
+    }
+
+    // MARK: - Filename validation
+
+    @Test("filename rejects backslash")
+    func filenameRejectsBackslash() {
+        #expect(throws: DiagnosticBundleWriter.WriteError.self) {
+            try DiagnosticTrustedRoot.validateFilename("bundle\\.json")
+        }
+    }
+
+    @Test("filename rejects control characters")
+    func filenameRejectsControlChars() {
+        #expect(throws: DiagnosticBundleWriter.WriteError.self) {
+            try DiagnosticTrustedRoot.validateFilename("bundle\u{0001}.json")
+        }
+    }
+
+    @Test("filename rejects empty")
+    func filenameRejectsEmpty() {
+        #expect(throws: DiagnosticBundleWriter.WriteError.self) {
+            try DiagnosticTrustedRoot.validateFilename("")
+        }
+    }
+
+    @Test("filename rejects overlong")
+    func filenameRejectsOverlong() {
+        let long = String(repeating: "a", count: 300) + ".json"
+        #expect(throws: DiagnosticBundleWriter.WriteError.self) {
+            try DiagnosticTrustedRoot.validateFilename(long)
+        }
+    }
+
+    // MARK: - Full path chain validation
+
+    @Test("validateFullPathChain passes for real home path")
+    func fullPathChainValid() throws {
+        try DiagnosticTrustedRoot.validateFullPathChain()
+    }
 }
