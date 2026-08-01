@@ -76,7 +76,6 @@ actor ProcessSupervisor {
     private var processes: [UUID: Process] = [:]
     private var handleForPID: [Int32: UUID] = [:]
     private var outputBuffers: [UUID: Data] = [:]
-    private var exitWaiters: [UUID: ProcessExitWaiter] = [:]
 
     // MARK: - Launch
 
@@ -206,15 +205,11 @@ actor ProcessSupervisor {
     }
 
     /// Wait for a process to exit, with timeout.
-    /// Uses `terminationHandler` continuation + `Task.sleep` race.
     ///
     /// Exactly-once resume is guaranteed by `ProcessExitWaiter`; both the
     /// termination handler and the timeout race to `finish`, which never
-    /// resumes the continuation twice.
-    ///
-    /// The waiter is retained in `exitWaiters` until it finishes so that the
-    /// continuation always has a live reference (a deallocated waiter would
-    /// leak the continuation and hang the caller forever).
+    /// resumes the continuation twice. The waiter retains itself until it
+    /// finishes so the continuation always has a live reference.
     func waitForExit(
         _ handle: SupervisedProcessHandle,
         timeout: Duration
@@ -227,15 +222,11 @@ actor ProcessSupervisor {
         }
 
         return await withCheckedContinuation { continuation in
-            let waiter = ProcessExitWaiter(
+            _ = ProcessExitWaiter(
                 process: process,
                 timeout: timeout,
                 continuation: continuation
             )
-            waiter.onFinished = { [weak self] in
-                Task { await self?.clearExitWaiter(for: handle.token) }
-            }
-            exitWaiters[handle.token] = waiter
         }
     }
 
@@ -252,21 +243,12 @@ actor ProcessSupervisor {
                 continuation.resume(returning: .exited(process.terminationStatus))
                 return
             }
-            let waiter = ProcessExitWaiter(
+            _ = ProcessExitWaiter(
                 process: process,
                 timeout: nil,
                 continuation: continuation
             )
-            waiter.onFinished = { [weak self] in
-                Task { await self?.clearExitWaiter(for: handle.token) }
-            }
-            exitWaiters[handle.token] = waiter
         }
-    }
-
-    /// Remove a finished waiter from bookkeeping (deallocates it).
-    private func clearExitWaiter(for token: UUID) {
-        exitWaiters.removeValue(forKey: token)
     }
 
     /// Append bounded diagnostic output from a process.
@@ -300,8 +282,7 @@ actor ProcessSupervisor {
 ///
 /// The waiter retains itself until `finish` so the continuation always has a
 /// live reference (a deallocated waiter would leak the continuation and hang
-/// the caller forever). `ProcessSupervisor` also retains it in `exitWaiters`
-/// for deterministic cleanup.
+/// the caller forever).
 final class ProcessExitWaiter: @unchecked Sendable {
     private let lock = NSLock()
     private var finished = false
@@ -309,7 +290,6 @@ final class ProcessExitWaiter: @unchecked Sendable {
     private weak var process: Process?
     private var deadlineWork: DispatchWorkItem?
     private var selfRetain: ProcessExitWaiter?
-    var onFinished: (() -> Void)?
 
     init(
         process: Process,
@@ -371,6 +351,5 @@ final class ProcessExitWaiter: @unchecked Sendable {
         process?.terminationHandler = nil
         selfRetain = nil
         continuation.resume(returning: outcome)
-        onFinished?()
     }
 }
