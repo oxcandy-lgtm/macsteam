@@ -345,9 +345,14 @@ enum DiagnosticTrustedRoot {
 
     static func validateFullPathChain() throws {
         let fm = FileManager.default
-        let components = root.pathComponents
-        var current = URL(fileURLWithPath: "/")
-        for component in components where component != "/" {
+        let home = NSHomeDirectory()
+        let relativePath = root.path.replacingOccurrences(of: home, with: "")
+        let components = relativePath.components(separatedBy: "/").filter { !$0.isEmpty }
+        var current = URL(fileURLWithPath: home)
+        if (try? fm.destinationOfSymbolicLink(atPath: current.path)) != nil {
+            throw DiagnosticBundleWriter.WriteError.symlinkRejected
+        }
+        for component in components {
             current = current.appendingPathComponent(component)
             if (try? fm.destinationOfSymbolicLink(atPath: current.path)) != nil {
                 throw DiagnosticBundleWriter.WriteError.symlinkRejected
@@ -381,11 +386,7 @@ enum DiagnosticTrustedRoot {
     }
 
     static func revalidateBeforeWrite(_ target: URL) throws {
-        let fm = FileManager.default
-        let parent = target.deletingLastPathComponent()
-        if (try? fm.destinationOfSymbolicLink(atPath: parent.path)) != nil {
-            throw DiagnosticBundleWriter.WriteError.symlinkRejected
-        }
+        try validateFullPathChain()
         try validateDestination(target)
     }
 }
@@ -399,6 +400,7 @@ enum DiagnosticBundleWriter {
         case pathTraversal
         case notRegularDirectory
         case notRegularFile
+        case destinationExists
         case redactionViolation([String])
         case sizeExceeded(Int)
         case encodingFailed
@@ -410,6 +412,7 @@ enum DiagnosticBundleWriter {
             case .pathTraversal: return "Path traversal detected"
             case .notRegularDirectory: return "Path component is not a regular directory"
             case .notRegularFile: return "Target is not a regular file"
+            case .destinationExists: return "Destination already exists — refusing to replace"
             case .redactionViolation(let v): return "Redaction violations: \(v.joined(separator: ", "))"
             case .sizeExceeded(let n): return "Bundle size \(n) exceeds limit"
             case .encodingFailed: return "JSON encoding failed"
@@ -420,8 +423,16 @@ enum DiagnosticBundleWriter {
     static func write(_ bundle: DiagnosticBundle, to targetURL: URL) throws {
         let fm = FileManager.default
         let parent = targetURL.deletingLastPathComponent()
+        let isTrusted = targetURL.path.hasPrefix(DiagnosticTrustedRoot.root.path)
 
-        try DiagnosticTrustedRoot.revalidateBeforeWrite(targetURL)
+        if isTrusted {
+            try DiagnosticTrustedRoot.validateFullPathChain()
+        } else {
+            if (try? fm.destinationOfSymbolicLink(atPath: parent.path)) != nil {
+                throw WriteError.symlinkRejected
+            }
+        }
+        try DiagnosticTrustedRoot.validateDestination(targetURL)
 
         let sanitized = bundle.sanitized()
         let encoder = JSONEncoder()
@@ -444,13 +455,28 @@ enum DiagnosticBundleWriter {
         }
 
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+
+        if isTrusted {
+            try DiagnosticTrustedRoot.validateFullPathChain()
+        }
+
+        if fm.fileExists(atPath: targetURL.path) {
+            throw WriteError.destinationExists
+        }
+
+        if isTrusted {
+            try DiagnosticTrustedRoot.revalidateBeforeWrite(targetURL)
+        }
+
         let tempURL = parent.appendingPathComponent(".diagnostic-bundle-\(UUID().uuidString).tmp")
         do {
             try data.write(to: tempURL, options: .atomic)
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
-            if fm.fileExists(atPath: targetURL.path) {
-                try fm.removeItem(at: targetURL)
+
+            if isTrusted {
+                try DiagnosticTrustedRoot.validateFullPathChain()
             }
+
             try fm.moveItem(at: tempURL, to: targetURL)
         } catch {
             try? fm.removeItem(at: tempURL)

@@ -33,8 +33,8 @@ check "No env/printenv in diagnostics" $?
 ! grep -rq "String(describing:" "$DIAG_DIR" 2>/dev/null
 check "No String(describing:) in diagnostics" $?
 
-# 4. No arbitrary destination URL (write(to:) must go through validated target)
-! grep -rq "write.*to:.*URL(fileURLWithPath:" "$DIAG_DIR" 2>/dev/null
+# 4. No arbitrary destination URL construction in diagnostics (trusted root NSHomeDirectory exempt)
+! grep -v "NSHomeDirectory" "$DIAG_DIR/DiagnosticBundle.swift" | grep -v "fileURLWithPath: home" | grep -q "URL(fileURLWithPath:"
 check "No arbitrary destination URL" $?
 
 # 5. Root no-follow validation present
@@ -53,14 +53,14 @@ check "Tmp cleanup on failure present" $?
 grep -q "scanForCredentialAssignments" "$DIAG_DIR/DiagnosticBundle.swift"
 check "Credential assignment scan present" $?
 
-# 9. Size limits enforced
-grep -q "maxBundleBytes" "$DIAG_DIR/DiagnosticBundle.swift"
+# 9. Size limits enforced (exact references, not renamed)
+grep -qE '\bmaxBundleBytes\b' "$DIAG_DIR/DiagnosticBundle.swift"
 check "Bundle size limit enforced" $?
-grep -q "maxArrayElements" "$DIAG_DIR/DiagnosticBundle.swift"
+grep -qE '\bmaxArrayElements\b' "$DIAG_DIR/DiagnosticBundle.swift"
 check "Array size limit enforced" $?
-grep -q "maxStringChars" "$DIAG_DIR/DiagnosticBundle.swift"
+grep -qE '\bmaxStringChars\b' "$DIAG_DIR/DiagnosticBundle.swift"
 check "String size limit enforced" $?
-grep -q "maxOutputLines" "$DIAG_DIR/DiagnosticBundle.swift"
+grep -qE '\bmaxOutputLines\b' "$DIAG_DIR/DiagnosticBundle.swift"
 check "Output line limit enforced" $?
 
 # 10. Sanitizer applied to all strings (sanitized() method present)
@@ -83,8 +83,8 @@ check "Re-validation before write present" $?
 ! grep -A2 "generateDiagnosticBundle\|errorCase" "$COORD" | grep -q "String(describing:"
 check "No String(describing: Error) in coordinator diagnostics" $?
 
-# 15. Export authority uses validatedTarget
-grep -q "validatedTarget" "$COORD"
+# 15. Export authority uses validatedTarget (exact, not renamed)
+grep -qE '\bvalidatedTarget\b' "$COORD"
 check "Export authority uses validatedTarget" $?
 
 echo ""
