@@ -135,6 +135,78 @@ struct WineServerControllerTests {
     }
 }
 
+// MARK: - Best-effort wineserver -k semantics (U1R18)
+
+private struct NoServerWineRuntime: WineRuntimeControl {
+    let shimURL: URL
+
+    var wineserverExecutable: URL { shimURL }
+
+    func controlEnvironment(for prefix: URL) throws -> [String: String] {
+        ["WINEPREFIX": prefix.path]
+    }
+
+    /// Writes a tiny shell shim behaving like wineserver with no live server.
+    static func makeShim() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wineserver-no-server-\(UUID().uuidString).sh")
+        let script = """
+        #!/bin/sh
+        case "$1" in
+          -k) exit 1 ;;
+          -w) exit 0 ;;
+          *) exit 0 ;;
+        esac
+        """
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: url.path
+        )
+        return url
+    }
+}
+
+struct WineServerBestEffortKillTests {
+
+    @Test("shutdownPrefix succeeds when wineserver -k exits 1 (no server running)")
+    func shutdownPrefix_succeedsWhenNoServerRunning() async throws {
+        let shim = try NoServerWineRuntime.makeShim()
+        defer { try? FileManager.default.removeItem(at: shim) }
+
+        let controller = WineServerController()
+        let prefix = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prefix-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
+
+        let runtime = NoServerWineRuntime(shimURL: shim)
+        // -k exits 1 (already stopped), -w exits 0 → shutdown confirmed.
+        let stopped = try await controller.shutdownPrefix(
+            runtime: runtime,
+            prefix: prefix,
+            waitSeconds: 1
+        )
+        #expect(stopped)
+    }
+
+    @Test("isRunning reports false when -w exits immediately")
+    func isRunning_falseWhenNoServer() async throws {
+        let shim = try NoServerWineRuntime.makeShim()
+        defer { try? FileManager.default.removeItem(at: shim) }
+
+        let controller = WineServerController()
+        let prefix = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prefix-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
+
+        let running = try await controller.isRunning(
+            prefix: prefix,
+            runtime: NoServerWineRuntime(shimURL: shim)
+        )
+        #expect(running == false)
+    }
+}
+
 // MARK: - Mock runtime for testing
 
 private struct MockWineRuntime: WineRuntimeControl {

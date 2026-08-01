@@ -106,6 +106,24 @@ final class UltimateSetupCoordinator {
     private let bindingStore = RuntimePrefixBindingStore()
     private let navigationReducer = InstallerNavigationReducer()
 
+    /// Injectable real-load probe (test seam). Production runs a fresh
+    /// probe per selection; tests inject a deterministic fake.
+    var realLoadProbeProvider: @MainActor () -> WineRealLoadProbe = { WineRealLoadProbe() }
+
+    /// Result of the most recent real-load preflight (nil before any run).
+    private(set) var realLoadResult: WineRealLoadResult?
+
+    /// Whether the most recent real-load preflight proved steam-client capability.
+    private(set) var realLoadHealthy = false
+
+    /// Test seam: seed a real-load outcome without running the probe.
+    func setRealLoadHealthyForTesting(_ healthy: Bool) {
+        realLoadHealthy = healthy
+        realLoadResult = healthy
+            ? WineRealLoadResult(status: .healthy, detail: "test-seeded", windowsVersion: nil, exitCode: 0)
+            : WineRealLoadResult(status: .launchFailed, detail: "test-seeded", windowsVersion: nil, exitCode: 1)
+    }
+
     @MainActor var currentPage: InstallerPage = .runtime
     @MainActor var lastNavigationResult: InstallerNavigationResult?
 
@@ -361,6 +379,21 @@ final class UltimateSetupCoordinator {
             return
         }
 
+        // U1R18: Real-load preflight — prove the runtime executes a Windows
+        // command (and thus steam-client capability) BEFORE the capability gate.
+        if let url = preferred.url {
+            let wineURL = WineExecutableLayout.detect(from: url).wine
+            let result = await performRealLoadPreflight(runtimeURL: url, wineURL: wineURL)
+            if !result.isHealthy {
+                state = .runtimeInvalid
+                error = .runtimeInspectionFailed(
+                    "Wine real-load preflight failed (\(result.status.rawValue)): \(result.detail)"
+                )
+                log("Real-load preflight REJECTED runtime: \(result.status.rawValue)")
+                return
+            }
+        }
+
         selectCandidate(preferred)
         log("Runtime selected: \(preferred.displayName) v\(preferred.inspection?.version ?? "?")")
         log("Runtime type: \(preferred.runtimeType.rawValue)")
@@ -410,11 +443,39 @@ final class UltimateSetupCoordinator {
         return output.components(separatedBy: " ").first.flatMap { String($0.prefix(12)) }
     }
 
+    /// Test seam: routes to the production `selectCandidate` gate so tests
+    /// exercise the exact same acceptance path the UI uses.
+    func selectCandidateForTesting(_ candidate: RuntimeCandidate) {
+        selectCandidate(candidate)
+    }
+
     /// Apply a selected candidate as the active runtime.
     private func selectCandidate(_ candidate: RuntimeCandidate) {
         self.runtimeInspection = candidate.inspection
         self.activeRuntime = candidate.runtime
         self.runtimeURL = candidate.url
+
+        // U1R18: Recipe-required capability gate — deterministic rejection
+        // when the runtime's effective capabilities cannot satisfy the recipe.
+        let required = RuntimeCapabilityGate.required(from: recipe.runtime.requiredCapabilities)
+        let effective = RuntimeCapabilityGate.effectiveCapabilities(
+            staticCaps: candidate.inspection?.capabilities ?? [],
+            realLoadHealthy: realLoadHealthy
+        )
+        if !RuntimeCapabilityGate.isSatisfied(required: required, effective: effective) {
+            let missing = RuntimeCapabilityGate.missingCapabilityNames(
+                required: required,
+                effective: effective
+            )
+            let detail = "Runtime \(candidate.displayName) missing required capabilities: "
+                + missing.joined(separator: ", ")
+            log("Capability gate REJECTED: \(detail)")
+            state = .runtimeInvalid
+            error = .runtimeInspectionFailed(detail)
+            runtimeRegistry.preferredRuntimeID = nil
+            return
+        }
+        log("Capability gate passed for \(candidate.displayName) (effective=\(effective))")
 
         switch candidate.runtimeType {
         case .managedWine:
@@ -456,7 +517,29 @@ final class UltimateSetupCoordinator {
         }
     }
 
-    /// Compute a safe ID (hash prefix) for a filesystem path.
+    /// Run the real-load preflight against the given runtime URL.
+    ///
+    /// Proves the runtime can actually execute a Windows command in a fresh
+    /// null-prefix with its dependency layout. The result drives both the
+    /// steam-client capability gate and the pre-launch fail-closed check.
+    @discardableResult
+    func performRealLoadPreflight(runtimeURL: URL, wineURL: URL) async -> WineRealLoadResult {
+        let probe = realLoadProbeProvider()
+        let result = await probe.probe(
+            runtimeURL: runtimeURL,
+            wineURL: wineURL,
+            scratchPrefixRoot: prefixManager.prefixesRoot
+        )
+        self.realLoadResult = result
+        self.realLoadHealthy = result.isHealthy
+        log("Real-load preflight: \(result.status.rawValue) — \(result.detail)")
+        if let version = result.windowsVersion {
+            log("Real-load Windows version: \(version)")
+        }
+        return result
+    }
+
+    /// Compute safe ID (hash prefix) for a filesystem path.
     private func computeSafeID(_ path: String) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -510,7 +593,37 @@ final class UltimateSetupCoordinator {
             return
         }
 
+        // U1R18: Real-load preflight before the capability gate.
+        let wineURL = WineExecutableLayout.detect(from: url).wine
+        let result = await performRealLoadPreflight(runtimeURL: url, wineURL: wineURL)
+        if !result.isHealthy {
+            state = .runtimeInvalid
+            error = .runtimeInspectionFailed(
+                "Wine real-load preflight failed (\(result.status.rawValue)): \(result.detail)"
+            )
+            log("Real-load preflight REJECTED runtime: \(result.status.rawValue)")
+            return
+        }
+
         selectCandidate(candidate)
+    }
+
+    /// U1R18: wineboot exactly-once decision (pure, deterministic).
+    ///
+    /// A freshly created prefix root must be initialized with wineboot. An
+    /// already-initialized prefix (valid signature: system.reg, user.reg,
+    /// drive_c, dosdevices/c:) must be reused WITHOUT re-running wineboot.
+    ///
+    /// - Parameters:
+    ///   - steamExePresent: Whether steam.exe is already in the prefix.
+    ///   - signatureValid: Whether the prefix signature proves prior init.
+    ///
+    /// - Returns: `true` when wineboot must NOT run again.
+    nonisolated static func shouldSkipWinebootForExistingPrefix(
+        steamExePresent: Bool,
+        signatureValid: Bool
+    ) -> Bool {
+        !steamExePresent && signatureValid
     }
 
     /// Step 2: Create the CloverPit Wine prefix.
@@ -549,16 +662,33 @@ final class UltimateSetupCoordinator {
                 adoptedLayout: adopted
             ) {
                 layout = acquisition.layout
-                log("Prefix signature: drive_c=\(layout.signature().driveCDirectory ? "present" : "missing")")
+                let sig = layout.signature()
+                log("Prefix signature: drive_c=\(sig.driveCDirectory ? "present" : "missing")")
 
                 // Check if Steam is already installed (evidence already bound)
                 log("Checking steam.exe in canonical prefix…")
-                if layout.signature().steamExePresent {
+                if sig.steamExePresent {
                     state = .steamReady
                     log("steam.exe FOUND in canonical prefix — advancing to Steam ready")
                     return
                 }
-                log("steam.exe NOT FOUND — proceeding with wineboot")
+
+                // U1R18: wineboot exactly-once + prefix reuse. An acquired
+                // prefix has a valid signature (system.reg/user.reg/drive_c/
+                // dosdevices c:), which means wineboot already initialized it.
+                // Re-running wineboot would be a duplicate initialization —
+                // reuse the initialized prefix instead.
+                if Self.shouldSkipWinebootForExistingPrefix(
+                    steamExePresent: false,
+                    signatureValid: sig.isValid
+                ) {
+                    log("Existing initialized prefix — reusing without wineboot (wineboot exactly-once)")
+                    establishPrefixEvidence(for: layout, source: acquisition.source)
+                    reconcileSteamInstallLifecycle()
+                    state = .prefixReady
+                    return
+                }
+                log("Prefix present but uninitialized — proceeding with wineboot")
             } else {
                 // Create new prefix root directory (wineboot will do the rest)
                 let rootURL = prefixManager.prefixURL(for: recipe)
@@ -958,8 +1088,12 @@ final class UltimateSetupCoordinator {
             )
 
             log("Windows Steam session started: purpose=steamSetup, profile=\(steamUIRenderProfile.rawValue)")
-            steamClientState = .runningVisible
-            state = .steamInstallationPending
+            // U1R18 R1: visibility is MEASURED from the WindowServer via the
+            // supervisor's observer, never guessed. Right after launch the
+            // supervisor reports runningUnknown; the observer drives it to
+            // runningVisible/runningHidden. Mark as launching here.
+            steamClientState = .launching
+            state = .steamReady
         } catch {
             self.error = .launchFailed(error.localizedDescription)
             steamClientState = .stopped
@@ -996,6 +1130,14 @@ final class UltimateSetupCoordinator {
 
     /// Reconcile steamClientState with actual process state.
     func reconcileSteamClient() async {
+        // U1R18 R1: when a supervised session is active, visibility comes from
+        // the WindowServer observer (sessionSupervisor.state), NOT from guessing
+        // or from process table heuristics.
+        if sessionSupervisor.activeSession != nil {
+            steamClientState = SteamClientState(sessionState: sessionSupervisor.state)
+            return
+        }
+
         guard let runtimeURL = runtimeURL,
               let prefix = prefixLayout?.root else {
             steamClientState = .stopped

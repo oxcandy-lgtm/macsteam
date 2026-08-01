@@ -269,6 +269,17 @@ extension ImportedWineRuntime: WineRuntimeControl {
               isDir.boolValue else {
             throw WineServerError.prefixNotFound(prefix)
         }
+        // Mirror `WineControlLane.buildWineEnvironment`: include dependency
+        // paths so that wineserver control works under the same DYLD libs
+        // the launched client needs. Falls back to the basic environment
+        // when no dependency layout exists.
+        if let depLayout = RuntimeDependencyLayout(runtimePath: runtimeURL.path),
+           let builder = try? WineLaunchEnvironmentBuilder(
+               winePrefix: prefix,
+               dependencyLayout: depLayout
+           ) {
+            return builder.build()
+        }
         return SafeProcessEnvironment.base.merging([
             "WINEPREFIX": prefix.path
         ]) { _, new in new }

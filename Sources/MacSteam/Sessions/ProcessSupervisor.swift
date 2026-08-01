@@ -76,6 +76,7 @@ actor ProcessSupervisor {
     private var processes: [UUID: Process] = [:]
     private var handleForPID: [Int32: UUID] = [:]
     private var outputBuffers: [UUID: Data] = [:]
+    private var exitWaiters: [UUID: ProcessExitWaiter] = [:]
 
     // MARK: - Launch
 
@@ -206,6 +207,14 @@ actor ProcessSupervisor {
 
     /// Wait for a process to exit, with timeout.
     /// Uses `terminationHandler` continuation + `Task.sleep` race.
+    ///
+    /// Exactly-once resume is guaranteed by `ProcessExitWaiter`; both the
+    /// termination handler and the timeout race to `finish`, which never
+    /// resumes the continuation twice.
+    ///
+    /// The waiter is retained in `exitWaiters` until it finishes so that the
+    /// continuation always has a live reference (a deallocated waiter would
+    /// leak the continuation and hang the caller forever).
     func waitForExit(
         _ handle: SupervisedProcessHandle,
         timeout: Duration
@@ -217,27 +226,16 @@ actor ProcessSupervisor {
             return .exited(process.terminationStatus)
         }
 
-        return await withTaskGroup(of: ProcessWaitOutcome.self) { group in
-            group.addTask {
-                await withCheckedContinuation { continuation in
-                    let handler = ProcessTerminationHandler(process: process, continuation: continuation)
-                    handler.install()
-                }
+        return await withCheckedContinuation { continuation in
+            let waiter = ProcessExitWaiter(
+                process: process,
+                timeout: timeout,
+                continuation: continuation
+            )
+            waiter.onFinished = { [weak self] in
+                Task { await self?.clearExitWaiter(for: handle.token) }
             }
-
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return ProcessWaitOutcome.timedOut
-            }
-
-            let first = await group.next() ?? .timedOut
-            group.cancelAll()
-
-            if case .timedOut = first {
-                process.terminationHandler = nil
-            }
-
-            return first
+            exitWaiters[handle.token] = waiter
         }
     }
 
@@ -254,9 +252,21 @@ actor ProcessSupervisor {
                 continuation.resume(returning: .exited(process.terminationStatus))
                 return
             }
-            let handler = ProcessTerminationHandler(process: process, continuation: continuation)
-            handler.install()
+            let waiter = ProcessExitWaiter(
+                process: process,
+                timeout: nil,
+                continuation: continuation
+            )
+            waiter.onFinished = { [weak self] in
+                Task { await self?.clearExitWaiter(for: handle.token) }
+            }
+            exitWaiters[handle.token] = waiter
         }
+    }
+
+    /// Remove a finished waiter from bookkeeping (deallocates it).
+    private func clearExitWaiter(for token: UUID) {
+        exitWaiters.removeValue(forKey: token)
     }
 
     /// Append bounded diagnostic output from a process.
@@ -285,20 +295,82 @@ actor ProcessSupervisor {
 }
 
 /// Helper to manage Process termination handler with Sendable safety.
-private final class ProcessTerminationHandler: @unchecked Sendable {
-    weak var process: Process?
-    let continuation: CheckedContinuation<ProcessWaitOutcome, Never>
+/// Exactly-once resume: both the termination handler and the deadline race to
+/// `finish`, and only the first call resumes the continuation.
+///
+/// The waiter retains itself until `finish` so the continuation always has a
+/// live reference (a deallocated waiter would leak the continuation and hang
+/// the caller forever). `ProcessSupervisor` also retains it in `exitWaiters`
+/// for deterministic cleanup.
+final class ProcessExitWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private var continuation: CheckedContinuation<ProcessWaitOutcome, Never>?
+    private weak var process: Process?
+    private var deadlineWork: DispatchWorkItem?
+    private var selfRetain: ProcessExitWaiter?
+    var onFinished: (() -> Void)?
 
-    init(process: Process, continuation: CheckedContinuation<ProcessWaitOutcome, Never>) {
+    init(
+        process: Process,
+        timeout: Duration?,
+        continuation: CheckedContinuation<ProcessWaitOutcome, Never>,
+        launch: (() throws -> Void)? = nil
+    ) {
         self.process = process
         self.continuation = continuation
+        self.selfRetain = self
+
+        // Install termination handler BEFORE launch so a process that exits
+        // immediately can never escape the handler (exit-before-install race).
+        process.terminationHandler = { [weak self] proc in
+            self?.finish(.exited(proc.terminationStatus))
+        }
+
+        // Launch now if this waiter owns the run() call.
+        if let launch {
+            do {
+                try launch()
+            } catch {
+                self.finish(.exited(0))
+                return
+            }
+        }
+
+        // Re-check after launch/install: the process may have exited before
+        // the handler could fire. Resume with the current status.
+        if !process.isRunning {
+            self.finish(.exited(process.terminationStatus))
+            return
+        }
+
+        // Deadline that also resumes the continuation.
+        guard let timeout else { return }
+        let nanos = timeout.components.seconds * 1_000_000_000
+            + timeout.components.attoseconds / 1_000_000_000
+        let work = DispatchWorkItem { [weak self] in
+            self?.finish(.timedOut)
+        }
+        deadlineWork = work
+        DispatchQueue.global().asyncAfter(
+            deadline: .now() + .nanoseconds(Int(nanos)),
+            execute: work
+        )
     }
 
-    func install() {
-        process?.terminationHandler = { [weak self] proc in
-            guard let self else { return }
-            self.process?.terminationHandler = nil
-            self.continuation.resume(returning: .exited(proc.terminationStatus))
-        }
+    private func finish(_ outcome: ProcessWaitOutcome) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        guard let continuation else { lock.unlock(); return }
+        self.continuation = nil
+        lock.unlock()
+
+        deadlineWork?.cancel()
+        deadlineWork = nil
+        process?.terminationHandler = nil
+        selfRetain = nil
+        continuation.resume(returning: outcome)
+        onFinished?()
     }
 }
