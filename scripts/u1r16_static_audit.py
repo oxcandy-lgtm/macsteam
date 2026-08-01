@@ -1559,10 +1559,17 @@ def _(root: str) -> list[str]:
     follows, returning the matching (layout, source) pair; no return/
     throw/break/continue may precede the evidence call in the branch.
 
-    createPrefix: exactly one `state = .prefixReady`; exactly one direct
-    `establishPrefixEvidence(for: layout, source: .newlyInitialized)`
-    in the same lexical parent scope, preceding and dominating the
-    success assignment; no intervening return/throw/break/continue.
+    createPrefix (U1R18 wineboot exactly-once): exactly two `state =
+    .prefixReady` transitions — the REUSE transition (evidence
+    `establishPrefixEvidence(for: layout, source: acquisition.source)`
+    gated on `shouldSkipWinebootForExistingPrefix`, reusing an already
+    initialized prefix without a duplicate wineboot run) and the
+    FRESHLY-INITIALIZED transition (evidence `establishPrefixEvidence(
+    for: layout, source: .newlyInitialized)` after wineboot +
+    verification). Each evidence call must sit in the SAME lexical parent
+    scope as its success assignment, at direct statement depth, preceding
+    it, with no intervening return/throw/break/continue. Exactly two
+    evidence calls total (one reuse, one fresh).
     """
     content = read_file(root, os.path.join(ULTIMATE, "UltimateSetupCoordinator.swift"))
     if content is None:
@@ -1642,64 +1649,95 @@ def _(root: str) -> list[str]:
                                "precede the branch return")
     create_body = required_body(cleaned, "func createPrefix",
                                 "UltimateSetupCoordinator.createPrefix")
-    ready_count = len(re.findall(r"state\s*=\s*\.prefixReady", create_body))
-    if ready_count != 1:
+    # U1R18 wineboot exactly-once contract: createPrefix has exactly TWO
+    # terminal transitions. (1) REUSE: an acquired prefix with a valid
+    # signature but no steam.exe is reused without a second wineboot run —
+    # evidence `establishPrefixEvidence(for: layout, source:
+    # acquisition.source)` then `state = .prefixReady` at the `if let
+    # acquisition` branch's direct depth, gated on
+    # `shouldSkipWinebootForExistingPrefix`. (2) FRESH: wineboot +
+    # verification complete — evidence `establishPrefixEvidence(for:
+    # layout, source: .newlyInitialized)` then `state = .prefixReady` at
+    # the do-block's direct depth.
+    ready_matches = list(re.finditer(r"state\s*=\s*\.prefixReady", create_body))
+    ready_count = len(ready_matches)
+    if ready_count != 2:
         out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                   f"exactly one 'state = .prefixReady' required in createPrefix "
+                   "exactly two 'state = .prefixReady' transitions required in "
+                   "createPrefix (wineboot-once reuse + freshly-initialized) "
                    f"(found {ready_count})")
     occs = list(call_occurrences(create_body, "establishPrefixEvidence"))
-    ready_m = re.search(r"state\s*=\s*\.prefixReady", create_body)
-    ready_pos = ready_m.start() if ready_m else -1
-    # The evidence call must sit in the SAME lexical scope as the success
-    # assignment (e.g. both inside the `do { }` block) at direct statement
-    # depth of that scope — never inside a nested if/closure/false branch.
-    scope_depth = brace_depth_at(create_body, ready_pos) if ready_pos >= 0 else 0
-    direct_occs = [o for o in occs if o[1] == scope_depth]
-    if len(direct_occs) != 1:
-        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                   "createPrefix must have exactly one establishPrefixEvidence call "
-                   "at DIRECT statement depth of the .prefixReady scope "
-                   f"(found {len(direct_occs)} direct of {len(occs)} total)")
-    else:
+    for rm in ready_matches:
+        ready_pos = rm.start()
+        # The evidence call must sit in the SAME lexical scope as its
+        # success assignment at direct statement depth of that scope —
+        # never inside a nested if/closure/false branch.
+        scope_depth = brace_depth_at(create_body, ready_pos)
+        direct_occs = [o for o in occs if o[1] == scope_depth]
+        if len(direct_occs) != 1:
+            out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                       "each createPrefix .prefixReady transition must have exactly "
+                       "one establishPrefixEvidence call at DIRECT statement depth "
+                       f"of its scope (found {len(direct_occs)} direct of "
+                       f"{len(occs)} total)")
+            continue
         inner = balanced_parens(create_body, direct_occs[0][0].end() - 1)
         if inner is None:
             infra("required contract unparseable: evidence call parens")
         args = labeled_args(inner)
-        if args.get("for") != "layout" or args.get("source") != ".newlyInitialized":
+        if args.get("for") != "layout" or \
+           args.get("source") not in (".newlyInitialized", "acquisition.source"):
             out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                       "newlyInitialized direct evidence call must bind "
-                       "(for: layout, source: .newlyInitialized) "
+                       "createPrefix evidence call must bind "
+                       "(for: layout, source: .newlyInitialized) [fresh] or "
+                       "(for: layout, source: acquisition.source) [reuse] "
                        f"(got {args.get('for')}, {args.get('source')})")
         ev_pos = direct_occs[0][0].start()
-        if ready_pos >= 0:
-            if ev_pos > ready_pos:
-                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                           "newlyInitialized evidence must precede state = .prefixReady")
-            else:
-                between = create_body[ev_pos:ready_pos]
-                for kw in ("return", "throw", "break", "continue"):
-                    if re.search(r"\b" + kw + r"\b", between):
-                        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                                   f"'{kw}' intervenes between the newlyInitialized "
-                                   "evidence and state = .prefixReady")
-                # Same lexical scope: brace depth between the call and the
-                # assignment must never drop below the scope depth.
-                depth = scope_depth
-                min_depth = depth
-                for ch in between:
-                    if ch == "{":
-                        depth += 1
-                    elif ch == "}":
-                        depth -= 1
-                    min_depth = min(min_depth, depth)
-                if min_depth < scope_depth:
+        if ev_pos > ready_pos:
+            out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                       "createPrefix evidence must precede its state = .prefixReady")
+        else:
+            between = create_body[ev_pos:ready_pos]
+            for kw in ("return", "throw", "break", "continue"):
+                if re.search(r"\b" + kw + r"\b", between):
                     out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                               "newlyInitialized evidence call is in a different "
-                               "lexical scope than state = .prefixReady")
-    if len(occs) != 1:
+                               f"'{kw}' intervenes between createPrefix evidence "
+                               "and its state = .prefixReady")
+            # Same lexical scope: brace depth between the call and the
+            # assignment must never drop below the scope depth.
+            depth = scope_depth
+            min_depth = depth
+            for ch in between:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                min_depth = min(min_depth, depth)
+            if min_depth < scope_depth:
+                out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                           "createPrefix evidence call is in a different lexical "
+                           "scope than its state = .prefixReady")
+    # Exactly one reuse evidence and one fresh evidence; no stray calls.
+    def _evidence_source(o):
+        inner = balanced_parens(create_body, o[0].end() - 1)
+        if inner is None:
+            infra("required contract unparseable: evidence call parens")
+        return labeled_args(inner).get("source")
+
+    reuse_n = sum(1 for o in occs if _evidence_source(o) == "acquisition.source")
+    fresh_n = sum(1 for o in occs if _evidence_source(o) == ".newlyInitialized")
+    if len(occs) != 2 or reuse_n != 1 or fresh_n != 1:
         out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
-                   f"createPrefix contains {len(occs)} evidence calls "
-                   "(nested/closure calls do not count and must not exist)")
+                   "createPrefix must contain exactly two evidence calls: one "
+                   "reuse (for: layout, source: acquisition.source) and one fresh "
+                   f"(for: layout, source: .newlyInitialized) "
+                   f"(found {len(occs)} total; {reuse_n} reuse; {fresh_n} fresh)")
+    # Wineboot exactly-once gate: the reuse transition must be gated on
+    # shouldSkipWinebootForExistingPrefix.
+    if "shouldSkipWinebootForExistingPrefix" not in create_body:
+        out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
+                   "createPrefix must gate the reuse transition on "
+                   "shouldSkipWinebootForExistingPrefix (wineboot exactly once)")
     return out
 
 
@@ -1752,12 +1790,16 @@ def _(root: str) -> list[str]:
             if return_pos < 0:
                 out.append(f"{os.path.join(ULTIMATE, 'UltimateSetupCoordinator.swift')}: "
                            f"router branch {branch_var} has no return statement")
-    # Newly-initialized path: the concrete same-call evidence
+    # Freshly-initialized path (U1R18): the concrete same-call evidence
     # `establishPrefixEvidence(for: layout, source: .newlyInitialized)` must
-    # precede the `.prefixReady` state transition.
+    # precede the freshly-initialized `.prefixReady` transition. The wineboot-
+    # once REUSE transition returns earlier, so this evidence must precede the
+    # LAST `state = .prefixReady` in createPrefix.
     create_body = required_body(cleaned, "func createPrefix",
                                 "UltimateSetupCoordinator.createPrefix")
-    pos_ready2 = create_body.find("state = .prefixReady")
+    ready_positions = [m.start() for m in
+                       re.finditer(r"state\s*=\s*\.prefixReady", create_body)]
+    pos_ready2 = ready_positions[-1] if ready_positions else -1
     slice_end = pos_ready2 if pos_ready2 >= 0 else len(create_body)
     new_calls = extract_calls(create_body[:slice_end], "establishPrefixEvidence")
     new_matching = [c for c in new_calls
