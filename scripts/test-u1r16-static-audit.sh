@@ -418,9 +418,19 @@ final class UltimateSetupCoordinator {
     }
     func createPrefix() {
         if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
-            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+            if acquisition.layout.signature().steamExePresent {
+                state = .steamReady
+                return
+            }
+            if shouldSkipWinebootForExistingPrefix(steamExePresent: false, signatureValid: acquisition.layout.signature().isValid) {
+                establishPrefixEvidence(for: layout, source: acquisition.source)
+                reconcileSteamInstallLifecycle()
+                state = .prefixReady
+                return
+            }
         }
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        reconcileSteamInstallLifecycle()
         state = .prefixReady
     }
 }
@@ -4267,9 +4277,19 @@ final class UltimateSetupCoordinator {
     }
     func createPrefix() {
         if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
-            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+            if acquisition.layout.signature().steamExePresent {
+                state = .steamReady
+                return
+            }
+            if shouldSkipWinebootForExistingPrefix(steamExePresent: false, signatureValid: acquisition.layout.signature().isValid) {
+                establishPrefixEvidence(for: layout, source: acquisition.source)
+                reconcileSteamInstallLifecycle()
+                state = .prefixReady
+                return
+            }
         }
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        reconcileSteamInstallLifecycle()
         state = .prefixReady
     }
 }
@@ -4577,9 +4597,19 @@ final class UltimateSetupCoordinator {
     }
     func createPrefix() {
         if let acquisition = establishExistingPrefixAcquisition(validatedLayout: nil, adoptedLayout: nil) {
-            if acquisition.layout.signature().steamExePresent { state = .steamReady }
+            if acquisition.layout.signature().steamExePresent {
+                state = .steamReady
+                return
+            }
+            if shouldSkipWinebootForExistingPrefix(steamExePresent: false, signatureValid: acquisition.layout.signature().isValid) {
+                establishPrefixEvidence(for: layout, source: acquisition.source)
+                reconcileSteamInstallLifecycle()
+                state = .prefixReady
+                return
+            }
         }
         establishPrefixEvidence(for: layout, source: .newlyInitialized)
+        reconcileSteamInstallLifecycle()
         state = .prefixReady
     }
 }
