@@ -42,7 +42,8 @@ struct DiagnosticBundleTests {
                 sessionAgeSeconds: nil
             ),
             wineProcessCensus: WineProcessCensusDiagnostic(
-                hostProcessCount: 0, hostProcessProof: "notProven"
+                hostProcessCount: 0, zombieCount: 0, orphanCount: 0,
+                totalLive: 0, censusError: nil, hostProcessProof: "notProven"
             ),
             wineserver: WineserverDiagnostic(state: "unknown"),
             windowInventory: WindowInventoryDiagnostic(

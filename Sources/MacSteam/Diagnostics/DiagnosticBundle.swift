@@ -75,6 +75,10 @@ struct DiagnosticBundle: Codable, Sendable {
             ),
             wineProcessCensus: WineProcessCensusDiagnostic(
                 hostProcessCount: wineProcessCensus.hostProcessCount,
+                zombieCount: wineProcessCensus.zombieCount,
+                orphanCount: wineProcessCensus.orphanCount,
+                totalLive: wineProcessCensus.totalLive,
+                censusError: wineProcessCensus.censusError.map(DiagnosticRedactor.sanitize),
                 hostProcessProof: DiagnosticRedactor.sanitize(wineProcessCensus.hostProcessProof)
             ),
             wineserver: WineserverDiagnostic(
@@ -158,6 +162,10 @@ struct SupervisedSessionDiagnostic: Codable, Sendable {
 
 struct WineProcessCensusDiagnostic: Codable, Sendable {
     let hostProcessCount: Int
+    let zombieCount: Int
+    let orphanCount: Int
+    let totalLive: Int
+    let censusError: String?
     let hostProcessProof: String
 }
 
