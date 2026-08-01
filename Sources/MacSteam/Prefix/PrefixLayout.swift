@@ -102,7 +102,12 @@ extension PrefixLayout {
         // Does c: resolve to ../drive_c or an absolute path to the prefix's drive_c?
         var cResolvesToDriveC = false
         if cLinkIsSymlink, let dest = try? fm.destinationOfSymbolicLink(atPath: cLink.path) {
-            let resolved = URL(fileURLWithPath: dest, relativeTo: dosdevices).standardized
+            let resolved: URL
+            if (dest as NSString).isAbsolutePath {
+                resolved = URL(fileURLWithPath: dest).standardized
+            } else {
+                resolved = URL(fileURLWithPath: dosdevices.path + "/" + dest).standardized
+            }
             cResolvesToDriveC = (resolved.path == driveC.path)
         }
 

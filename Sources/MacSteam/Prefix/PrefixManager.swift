@@ -16,11 +16,19 @@ struct PrefixManager {
     // MARK: - Initialization
 
     /// Creates the managed directory structure under `~/Library/Application Support/MacSteam/`.
-    init() {
+    ///
+    /// - Parameter prefixesRootOverride: Optional override for the managed
+    ///   prefix root. Production uses the canonical
+    ///   `~/Library/Application Support/MacSteam/Prefixes`; real-Mac bring-up
+    ///   tests point this at an isolated scratch root so the production
+    ///   `createPrefix` wineboot-once contract can be exercised without
+    ///   touching the user's real prefix. Only the prefix root is overridden —
+    ///   runtimes and receipts stay at their canonical locations.
+    init(prefixesRootOverride: URL? = nil) {
         let base = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/MacSteam")
         runtimesRoot = base.appendingPathComponent("Runtimes")
-        prefixesRoot = base.appendingPathComponent("Prefixes")
+        prefixesRoot = prefixesRootOverride ?? base.appendingPathComponent("Prefixes")
         receiptsRoot = base.appendingPathComponent("Receipts")
 
         let fm = FileManager.default
@@ -78,7 +86,7 @@ struct PrefixManager {
     /// - Returns: A validated `PrefixLayout`.
     /// - Throws: `PrefixLayoutError` if no valid prefix exists.
     func validatedLayout(for recipe: GameRecipe) throws -> PrefixLayout {
-        let resolver = PrefixResolver()
+        let resolver = PrefixResolver(prefixesRoot: prefixesRoot)
         switch resolver.resolve(for: recipe) {
         case .parent(let layout):
             return layout

@@ -13,6 +13,30 @@ enum CleanupResult: Sendable, Equatable {
     case incomplete(String)
 }
 
+/// Bounded acquisition diagnostic — no filesystem paths, no prefix names.
+struct PrefixAcquisitionLog: Sendable, Equatable {
+    let source: PrefixAcquisitionSource?
+    let canonicalPrefixValid: Bool
+    let canonicalSteamPresent: Bool
+    let adoptionCandidateCount: Int
+    let adoptionResult: AdoptionResult
+
+    enum AdoptionResult: String, Sendable, Equatable {
+        case notNeeded
+        case uniqueCandidate
+        case ambiguous
+        case none
+    }
+}
+
+/// Outcome of deterministic prefix acquisition resolution.
+struct PrefixAcquisitionResolution: Sendable, Equatable {
+    let layout: PrefixLayout?
+    let source: PrefixAcquisitionSource?
+    let log: PrefixAcquisitionLog
+    let ambiguous: Bool
+}
+
 @MainActor
 @Observable
 final class UltimateSetupCoordinator {
@@ -39,6 +63,9 @@ final class UltimateSetupCoordinator {
 
     /// Guard against concurrent `createPrefix()` calls.
     var isCreatingPrefix = false
+
+    /// Bounded diagnostic from the last prefix acquisition resolution.
+    private(set) var lastAcquisitionLog: PrefixAcquisitionLog?
 
     /// Guard against concurrent Steam launch.
     var isLaunchingSteam = false
@@ -98,7 +125,7 @@ final class UltimateSetupCoordinator {
     private let processRunner = ProcessRunner()
     private let sessionSupervisor: any GameSessionSupervising
     private let lifecycleInstaller: any InstallerLifecycleSupervising
-    private let prefixManager = PrefixManager()
+    private let prefixManager: PrefixManager
     private let steamDetector = SteamInstallationDetector()
     private let launchCoordinator = SteamLaunchCoordinator()
     private let installerSupervisor = InstallerSupervisor()
@@ -257,7 +284,8 @@ final class UltimateSetupCoordinator {
 
     init(
         sessionSupervisor: any GameSessionSupervising = GameSessionSupervisor(),
-        installerSupervisor: any InstallerLifecycleSupervising = InstallerSupervisor()
+        installerSupervisor: any InstallerLifecycleSupervising = InstallerSupervisor(),
+        prefixManager: PrefixManager = PrefixManager()
     ) {
         // Read MACSTEAM_RENDER_PROFILE env var for non-persistent profile override.
         // didSet does not fire during init, so this is safe to set before log().
@@ -292,6 +320,7 @@ final class UltimateSetupCoordinator {
 
         self.sessionSupervisor = sessionSupervisor
         self.lifecycleInstaller = installerSupervisor
+        self.prefixManager = prefixManager
     }
 
     // MARK: - Plan builders
@@ -553,33 +582,104 @@ final class UltimateSetupCoordinator {
         return String(output.prefix(12))
     }
 
-    /// Scan Prefixes/ directory for an existing prefix with Steam installed.
-    /// Returns nil if no suitable prefix found.
-    private func adoptExistingSteamPrefix() -> PrefixLayout? {
-        let prefixesDir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support/MacSteam/Prefixes")
-
+    /// Collect ALL valid adoption candidates from the canonical Prefixes root.
+    ///
+    /// Strict filtering — a candidate must:
+    /// - be a real directory directly under the Prefixes root (not a symlink),
+    /// - pass full prefix signature validation (isValid),
+    /// - contain a non-empty steam.exe at a canonical location.
+    ///
+    /// Returns every qualifying candidate; the caller decides whether the
+    /// count is actionable (unique) or ambiguous (fail-closed).
+    func collectAdoptionCandidates() -> [PrefixLayout] {
+        let prefixesDir = prefixManager.prefixesRoot
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(
             at: prefixesDir,
             includingPropertiesForKeys: nil,
             options: .skipsHiddenFiles
-        ) else { return nil }
+        ) else { return [] }
 
+        var candidates: [PrefixLayout] = []
         for dirURL in contents {
-            let steamExe = dirURL
-                .appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe")
-            guard fm.isExecutableFile(atPath: steamExe.path) else { continue }
-            let size = (try? fm.attributesOfItem(atPath: steamExe.path)[.size] as? UInt64) ?? 0
-            guard size > 0 else { continue }
-
-            // Found a valid Steam prefix — adopt it
-            if let layout = try? PrefixLayout(validatedRoot: dirURL) {
-                log("Found existing Steam prefix: \(dirURL.lastPathComponent)")
-                return layout
-            }
+            if (try? fm.destinationOfSymbolicLink(atPath: dirURL.path)) != nil { continue }
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: dirURL.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            guard let layout = try? PrefixLayout(validatedRoot: dirURL) else { continue }
+            let sig = layout.signature()
+            guard sig.isValid, sig.steamExePresent else { continue }
+            guard steamExeNonEmpty(in: layout) else { continue }
+            candidates.append(layout)
         }
-        return nil
+        return candidates
+    }
+
+    private func steamExeNonEmpty(in layout: PrefixLayout) -> Bool {
+        let fm = FileManager.default
+        return layout.windowsSteamCandidates.contains { candidate in
+            let exe = candidate.appendingPathComponent("steam.exe")
+            guard fm.isExecutableFile(atPath: exe.path) else { return false }
+            let size = (try? fm.attributesOfItem(atPath: exe.path)[.size] as? UInt64) ?? 0
+            return size > 0
+        }
+    }
+
+    /// Pure, deterministic prefix acquisition resolution.
+    ///
+    /// Rules:
+    /// - canonical valid → always `.existingCanonical`
+    /// - canonical unavailable + exactly 1 candidate → `.adoptedSteam`
+    /// - canonical unavailable + 2+ candidates → ambiguous, fail-closed
+    /// - canonical unavailable + 0 candidates → nil (new creation path)
+    nonisolated static func resolveAcquisition(
+        validatedLayout: PrefixLayout?,
+        canonicalSteamPresent: Bool,
+        adoptionCandidates: [PrefixLayout]
+    ) -> PrefixAcquisitionResolution {
+        if let validated = validatedLayout {
+            let log = PrefixAcquisitionLog(
+                source: .existingCanonical,
+                canonicalPrefixValid: true,
+                canonicalSteamPresent: canonicalSteamPresent,
+                adoptionCandidateCount: 0,
+                adoptionResult: .notNeeded
+            )
+            return PrefixAcquisitionResolution(
+                layout: validated, source: .existingCanonical, log: log, ambiguous: false
+            )
+        }
+
+        switch adoptionCandidates.count {
+        case 0:
+            let log = PrefixAcquisitionLog(
+                source: nil,
+                canonicalPrefixValid: false,
+                canonicalSteamPresent: false,
+                adoptionCandidateCount: 0,
+                adoptionResult: .none
+            )
+            return PrefixAcquisitionResolution(layout: nil, source: nil, log: log, ambiguous: false)
+        case 1:
+            let log = PrefixAcquisitionLog(
+                source: .adoptedSteam,
+                canonicalPrefixValid: false,
+                canonicalSteamPresent: false,
+                adoptionCandidateCount: 1,
+                adoptionResult: .uniqueCandidate
+            )
+            return PrefixAcquisitionResolution(
+                layout: adoptionCandidates[0], source: .adoptedSteam, log: log, ambiguous: false
+            )
+        default:
+            let log = PrefixAcquisitionLog(
+                source: nil,
+                canonicalPrefixValid: false,
+                canonicalSteamPresent: false,
+                adoptionCandidateCount: adoptionCandidates.count,
+                adoptionResult: .ambiguous
+            )
+            return PrefixAcquisitionResolution(layout: nil, source: nil, log: log, ambiguous: true)
+        }
     }
 
     /// Step 1b: User selected a Wine runtime directory.
@@ -655,11 +755,29 @@ final class UltimateSetupCoordinator {
             // through the production acquisition router (evidence established
             // BEFORE any success/early return on every branch).
             let validated = try? prefixManager.validatedLayout(for: recipe)
-            let adopted = validated == nil ? adoptExistingSteamPrefix() : nil
+            let canonicalSteamPresent = validated?.signature().steamExePresent ?? false
+            let candidates = validated == nil ? collectAdoptionCandidates() : []
+            let resolution = Self.resolveAcquisition(
+                validatedLayout: validated,
+                canonicalSteamPresent: canonicalSteamPresent,
+                adoptionCandidates: candidates
+            )
+            lastAcquisitionLog = resolution.log
+            log("Acquisition: source=\(resolution.log.source?.rawValue ?? "nil") candidates=\(resolution.log.adoptionCandidateCount) result=\(resolution.log.adoptionResult.rawValue)")
+
+            if resolution.ambiguous {
+                state = .prefixRequired
+                error = .ambiguousAdoption(resolution.log.adoptionCandidateCount)
+                log("Prefix acquisition AMBIGUOUS — fail-closed, no launch")
+                return
+            }
+
+            let validatedForRouter = resolution.source == .existingCanonical ? resolution.layout : nil
+            let adoptedForRouter = resolution.source == .adoptedSteam ? resolution.layout : nil
             let layout: PrefixLayout
             if let acquisition = establishExistingPrefixAcquisition(
-                validatedLayout: validated,
-                adoptedLayout: adopted
+                validatedLayout: validatedForRouter,
+                adoptedLayout: adoptedForRouter
             ) {
                 layout = acquisition.layout
                 let sig = layout.signature()

@@ -36,6 +36,7 @@ enum UltimateSetupError: Error, LocalizedError, Sendable {
     case ownershipRequired(String)
     case processTimeout(String)
     case processCancelled
+    case ambiguousAdoption(Int)
 
     var errorDescription: String? {
         switch self {
@@ -50,6 +51,7 @@ enum UltimateSetupError: Error, LocalizedError, Sendable {
         case .ownershipRequired(let msg): return "Ownership required: \(msg)"
         case .processTimeout(let msg): return "Process timed out: \(msg)"
         case .processCancelled: return "Process was cancelled."
+        case .ambiguousAdoption(let count): return "Ambiguous prefix adoption: \(count) candidates — refusing to guess."
         }
     }
 }
