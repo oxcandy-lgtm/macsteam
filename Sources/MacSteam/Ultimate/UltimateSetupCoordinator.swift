@@ -868,6 +868,17 @@ final class UltimateSetupCoordinator {
             let systemReg = prefixDir.appendingPathComponent("system.reg")
             let userReg = prefixDir.appendingPathComponent("user.reg")
 
+            // wineserver flushes the registry files asynchronously after
+            // wineboot.exe exits. Poll (bounded) so verification never races
+            // the flush on a freshly initialized prefix.
+            let flushDeadline = Date().addingTimeInterval(20)
+            while !(fm.fileExists(atPath: driveC.path)
+                    && fm.fileExists(atPath: systemReg.path)
+                    && fm.fileExists(atPath: userReg.path)),
+                  Date() < flushDeadline {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+
             log("drive_c exists: \(fm.fileExists(atPath: driveC.path))")
             log("system.reg exists: \(fm.fileExists(atPath: systemReg.path))")
             log("user.reg exists: \(fm.fileExists(atPath: userReg.path))")
@@ -1589,6 +1600,13 @@ final class UltimateSetupCoordinator {
         sessionSupervisor.isRunning
     }
 
+    /// Whether the supervised session's WindowServer observer is active.
+    /// The production supervisor is a concrete `GameSessionSupervisor`;
+    /// injected fakes report false.
+    var sessionSupervisorIsWindowMonitoring: Bool {
+        (sessionSupervisor as? GameSessionSupervisor)?.isWindowMonitoring ?? false
+    }
+
     /// Whether a stop is in progress.
     var sessionSupervisorIsStopping: Bool {
         sessionSupervisor.isStopping
@@ -1628,7 +1646,117 @@ final class UltimateSetupCoordinator {
         ]
     }
 
+    /// Generate a redacted, size-bounded diagnostic bundle from live coordinator state.
+    func generateDiagnosticBundle() async -> DiagnosticBundle {
+        let installerOp = await lifecycleInstaller.snapshot()
+        let sig = prefixLayout?.signature()
+        let evidence = steamInstallEvidence
+        let session = activeSession
+
+        return DiagnosticBundle(
+            schemaVersion: DiagnosticBundle.currentSchemaVersion,
+            generatedAt: Date(),
+            installerLifecycle: InstallerLifecycleDiagnostic(
+                phase: installerOp?.phase.rawValue ?? "none",
+                isActive: installerOp?.phase.isActive ?? false,
+                isTerminal: installerOp?.phase.isTerminal ?? false,
+                installerID: installerID,
+                hasLastError: installerOp?.lastError != nil
+            ),
+            runtime: RuntimeDiagnostic(
+                sourceType: runtimeSourceType,
+                exactVersion: runtimeExactVersion,
+                architecture: runtimeArchitecture,
+                isUsable: runtimeInspection?.isUsable,
+                capabilities: runtimeInspection.map { inspection in
+                    var caps: [String] = []
+                    let c = inspection.capabilities
+                    if c.contains(.windowsProcess) { caps.append("windowsProcess") }
+                    if c.contains(.steamClient) { caps.append("steamClient") }
+                    if c.contains(.isolatedPrefix) { caps.append("isolatedPrefix") }
+                    if c.contains(.wined3d) { caps.append("wined3d") }
+                    if c.contains(.wow64) { caps.append("wow64") }
+                    return caps
+                } ?? [],
+                failureCodes: (runtimeInspection?.failures ?? []).map { $0.code.rawValue },
+                realLoadHealthy: realLoadHealthy,
+                realLoadStatus: realLoadResult?.status.rawValue
+            ),
+            prefixAcquisition: PrefixAcquisitionDiagnostic(
+                source: lastAcquisitionLog?.source?.rawValue,
+                canonicalPrefixValid: lastAcquisitionLog?.canonicalPrefixValid ?? false,
+                canonicalSteamPresent: lastAcquisitionLog?.canonicalSteamPresent ?? false,
+                adoptionCandidateCount: lastAcquisitionLog?.adoptionCandidateCount ?? 0,
+                adoptionResult: lastAcquisitionLog?.adoptionResult.rawValue,
+                signatureValid: sig?.isValid ?? false,
+                signatureDriveC: sig?.driveCDirectory ?? false,
+                signatureDosdevices: sig?.dosdevicesDirectory ?? false,
+                signatureSymlinkResolves: sig?.dosdevicesCResolvesToDriveC ?? false,
+                signatureSteamExe: sig?.steamExePresent ?? false,
+                evidenceBound: canonicalPrefixEvidenceValid
+            ),
+            steamPayload: SteamPayloadDiagnostic(
+                lifecycle: steamInstallLifecycle.rawValue,
+                exePresent: evidence.steamExePresent,
+                exeNonEmpty: evidence.steamExeNonEmpty,
+                installerRunning: evidence.installerRunning,
+                steamInstalled: steamInspection?.steamInstalled ?? false,
+                installState: cloverPitInspection?.installState.rawValue,
+                canLaunch: evidence.canLaunchSteam
+            ),
+            supervisedSession: SupervisedSessionDiagnostic(
+                state: sessionStateLabel(sessionSupervisorState),
+                isRunning: sessionSupervisorIsRunning,
+                isStopping: sessionSupervisorIsStopping,
+                needsRecovery: sessionSupervisorNeedsRecovery,
+                purpose: session?.purpose.rawValue,
+                recipeID: session?.recipeID,
+                sessionAgeSeconds: session.map { Date().timeIntervalSince($0.startedAt) }
+            ),
+            wineProcessCensus: WineProcessCensusDiagnostic(
+                hostProcessCount: 0,
+                hostProcessProof: "notProven"
+            ),
+            wineserver: WineserverDiagnostic(
+                state: "unknown"
+            ),
+            windowInventory: WindowInventoryDiagnostic(
+                windowCount: 0,
+                visibility: "unknown"
+            ),
+            boundedOutput: BoundedOutputDiagnostic(
+                lineCount: installerLog.components(separatedBy: .newlines).filter { !$0.isEmpty }.count,
+                truncated: installerLog.components(separatedBy: .newlines).filter { !$0.isEmpty }.count > DiagnosticSizeLimits.maxOutputLines,
+                lines: DiagnosticRedactor.redactLines(installerLog)
+            ),
+            failureClassification: FailureClassificationDiagnostic(
+                errorCase: error.map { String(describing: $0) },
+                hasError: error != nil,
+                setupState: state.displayName
+            ),
+            cleanup: CleanupDiagnostic(
+                cleanupProof: "notRun",
+                hostProcessProof: "notProven",
+                windowVisibility: "unknown"
+            )
+        )
+    }
+
     // MARK: - Private
+
+    private func sessionStateLabel(_ s: GameSessionState) -> String {
+        switch s {
+        case .idle: return "idle"
+        case .launching: return "launching"
+        case .runningUnknown: return "runningUnknown"
+        case .runningVisible: return "runningVisible"
+        case .runningHidden: return "runningHidden"
+        case .stopping: return "stopping"
+        case .stopped: return "stopped"
+        case .recoveryRequired: return "recoveryRequired"
+        case .failed: return "failed"
+        }
+    }
 
     private func inspectSteamInstallation() -> SteamInstallationInspection {
         let fm = FileManager.default
