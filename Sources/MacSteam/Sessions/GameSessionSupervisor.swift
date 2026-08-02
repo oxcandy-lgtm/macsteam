@@ -452,7 +452,7 @@ final class GameSessionSupervisor {
     /// lock release, and authority clear all execute zero times, and the
     /// authority is retained for a later retry.
     @MainActor
-    private func runCleanupTransaction(force: Bool) async throws {
+    private func runCleanupTransaction() async throws {
         windowObserver.invalidate()
         guard var authority = recoveryCleanup else { return }
 
@@ -517,18 +517,20 @@ final class GameSessionSupervisor {
 
     /// Stop the active session completely.
     ///
-    /// Drives the single forward cleanup transaction from the stored authority.
-    /// On success the authority is cleared and state → `.stopped`. On any
-    /// failure the authority (with its persisted progress) is retained and
-    /// state → `.recoveryRequired`, so a subsequent stop/force-stop resumes
-    /// instead of no-op'ing on a nil `activeSession`.
+    /// The cleanup authority is resolved FIRST and the state is only mutated to
+    /// `.stopping` when an authority actually exists. With no authority (e.g. an
+    /// already-cleaned `.stopped` supervisor, or an `.idle` one) stop is a true
+    /// no-op that PRESERVES the current state — it never leaves a stale
+    /// `.stopping` that would block a later launch. On any failure the
+    /// authority (with persisted progress) is retained and state →
+    /// `.recoveryRequired`, so a retry resumes instead of no-op'ing on a nil
+    /// `activeSession`.
     func stop() async throws {
+        guard let authority = currentCleanupAuthority() else { return }
         state = .stopping
-        if recoveryCleanup == nil {
-            recoveryCleanup = currentCleanupAuthority()
-        }
+        recoveryCleanup = authority
         do {
-            try await runCleanupTransaction(force: false)
+            try await runCleanupTransaction()
         } catch {
             enterRecovery("Stop failed: \(error.localizedDescription)")
             throw error
@@ -537,12 +539,11 @@ final class GameSessionSupervisor {
 
     /// Force stop — only for UI-initiated Force Stop after normal stop fails.
     func forceStop() async throws {
+        guard let authority = currentCleanupAuthority() else { return }
         state = .stopping
-        if recoveryCleanup == nil {
-            recoveryCleanup = currentCleanupAuthority()
-        }
+        recoveryCleanup = authority
         do {
-            try await runCleanupTransaction(force: true)
+            try await runCleanupTransaction()
         } catch {
             enterRecovery("Force stop failed: \(error.localizedDescription)")
             throw error

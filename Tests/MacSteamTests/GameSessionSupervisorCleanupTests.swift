@@ -17,6 +17,14 @@ private struct CleanupFakeRuntime: WineRuntimeControl {
     }
 }
 
+/// A no-op wineserver runtime (probes terminate immediately).
+private struct Fix7WineRuntime: WineRuntimeControl {
+    var wineserverExecutable: URL { URL(fileURLWithPath: "/usr/bin/false") }
+    func controlEnvironment(for prefix: URL) throws -> [String: String] {
+        ["WINEPREFIX": prefix.path]
+    }
+}
+
 /// Counting, scriptable process-control fake. Every cleanup call is tallied so
 /// the invariants (reap-before-discard, halt-on-unconfirmed, no re-run on
 /// retry) are asserted behaviorally — not by reading comments or identifiers.
@@ -389,5 +397,136 @@ struct GameSessionSupervisorCleanupTests {
         try await sup.forceStop()   // no authority left → no-op
         #expect(await procs.discardCount == 1, "no re-entry after completion")
         #expect(await procs.terminateCount == 1)
+    }
+
+    // MARK: - FIX7 state-idempotence
+
+    // stop() re-run after completion: .stopped preserved, every cleanup side
+    // effect stays at zero.
+    @Test("stop re-run after completion is a zero-side-effect no-op")
+    func stopReRunAfterCompletionIsNoOp() async throws {
+        let (prefix, lock) = try makeLockedPrefix()
+        defer { try? FileManager.default.removeItem(at: prefix) }
+        let procs = FakeCleanupProcesses(reapTimesOut: false)
+        let wine = FakeCleanupWineserver()
+        let sup = makeSupervisor(procs, wine)
+        sup.installRecoveryAuthorityForTesting(makeAuthority(prefix: prefix, lock: lock))
+
+        try await sup.stop()
+        #expect(sup.state == .stopped)
+        let term = await procs.terminateCount
+        let discard = await procs.discardCount
+        let ws = await wine.shutdownCount
+
+        try await sup.stop()
+        #expect(sup.state == .stopped, "second stop must preserve .stopped")
+        #expect(await procs.terminateCount == term, "no TERM on re-run")
+        #expect(await procs.discardCount == discard, "no discard on re-run")
+        #expect(await wine.shutdownCount == ws, "no wineserver call on re-run")
+        #expect(sup.recoveryCleanupForTesting == nil)
+    }
+
+    // forceStop() re-run after completion: .stopped preserved, every cleanup
+    // side effect stays at zero.
+    @Test("forceStop re-run after completion is a zero-side-effect no-op")
+    func forceStopReRunAfterCompletionIsNoOp() async throws {
+        let (prefix, lock) = try makeLockedPrefix()
+        defer { try? FileManager.default.removeItem(at: prefix) }
+        let procs = FakeCleanupProcesses(reapTimesOut: false)
+        let wine = FakeCleanupWineserver()
+        let sup = makeSupervisor(procs, wine)
+        sup.installRecoveryAuthorityForTesting(makeAuthority(prefix: prefix, lock: lock))
+
+        try await sup.forceStop()
+        #expect(sup.state == .stopped)
+        let term = await procs.terminateCount
+        let discard = await procs.discardCount
+        let ws = await wine.shutdownCount
+
+        try await sup.forceStop()
+        #expect(sup.state == .stopped, "second forceStop must preserve .stopped")
+        #expect(await procs.terminateCount == term, "no TERM on re-run")
+        #expect(await procs.discardCount == discard, "no discard on re-run")
+        #expect(await wine.shutdownCount == ws, "no wineserver call on re-run")
+    }
+
+    // In .idle, stop()/forceStop() preserve .idle and perform no cleanup.
+    @Test("idle state preserved by stop/forceStop with zero side effects")
+    func idleStopPreservedWithZeroSideEffects() async throws {
+        let procs = FakeCleanupProcesses()
+        let wine = FakeCleanupWineserver()
+        let sup = makeSupervisor(procs, wine)
+        #expect(sup.state == .idle)
+
+        try await sup.stop()
+        #expect(sup.state == .idle, "idle must be preserved by stop()")
+        #expect(sup.recoveryCleanupForTesting == nil)
+
+        try await sup.forceStop()
+        #expect(sup.state == .idle, "idle must be preserved by forceStop()")
+        #expect(await procs.terminateCount == 0)
+        #expect(await procs.discardCount == 0)
+        #expect(await wine.shutdownCount == 0)
+    }
+
+    // After idempotent cleanup, the launch gate is reachable (no stale
+    // `.stopping`) and a real session can be launched again.
+    @Test("launch reachable after idempotent cleanup")
+    func launchReachableAfterIdempotentCleanup() async throws {
+        let prefixDir = try makeTempPrefix()
+        defer {
+            SessionReceiptStore().remove(prefix: prefixDir)
+            try? FileManager.default.removeItem(at: prefixDir)
+        }
+        let sup = GameSessionSupervisor(windowProvider: CleanupEmptyWindowProvider())
+
+        // First real session.
+        let plan = LaunchPlan(
+            runtimeExecutable: URL(fileURLWithPath: "/bin/sleep"),
+            arguments: ["3"],
+            mode: .supervisedSession
+        )
+        _ = try await sup.launch(
+            plan: plan,
+            runtimeControl: Fix7WineRuntime(),
+            prefixRoot: prefixDir,
+            recipeID: "cloverpit",
+            runtimeID: "fix7",
+            purpose: .game
+        )
+        #expect(sup.state == .runningUnknown)
+
+        // Cleanup to completion.
+        try await sup.stop()
+        #expect(sup.state == .stopped, "first stop completes the transaction")
+
+        // Re-running stop must not strand the supervisor in .stopping.
+        try await sup.stop()
+        #expect(sup.state == .stopped, "second stop preserves .stopped (no stale .stopping)")
+
+        // The launch gate accepts a completed supervisor.
+        _ = try await sup.launch(
+            plan: plan,
+            runtimeControl: Fix7WineRuntime(),
+            prefixRoot: prefixDir,
+            recipeID: "cloverpit",
+            runtimeID: "fix7b",
+            purpose: .game
+        )
+        #expect(sup.state == .runningUnknown, "launch gate is reachable after cleanup")
+        try await sup.forceStop()
+    }
+
+    @MainActor
+    private func makeTempPrefix() throws -> URL {
+        let root = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/MacSteam/Prefixes")
+        let dir = root.appendingPathComponent("ms-u1r18-fix7-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: dir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        return dir
     }
 }

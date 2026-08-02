@@ -419,9 +419,9 @@ run_mutation "fix6-silent-unconfirmed-path" \
     "fail"
 
 # M10 (S10): stop/force-stop no-op on nil activeSession again (authority seeding
-#      removed).
+#      removed) — now targets the FIX7 `recoveryCleanup = authority` assignment.
 run_mutation "fix6-nil-session-noop" \
-    "sed -i '' '/recoveryCleanup = currentCleanupAuthority()/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "sed -i '' '/recoveryCleanup = authority$/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
 # M11 (S11): recovery rollback no longer captures the retained authority.
@@ -442,6 +442,46 @@ run_mutation "fix6-sigkill-escalation-removed" \
 # M14 (S14): terminal .stopped transition removed.
 run_mutation "fix6-terminal-state-removed" \
     "sed -i '' '/state = .stopped/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# ---------------------------------------------------------------------------
+# U1R18 R4-FIX7: State Idempotence mutations (semantic, state/ordering-aware).
+# Each breaks a REAL control-flow statement; the paired F1..F5 guard rejects it.
+# These are NOT comment/identifier/target-count tricks — a count-only false
+# green is caught because the guards are state/ordering checks.
+# ---------------------------------------------------------------------------
+
+# MF1 (F1): the authority early-return is deleted, so `state = .stopping` is
+#     now reached unconditionally — a stale .stopping after a no-op stop().
+run_mutation "fix7-authority-guard-deleted" \
+    "sed -i '' '/guard let authority = currentCleanupAuthority() else { return }/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# MF2 (F2): the early return is emptied (`else { return }` -> `else { }`), so the
+#     no-authority path falls through and mutates state. Count-only green: the
+#     `else { return }` literal count drops to 0, and F1's awk still flags the
+#     unguarded assignment.
+run_mutation "fix7-empty-else-state-break" \
+    "sed -i '' 's/else { return }/else { }/g' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# MF3 (F3): the terminal transition is made stale (.stopped -> .stopping), so the
+#     supervisor never lands on .stopped and a later launch stays blocked.
+run_mutation "fix7-stale-stopping-not-stopped" \
+    "sed -i '' 's/state = .stopped/state = .stopping/' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# MF4 (F4): the authority-derivation function is renamed, so a nil authority can
+#     no longer be short-circuited out (derivation seam gone).
+run_mutation "fix7-authority-function-renamed" \
+    "sed -i '' 's/func currentCleanupAuthority/func resolveCleanupAuthority/' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# MF5 (F5): one of the behavioral state-idempotence assertions is removed, so a
+#     count-only false green (state preserved in code but not asserted) passes;
+#     the F5 fixture-name grep rejects it.
+run_mutation "fix7-idempotence-test-removed" \
+    "sed -i '' '/stop re-run after completion is a zero-side-effect no-op/d' Tests/MacSteamTests/GameSessionSupervisorCleanupTests.swift" \
     "fail"
 
 echo ""

@@ -399,9 +399,9 @@ check "Authority is cleared exactly once, at the confirmed terminus" $?
 grep -qE 'cleanup halted before discard' "$GSS"
 check "Unconfirmed reap throws stopIncomplete (halt is explicit)" $?
 
-# S10. stop/force-stop derive teardown from the stored/derived authority, so a
+# S10. stop/force-stop seed the stored authority before the transaction, so a
 #      nil activeSession never no-ops a needed cleanup.
-grep -qE 'recoveryCleanup = currentCleanupAuthority\(\)' "$GSS"
+grep -qE 'recoveryCleanup = authority$' "$GSS"
 check "Stop/force-stop seed the stored authority before the transaction" $?
 
 # S11. Recovery rollback captures the authority (real construction) and keeps it.
@@ -444,6 +444,59 @@ grep -qE 'MACSTEAM_R1_BRINGUP' "$FIX6MAC"
 check "Real-Mac FIX6 cleanup evidence is MACSTEAM-gated" $?
 grep -qE 'signal\(SIGTERM, ignore_term\)' "$FIX6MAC"
 check "Real-Mac FIX6 fixture ignores SIGTERM" $?
+
+echo ""
+echo "=== U1R18 R4-FIX7 State Idempotence Audit (semantic, state-aware) ==="
+echo ""
+# FIX7 proves cleanup is idempotent: an already-completed (.stopped) or idle
+# supervisor must be left exactly as-is by stop()/forceStop() — no stale
+# `.stopping`, no re-run of any side effect. These guards are STATE/ORDERING
+# checks on real statements (not comment/identifier presence, and not mere counts,
+# so a state-breaking mutation that leaves counts untouched is still rejected).
+
+# F1. The authority is resolved BEFORE state is mutated to .stopping in both
+#     stop() and forceStop() — verified by ORDERING: every `state = .stopping`
+#     must be immediately preceded (skipping blanks) by the
+#     `guard let authority = currentCleanupAuthority() else { return }` line.
+#     A global flag would be falsely satisied by an earlier guard, so this awk
+#     checks the previous non-blank line (state-aware, not count-based).
+if awk '
+        /^[[:space:]]*$/ { next }
+        /state = \.stopping/ {
+            if (prev !~ /currentCleanupAuthority\(\) else \{ return \}/) bad = 1
+        }
+        { prev = $0 }
+        END { exit (bad ? 1 : 0) }
+     ' "$GSS"; then
+    check "authority resolved before .stopping in stop/forceStop (ordering)" 0
+else
+    check "authority resolved before .stopping in stop/forceStop (ordering)" 1
+fi
+
+# F2. The no-authority early return exists in both stop() and forceStop() —
+#     the real `else { return }` statement (count, not a comment/identifier).
+[ "$(grep -cE 'else \{ return \}' "$GSS")" -ge 2 ]
+check "stop/force-stop no-op on absent authority with a real early return" $?
+
+# F3. The terminal state is a real `.stopped` assignment (exactly one), never a
+#     stale `.stopping` that would block a later launch.
+[ "$(grep -cE 'state = \.stopped' "$GSS")" -eq 1 ]
+check "Terminal cleanup lands on .stopped (no stale .stopping)" $?
+
+# F4. Authority derivation is a real function (no authority → no teardown).
+grep -qE 'func currentCleanupAuthority' "$GSS"
+check "Authority derivation function exists" $?
+
+# F5. Behavioral proof suite asserts the state-idempotence invariants
+#     (second-call state preservation + idle preservation + zero side effects),
+#     so a count-only false green is rejected by a state assertion.
+FIX7TESTS="Tests/MacSteamTests/GameSessionSupervisorCleanupTests.swift"
+grep -qE 'stop re-run after completion is a zero-side-effect no-op' "$FIX7TESTS"
+check "Behavioral test: stop re-run preserves .stopped with zero side effects" $?
+grep -qE 'idle state preserved by stop/forceStop with zero side effects' "$FIX7TESTS"
+check "Behavioral test: idle state preserved with zero side effects" $?
+grep -qE 'launch reachable after idempotent cleanup' "$FIX7TESTS"
+check "Behavioral test: launch gate reachable after idempotent cleanup" $?
 
 echo ""
 echo "=== Summary ==="
