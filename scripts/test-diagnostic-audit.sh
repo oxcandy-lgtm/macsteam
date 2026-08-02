@@ -534,6 +534,20 @@ run_mutation "dockquit-exact-once-noop-proof-removed" \
     "sed -i '' '/reentrantReply == .terminateLater/,/exact-once no-op/d' Tests/MacSteamTests/U1R18R5DockQuitCompleteZeroTests.swift" \
     "fail"
 
+# MR5.7 (R5.F6): the no-context fail-closed guard is weakened from .terminateCancel
+#     (cancel the quit) to .terminateNow (force-quit), so a missing context lets
+#     AppKit kill the process without running cleanup.
+run_mutation "dockquit-fail-closed-guard-weakened-to-terminateNow" \
+    "sed -i '' 's/return .terminateCancel/return .terminateNow/' Sources/MacSteam/App/MacSteamApp.swift" \
+    "fail"
+
+# MR5.8 (R5.F7): the reset-before-abort ordering is broken by deleting the token
+#     reset on the incomplete path, so a re-entrant Dock Quit during the abort
+#     reply could be shadowed by the no-op early return.
+run_mutation "dockquit-reset-before-abort-deleted" \
+    "sed -i '' '/terminationTransactionStarted = false/d' Sources/MacSteam/App/MacSteamApp.swift" \
+    "fail"
+
 echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"

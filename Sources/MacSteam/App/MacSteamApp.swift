@@ -51,7 +51,7 @@ final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        guard let context else { return .terminateNow }
+        guard let context else { return .terminateCancel }
 
         // Exact-once: a second Dock-Quit while the first cleanup is in flight
         // is a true no-op — never spawn a second cleanup Task or reply twice.
@@ -65,11 +65,17 @@ final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
                 // then affirm the quit — release ALWAYS strictly precedes reply.
                 context.instanceGuard.release()
                 sender.reply(toApplicationShouldTerminate: true)
-            } else {
-                // Incomplete cleanup: abort the quit so the lock stays held
-                // and a retry can complete the zero-residue transaction.
-                sender.reply(toApplicationShouldTerminate: false)
-            }
+        } else {
+            // Incomplete cleanup: reset the exact-once token BEFORE the abort
+            // reply so a re-entrant applicationShouldTerminate fired during the
+            // abort cannot be shadowed by the no-op early return; the retry then
+            // re-enters the full guard (fail-closed: missing context ->
+            // .terminateCancel) and may drive a fresh cleanup transaction. The
+            // lock is retained until a zero-residue proof is granted (no
+            // release, no reply(true) without COMPLETE_ZERO).
+            terminationTransactionStarted = false
+            sender.reply(toApplicationShouldTerminate: false)
+        }
         }
         return .terminateLater
     }

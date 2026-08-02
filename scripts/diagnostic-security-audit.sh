@@ -552,6 +552,21 @@ check "Real-Mac Dock Quit documents the exact-once no-op contract" $?
 grep -qE 'applicationShouldTerminate' "$R5MAC"
 check "Real-Mac Dock Quit drives the genuine AppKit termination path" $?
 
+# R5.F6. Fail-closed no-context: a missing shared context cancels the quit
+#      (never .terminateNow, which would let AppKit force-terminate the
+#      process and bypass cleanup entirely).
+grep -qE 'guard let context else \{ return \.terminateCancel \}' "$APP"
+check "Dock Quit fails closed on missing context with .terminateCancel" $?
+
+# R5.F7. Reset-before-abort: the exact-once token is reset STRICTLY BEFORE
+#      the abort reply(reply: false) on the incomplete path, so a re-entrant
+#      Dock Quit fired during the abort cannot be shadowed by the no-op
+#      early return.
+RESET_AT=$(grep -nE 'terminationTransactionStarted = false' "$APP" | head -1 | cut -d: -f1)
+ABORT_AT=$(grep -nE 'sender\.reply\(toApplicationShouldTerminate: false\)' "$APP" | head -1 | cut -d: -f1)
+[ -n "$RESET_AT" ] && [ -n "$ABORT_AT" ] && [ "$RESET_AT" -lt "$ABORT_AT" ]
+check "Dock Quit resets exact-once token strictly before abort reply" $?
+
 echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"
