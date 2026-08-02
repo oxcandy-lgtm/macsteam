@@ -7,6 +7,7 @@ LIN_SOURCE="Sources/MacSteam/Sessions/HostProcessLineage.swift"
 SUP_SOURCE="Sources/MacSteam/Sessions/ProcessSupervisor.swift"
 GSS_SOURCE="Sources/MacSteam/Sessions/GameSessionSupervisor.swift"
 BRINGUP_SOURCE="Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift"
+LINETESTS_SOURCE="Tests/MacSteamTests/HostProcessLineageTests.swift"
 AUDIT="scripts/diagnostic-security-audit.sh"
 TMPDIR_BASE=$(mktemp -d)
 PASS=0
@@ -30,6 +31,7 @@ run_mutation() {
     cp "$SUP_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
     cp "$GSS_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
     cp "$BRINGUP_SOURCE" "$workdir/Tests/MacSteamTests/"
+    cp "$LINETESTS_SOURCE" "$workdir/Tests/MacSteamTests/"
 
     (cd "$workdir" && eval "$mutation_cmd")
 
@@ -173,6 +175,55 @@ run_mutation "stale-ledger-reuse" \
 # 22. Synthetic-only zombie proof (real-Mac gate removed)
 run_mutation "synthetic-only-zombie-proof" \
     "sed -i '' 's/MACSTEAM_R1_BRINGUP/MACSTEAM_R1_BRINGUP_DISABLED/' Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
+    "fail"
+
+echo ""
+echo "=== U1R18 R4-FIX2 Mutation Fixtures ==="
+echo ""
+
+# 23. Provider failure outcome collapsed (nil treated as exit)
+run_mutation "provider-failure-removed" \
+    "sed -i '' '/case providerFailure/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 24. Ambiguous/unresolved outcome permitted to be proven
+run_mutation "ambiguous-permitted" \
+    "sed -i '' '/providerOutcomeUnresolved/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 25. Truncated enumeration tolerated (no fail-closed)
+run_mutation "truncation-tolerated" \
+    "sed -i '' '/enumerationTruncated/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 26. Comm name substituted for canonical identity in the match
+run_mutation "comm-name-substitute" \
+    "sed -i '' 's/canonicalExecutable == other.canonicalExecutable/executableName == other.executableName/' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 27. Canonical executable removed from the identity match
+run_mutation "canonical-removed" \
+    "sed -i '' '/canonicalExecutable == other.canonicalExecutable/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 28. In-test direct ledger construction (violates the full-route requirement)
+run_mutation "in-test-direct-ledger" \
+    "echo 'let _ = ProcessCensusLedger(rootIdentity: root)' >> Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
+    "fail"
+
+# 29. In-test static census call (bypasses the supervised route)
+run_mutation "in-test-static-census" \
+    "echo 'let _ = HostProcessLineage.lineage(from: 0)' >> Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
+    "fail"
+
+# 30. Route bypass: supervsised processCensus removed from the bring-up route
+run_mutation "route-bypass" \
+    "sed -i '' '/supervisor.processCensus()/d' Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
+    "fail"
+
+# 31. Provider-failure fail-closed unit test deleted (non-bruting ambiguity cover)
+run_mutation "provider-failure-test-deleted" \
+    "sed -i '' '/fails closed on a provider failure outcome/d' Tests/MacSteamTests/HostProcessLineageTests.swift" \
     "fail"
 
 echo ""

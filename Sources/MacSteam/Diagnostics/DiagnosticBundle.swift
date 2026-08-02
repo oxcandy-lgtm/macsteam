@@ -83,7 +83,9 @@ struct DiagnosticBundle: Codable, Sendable {
                 liveDescendants: wineProcessCensus.liveDescendants,
                 liveOrphans: wineProcessCensus.liveOrphans,
                 exitedCount: wineProcessCensus.exitedCount,
-                pidReuseCount: wineProcessCensus.pidReuseCount
+                pidReuseCount: wineProcessCensus.pidReuseCount,
+                unresolvedOutcomes: wineProcessCensus.unresolvedOutcomes,
+                silentSnapshotDrops: wineProcessCensus.silentSnapshotDrops
             ),
             wineserver: WineserverDiagnostic(
                 state: DiagnosticRedactor.sanitize(wineserver.state)
@@ -175,6 +177,8 @@ struct WineProcessCensusDiagnostic: Codable, Sendable {
     let liveOrphans: Int
     let exitedCount: Int
     let pidReuseCount: Int
+    let unresolvedOutcomes: Int
+    let silentSnapshotDrops: Int
 
     init(
         hostProcessCount: Int,
@@ -186,7 +190,9 @@ struct WineProcessCensusDiagnostic: Codable, Sendable {
         liveDescendants: Int = 0,
         liveOrphans: Int = 0,
         exitedCount: Int = 0,
-        pidReuseCount: Int = 0
+        pidReuseCount: Int = 0,
+        unresolvedOutcomes: Int = 0,
+        silentSnapshotDrops: Int = 0
     ) {
         self.hostProcessCount = hostProcessCount
         self.zombieCount = zombieCount
@@ -198,10 +204,14 @@ struct WineProcessCensusDiagnostic: Codable, Sendable {
         self.liveOrphans = liveOrphans
         self.exitedCount = exitedCount
         self.pidReuseCount = pidReuseCount
+        self.unresolvedOutcomes = unresolvedOutcomes
+        self.silentSnapshotDrops = silentSnapshotDrops
     }
 
     /// Map a fail-closed census result into the diagnostic shape.
-    /// Proof is derived from the census state — never hardcoded.
+    /// Proof is derived from the census state — never hardcoded. Provider
+    /// completeness is carried through: any ambiguous outcome or silent drop is
+    /// reflected here.
     init(census: ProcessCensusResult) {
         self.init(
             hostProcessCount: census.liveDescendants,
@@ -213,7 +223,9 @@ struct WineProcessCensusDiagnostic: Codable, Sendable {
             liveDescendants: census.liveDescendants,
             liveOrphans: census.liveOrphans,
             exitedCount: census.exitedCount,
-            pidReuseCount: census.pidReuseCount
+            pidReuseCount: census.pidReuseCount,
+            unresolvedOutcomes: census.unresolvedOutcomes,
+            silentSnapshotDrops: census.silentSnapshotDrops
         )
     }
 }

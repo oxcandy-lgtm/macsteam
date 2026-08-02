@@ -256,6 +256,89 @@ struct HostProcessLineageTests {
         #expect(result.error == .noLedger)
     }
 
+    // MARK: - U1R18 R4-FIX2: provider completeness + canonical identity
+
+    @Test("probe classifies the current process as present with a canonical identity")
+    func probeCurrentProcessPresent() {
+        let outcome = HostProcessLineage.probe(pid: getpid())
+        guard case .present(let snap) = outcome else {
+            Issue.record("current process must probe as present, got \(outcome)")
+            return
+        }
+        #expect(snap.identity.pid == getpid())
+        #expect(!snap.identity.canonicalExecutable.isEmpty,
+                "canonical executable identity must be resolved, not substituted with comm name")
+    }
+
+    @Test("probe classifies a non-existent PID as confirmedExited, not ambiguous")
+    func probeNonExistentConfirmedExited() {
+        #expect(HostProcessLineage.probe(pid: 999_999) == .confirmedExited)
+    }
+
+    @Test("canonical executable identity participates in the ownership comparison")
+    func canonicalParticipatesInMatch() {
+        let a = makeIdentity(1, 1000, name: "x")
+        let same = ProcessIdentity(
+            pid: 1, startSeconds: 1000, startMicroseconds: a.startMicroseconds,
+            executableName: "x", canonicalExecutable: "/bin/x"
+        )
+        let differentCanonical = ProcessIdentity(
+            pid: 1, startSeconds: 1000, startMicroseconds: a.startMicroseconds,
+            executableName: "x", canonicalExecutable: "/bin/y"
+        )
+        #expect(a.matches(same))
+        #expect(!a.matches(differentCanonical),
+                "a PID whose canonical executable identity differs must not match")
+    }
+
+    @Test("census fails closed when a probe is inaccessible; observed identity is retained")
+    func censusFailsClosedOnInaccessibleProbe() {
+        guard let rootSnap = HostProcessLineage.snapshot(pid: getpid()),
+              let parentSnap = HostProcessLineage.snapshot(pid: getppid()) else { return }
+        var ledger = ProcessCensusLedger(rootIdentity: rootSnap.identity)
+        ledger.record(parentSnap.identity)
+        let result = HostProcessLineage.census(ledger: &ledger) { pid, _ in
+            if pid == getpid() { return .present(rootSnap) }
+            if pid == getppid() { return .inaccessible }
+            return .confirmedExited
+        }
+        #expect(result.state == .incomplete)
+        #expect(result.error == .providerOutcomeUnresolved(1))
+        #expect(result.unresolvedOutcomes == 1)
+        #expect(ledger.observed.contains(where: { $0.pid == getppid() }),
+                "observed identity must be retained on an ambiguous outcome")
+    }
+
+    @Test("census fails closed on a provider failure outcome")
+    func censusFailsClosedOnProviderFailure() {
+        guard let rootSnap = HostProcessLineage.snapshot(pid: getpid()),
+              let parentSnap = HostProcessLineage.snapshot(pid: getppid()) else { return }
+        var ledger = ProcessCensusLedger(rootIdentity: rootSnap.identity)
+        ledger.record(parentSnap.identity)
+        let result = HostProcessLineage.census(ledger: &ledger) { pid, _ in
+            if pid == getpid() { return .present(rootSnap) }
+            if pid == getppid() { return .providerFailure }
+            return .confirmedExited
+        }
+        #expect(result.state == .incomplete)
+        #expect(result.error == .providerOutcomeUnresolved(1))
+        #expect(result.unresolvedOutcomes == 1)
+        #expect(ledger.observed.contains(where: { $0.pid == getppid() }),
+                "observed identity must be retained on a provider failure")
+    }
+
+    @Test("proven census reports zero silent drops and zero unresolved outcomes")
+    func censusProvenHasZeroAmbiguity() {
+        guard let rootSnap = HostProcessLineage.snapshot(pid: getpid()) else { return }
+        var ledger = ProcessCensusLedger(rootIdentity: rootSnap.identity)
+        let result = HostProcessLineage.census(ledger: &ledger)
+        #expect(result.state == .proven)
+        #expect(result.silentSnapshotDrops == 0,
+                "no probe outcome may be silently dropped")
+        #expect(result.unresolvedOutcomes == 0,
+                "a proven census must have no ambiguous probe outcome")
+    }
+
     // MARK: - Helpers
 
     private func makeIdentity(

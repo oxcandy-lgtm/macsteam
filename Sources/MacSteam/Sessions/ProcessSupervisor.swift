@@ -160,7 +160,14 @@ actor ProcessSupervisor {
 
         // Capture the launch identity for the ownership ledger. The census must
         // prove ownership against THIS identity — it is never regenerated later.
-        rootIdentityByToken[token] = HostProcessLineage.snapshot(pid: pid)?.identity
+        // The process just launched and must be present; if its identity cannot
+        // be established the ledger stays absent and the census fails closed.
+        switch HostProcessLineage.probe(pid: pid) {
+        case .present(let snap):
+            rootIdentityByToken[token] = snap.identity
+        case .confirmedExited, .inaccessible, .providerFailure:
+            rootIdentityByToken[token] = nil
+        }
 
         return SupervisedProcessHandle(
             token: token,

@@ -181,6 +181,71 @@ grep -q "true_posix_zombie_observed" "$BRINGUP"
 check "Real-Mac census evidence records mandatory zombie flag" $?
 
 echo ""
+echo "=== U1R18 R4-FIX2 Provider Completeness / Canonical Identity / Route Audit ==="
+echo ""
+
+LINETESTS="Tests/MacSteamTests/HostProcessLineageTests.swift"
+
+# 27. Every probe outcome is a first-class, explicitly-accounted case — a nil or
+#     failed probe is never smuggled through as a silent exit.
+grep -qE '^\s*case present' "$LIN"
+check "Probe outcome present(snapshot) is an explicit case" $?
+grep -qE '^\s*case confirmedExited' "$LIN"
+check "Probe outcome confirmedExited is an explicit case" $?
+grep -qE '^\s*case inaccessible' "$LIN"
+check "Probe outcome inaccessible is an explicit case" $?
+grep -qE '^\s*case providerFailure' "$LIN"
+check "Probe outcome providerFailure is an explicit case" $?
+# No single-nil-as-exit: existence is decided by the kernel, not by absence.
+! grep -qE 'nil.*confirmedExited|confirmedExited.*nil' "$LIN"
+check "A nil probe is never mistaken for a confirmed exit" $?
+
+# 28. Ambiguous outcomes fail the census closed and are never counted as zero.
+grep -qE '\bproviderOutcomeUnresolved\b' "$LIN"
+check "Ambiguous provider outcome fails the census closed" $?
+grep -qE '\benumerationTruncated\b' "$LIN"
+check "Truncated enumeration fails the census closed" $?
+
+# 29. Enumeration is a grow-based full scan with an explicit numerical bound, so
+#     a census is either complete or fail-closed — never silently partial.
+grep -qE '\bunresolvedOutcomes\b' "$LIN"
+check "Census separates unresolved provider outcomes" $?
+grep -qE '\bsilentSnapshotDrops\b' "$LIN"
+check "Census separately accounts silent snapshot drops" $?
+
+# 30. Canonical executable identity participates in the match (ownership is not
+#     PID-only, and the comm name is never substituted for it).
+grep -qE 'canonicalExecutable == other\.canonicalExecutable' "$LIN"
+check "Canonical executable identity participates in the match" $?
+! grep -qE 'executableName[^,]*(==|matches)|== other\.executableName' "$LIN"
+check "Comm name is never substituted for canonical identity in the match" $?
+
+# 31. Fail-closed persists for the full production census (not just lineage) and
+#     the observed identity is retained on an ambiguous outcome.
+grep -qE '\.incomplete\(\.providerOutcomeUnresolved|incomplete\(' "$LIN"
+check "Ambiguous census record is fail-closed" $?
+
+# 32. The real-Mac bring-up evidence stays on the FULL production route: it
+#     never constructs the ledger or calls the static census directly, and it
+#     drives through GameSessionSupervisor.processCensus to the bundle.
+! grep -vE '^[[:space:]]*///' "$BRINGUP" | grep -qE 'ProcessCensusLedger\('
+check "Bring-up evidence never constructs the ledger directly" $?
+! grep -vE '^[[:space:]]*///' "$BRINGUP" | grep -qE 'HostProcessLineage\.'
+check "Bring-up evidence never calls the static census directly" $?
+grep -qE 'supervisor\.processCensus\(\)' "$BRINGUP"
+check "Bring-up evidence routes via GameSessionSupervisor.processCensus" $?
+grep -qE 'generateDiagnosticBundle' "$BRINGUP"
+check "Bring-up evidence routes through coordinator bundle generation" $?
+
+# 33. The provider-failure and inaccessible fail-closed unit tests exist and are
+#     enforced statically (they are the non-bruting coverage of ambiguous
+#     outcomes).
+grep -qE 'fails closed when a probe is inaccessible' "$LINETESTS"
+check "Inaccessible-outcome fail-closed unit test present" $?
+grep -qE 'fails closed on a provider failure outcome' "$LINETESTS"
+check "Provider-failure fail-closed unit test present" $?
+
+echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"
 if [ "$FAIL" -gt 0 ]; then
