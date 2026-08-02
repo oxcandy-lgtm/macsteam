@@ -10,6 +10,8 @@ BRINGUP_SOURCE="Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift"
 LINETESTS_SOURCE="Tests/MacSteamTests/HostProcessLineageTests.swift"
 FIX6_CLEANUP_TESTS="Tests/MacSteamTests/GameSessionSupervisorCleanupTests.swift"
 FIX6_MAC_TESTS="Tests/MacSteamTests/U1R18R4FIX6RealMacCleanupTests.swift"
+APP_SOURCE="Sources/MacSteam/App/MacSteamApp.swift"
+R5_MAC_TESTS="Tests/MacSteamTests/U1R18R5DockQuitCompleteZeroTests.swift"
 AUDIT="scripts/diagnostic-security-audit.sh"
 TMPDIR_BASE=$(mktemp -d)
 PASS=0
@@ -26,16 +28,19 @@ run_mutation() {
     mkdir -p "$workdir/Sources/MacSteam/Diagnostics"
     mkdir -p "$workdir/Sources/MacSteam/Ultimate"
     mkdir -p "$workdir/Sources/MacSteam/Sessions"
+    mkdir -p "$workdir/Sources/MacSteam/App"
     mkdir -p "$workdir/Tests/MacSteamTests"
     cp "$DIAG_SOURCE" "$workdir/Sources/MacSteam/Diagnostics/"
     cp "$COORD_SOURCE" "$workdir/Sources/MacSteam/Ultimate/"
     cp "$LIN_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
     cp "$SUP_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
     cp "$GSS_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
+    cp "$APP_SOURCE" "$workdir/Sources/MacSteam/App/"
     cp "$BRINGUP_SOURCE" "$workdir/Tests/MacSteamTests/"
     cp "$LINETESTS_SOURCE" "$workdir/Tests/MacSteamTests/"
     cp "$FIX6_CLEANUP_TESTS" "$workdir/Tests/MacSteamTests/"
     cp "$FIX6_MAC_TESTS" "$workdir/Tests/MacSteamTests/"
+    cp "$R5_MAC_TESTS" "$workdir/Tests/MacSteamTests/"
 
     (cd "$workdir" && eval "$mutation_cmd")
 
@@ -482,6 +487,51 @@ run_mutation "fix7-authority-function-renamed" \
 #     the F5 fixture-name grep rejects it.
 run_mutation "fix7-idempotence-test-removed" \
     "sed -i '' '/stop re-run after completion is a zero-side-effect no-op/d' Tests/MacSteamTests/GameSessionSupervisorCleanupTests.swift" \
+    "fail"
+
+# ---------------------------------------------------------------------------
+# U1R18 R5 Dock Quit COMPLETE_ZERO / exact-once mutation fixtures.
+# Each breaks a REAL statement in the Dock Quit path; the paired R5.F1..F5
+# guard rejects it. No comment/identifier/count-only tricks.
+# ---------------------------------------------------------------------------
+
+# MR5.1 (R5.F1): the exact-once re-entrant no-op is deleted, so a second
+#     Dock-Quit spawns a second cleanup Task and may reply twice.
+run_mutation "dockquit-exact-once-guard-deleted" \
+    "sed -i '' '/if terminationTransactionStarted { return .terminateLater }/d' Sources/MacSteam/App/MacSteamApp.swift" \
+    "fail"
+
+# MR5.2 (R5.F2): the affirmative reply is emitted from BOTH branches by making
+#     the incomplete path also reply(true), so the count of reply(true) > 1.
+run_mutation "dockquit-double-affirmative-reply" \
+    "sed -i '' 's/sender.reply(toApplicationShouldTerminate: false)/sender.reply(toApplicationShouldTerminate: true)/' Sources/MacSteam/App/MacSteamApp.swift" \
+    "fail"
+
+# MR5.3 (R5.F3): the lock release is removed from the clean path, so reply(true)
+#     no longer strictly follows release — the lock could leak past the quit.
+run_mutation "dockquit-release-before-reply-removed" \
+    "sed -i '' '/context.instanceGuard.release()/d' Sources/MacSteam/App/MacSteamApp.swift" \
+    "fail"
+
+# MR5.4 (R5.F4): the abort-on-incomplete reply(false) line is removed, so an
+#     incomplete cleanup has no abort path (R5.F4 fixture gone); distinct from
+#     MR5.2 which keeps the count guard violated.
+run_mutation "dockquit-abort-reply-removed" \
+    "sed -i '' '/sender.reply(toApplicationShouldTerminate: false)/d' Sources/MacSteam/App/MacSteamApp.swift" \
+    "fail"
+
+# MR5.5 (R5.F5): the real-Mac zero-residue host-process assertion is removed
+#     (full #expect range, so its message vanishes too), so a non-zero host
+#     census after quit would pass undetected.
+run_mutation "dockquit-host-process-zero-proof-removed" \
+    "sed -i '' '/windowsProcesses.total == 0/,/no host processes may remain/d' Tests/MacSteamTests/U1R18R5DockQuitCompleteZeroTests.swift" \
+    "fail"
+
+# MR5.6 (R5.F5): the re-entrant Dock-Quit exact-once no-op assertion is removed
+#     (full #expect range), so a second reply/lock-release on double Cmd-Q
+#     would go unproven.
+run_mutation "dockquit-exact-once-noop-proof-removed" \
+    "sed -i '' '/reentrantReply == .terminateLater/,/exact-once no-op/d' Tests/MacSteamTests/U1R18R5DockQuitCompleteZeroTests.swift" \
     "fail"
 
 echo ""

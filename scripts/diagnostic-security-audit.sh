@@ -498,6 +498,60 @@ check "Behavioral test: idle state preserved with zero side effects" $?
 grep -qE 'launch reachable after idempotent cleanup' "$FIX7TESTS"
 check "Behavioral test: launch gate reachable after idempotent cleanup" $?
 
+# ---------------------------------------------------------------------------
+# U1R18 R4-R5 Dock Quit COMPLETE_ZERO / exact-once audit.
+# Dock Quit (Cmd-Q / Dock menu) must drive the full cleanup transaction EXACTLY
+# ONCE to zero residue, reply(true) exactly once and ONLY on .clean, releasing
+# the R4 instance lock strictly before the affirmative reply. These are real
+# statement + ordering guards (not comment/identifier presence, not mere counts),
+# so a state-ordering mutation that keeps counts is still rejected.
+# ---------------------------------------------------------------------------
+APP="Sources/MacSteam/App/MacSteamApp.swift"
+R5MAC="Tests/MacSteamTests/U1R18R5DockQuitCompleteZeroTests.swift"
+
+echo ""
+echo "=== U1R18 R5 Dock Quit COMPLETE_ZERO / exact-once Audit ==="
+echo ""
+
+# R5.F1. Re-entrant Dock Quit is a true no-op: the exact-once early return
+#      `if terminationTransactionStarted { return .terminateLater }` is present
+#      for stop(), and the token is set on the first invocation.
+grep -qE 'if terminationTransactionStarted \{ return .terminateLater \}' "$APP"
+check "Dock Quit exact-once no-op token present" $?
+grep -qE 'terminationTransactionStarted = true' "$APP"
+check "Dock Quit sets the exact-once token on first invocation" $?
+
+# R5.F2. The affirmative reply is emitted EXACTLY ONCE across the whole delegate
+#      (a count guard is insufficient alone, but a stray second `reply(true)`
+#      would also inflate the count and is rejected here).
+COUNT_TRUE=$(grep -cE 'sender\.reply\(toApplicationShouldTerminate: true\)' "$APP")
+[ "$COUNT_TRUE" -eq 1 ]
+check "Dock Quit affirmative reply emitted exactly once" $?
+
+# R5.F3. Ordering: on the clean path, instanceGuard.release() STRICTLY precedes
+#      the affirmative reply (release must never follow or be skipped vs reply).
+#      awk: the release line number must be < the reply(true) line number.
+RELEASE_NR=$(grep -nE 'context\.instanceGuard\.release\(\)' "$APP" | head -1 | cut -d: -f1)
+REPLY_NR=$(grep -nE 'sender\.reply\(toApplicationShouldTerminate: true\)' "$APP" | head -1 | cut -d: -f1)
+[ -n "$RELEASE_NR" ] && [ -n "$REPLY_NR" ] && [ "$RELEASE_NR" -lt "$REPLY_NR" ]
+check "Dock Quit releases instance lock strictly before affirmative reply" $?
+
+# R5.F4. The incomplete path aborts the quit (reply(false)), retaining the lock.
+grep -qE 'sender\.reply\(toApplicationShouldTerminate: false\)' "$APP"
+check "Dock Quit abort-on-incomplete reply(false) present" $?
+
+# R5.F5. The real-Mac Dock Quit proof asserts host-process (Wine) census == 0 and
+#      zero-residue (receipt/session/wineserver/lock) after the real quit path,
+#      AND the re-entrant Dock Quit is an exact-once no-op (double Cmd-Q).
+grep -qE 'windowsProcesses\.total == 0' "$R5MAC"
+check "Real-Mac Dock Quit proves zero Windows host processes after quit" $?
+grep -qE 'reentrantReply == .terminateLater' "$R5MAC"
+check "Real-Mac Dock Quit proves re-entrant quit is a no-op" $?
+grep -qE 're-entrant Dock Quit must be an exact-once no-op' "$R5MAC"
+check "Real-Mac Dock Quit documents the exact-once no-op contract" $?
+grep -qE 'applicationShouldTerminate' "$R5MAC"
+check "Real-Mac Dock Quit drives the genuine AppKit termination path" $?
+
 echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"

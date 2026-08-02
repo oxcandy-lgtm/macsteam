@@ -15,10 +15,26 @@ final class MacsTeamApplicationContext {
 }
 
 /// NSApplication delegate — lifecycle cleanup.
+///
+/// R5 Dock_Quit_COMPLETE_ZERO: the AppKit Dock-Quit / Cmd-Q path is driven
+/// EXACTLY ONCE. A re-entrant `applicationShouldTerminate` (e.g. a second
+/// Cmd-Q, or the Dock quit menu fired twice while cleanup is in flight) is a
+/// true no-op: it returns `.terminateLater` and spawns NO second cleanup task,
+/// so AppKit never receives a second `reply(...)` and the instance lock is
+/// never released twice. `instanceGuard.release()` and the affirmative
+/// `reply(true)` execute ONLY on a `.clean` (zero-residue) cleanup, and
+/// `release()` strictly precedes `reply(true)`; on an incomplete cleanup AppKit
+/// is told to abort the quit (`reply(false)`) with the lock retained for a safe
+/// retry — cleanup-before-release-before-reply ordering is non-negotiable.
 @MainActor
 final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
     static var shared: MacsTeamAppDelegate?
     var context: MacsTeamApplicationContext?
+
+    /// Exact-once token: set on the first Dock-Quit invocation so a re-entrant
+    /// call is a guaranteed no-op (no second task, no second reply, no second
+    /// lock release). Read/written on MainActor only.
+    private var terminationTransactionStarted = false
 
     override init() {
         super.init()
@@ -37,12 +53,21 @@ final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
     ) -> NSApplication.TerminateReply {
         guard let context else { return .terminateNow }
 
+        // Exact-once: a second Dock-Quit while the first cleanup is in flight
+        // is a true no-op — never spawn a second cleanup Task or reply twice.
+        if terminationTransactionStarted { return .terminateLater }
+        terminationTransactionStarted = true
+
         Task { @MainActor in
             let result = await context.coordinator.stopAllForApplicationTermination()
             if result == .clean {
+                // Zero-residue proven only here: release the instance lock,
+                // then affirm the quit — release ALWAYS strictly precedes reply.
                 context.instanceGuard.release()
                 sender.reply(toApplicationShouldTerminate: true)
             } else {
+                // Incomplete cleanup: abort the quit so the lock stays held
+                // and a retry can complete the zero-residue transaction.
                 sender.reply(toApplicationShouldTerminate: false)
             }
         }
