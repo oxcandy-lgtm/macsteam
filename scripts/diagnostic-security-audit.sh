@@ -307,6 +307,53 @@ grep -qE 'grandchild_dropped_under_proven' "$BRINGUP"
 check "Real-Mac race evidence asserts grandchild-never-dropped-under-proven" $?
 
 echo ""
+echo "=== U1R18 R4-FIX4 Unobserved-Zombie Fail-Closed / Retry Candidate Carryover / Reap Confirm Audit ==="
+echo ""
+
+# 46. Unobserved-zombie canonical fail-closed: an unobserved zombie (no prior
+#     same-PID/start identity) whose canonical is unresolvable is ambiguous —
+#     empty canonical is never `.present`, snapshotted, carried as candidate,
+#     or placed into the ledger.
+grep -qE 'snap.identity.canonicalExecutable.isEmpty' "$LIN"
+check "Empty canonical is never present (unobserved zombie included)" $?
+grep -qE 'if canonical.isEmpty \{' "$LIN"
+check "Unresolvable rows revalidate in census, never admitted as empty" $?
+grep -qE 'rootRow.state != .zombie && rootCanonical.isEmpty' "$LIN"
+check "Root-empty-canonical fails closed" $?
+
+# 47. Retry candidate carryover: identities discovered during an unstable
+#     attempt are carried forward so a descendant once seen is never forgotten
+#     on retry. The final stable resolve covers ledger ∪ reachable ∪ carried.
+grep -qE 'carriedCandidates' "$LIN"
+check "Unstable attempts carry forward discovered identities" $?
+grep -qE '\.union\(carriedCandidates\.map' "$LIN"
+check "Carried candidates join the resolution set on retry" $?
+grep -qE 'carriedCandidates.count >= maxCensusSize' "$LIN"
+check "Carried candidate count is explicitly bounded" $?
+grep -qE 'for snap in snapshots.values where' "$LIN"
+check "Unstable-attempt identities are carried forward on incoherence" $?
+
+# 48. Reconcile resolves every carried candidate (descendant/orphan/exited/PID-
+#     reuse) before granting provenance; a candidate is never silently dropped.
+grep -qE 'considered\.append\(candidate\)' "$LIN"
+check "Reconcile folds carried candidates into resolve" $?
+grep -qE 'carriedCandidates: \[ProcessIdentity\] = \[\]' "$LIN"
+check "Reconcile carries candidate resolution as the census authority" $?
+
+# 49. Force-kill reap confirmation: SIGTERM -> bounded wait -> SIGKILL -> second
+#     bounded wait confirm; unconfirmed reap never claims full rollback.
+grep -qE 'terminateAndReapOwned' "$GSS"
+check "A reap-confirmation path exists for owned processes" $?
+grep -qE 'second bounded reap-wait' "$GSS"
+check "SIGKILL is followed by a second reap-confirm wait" $?
+grep -qE 'if confirmed \{' "$GSS"
+check "Reap discard only after confirmed exit" $?
+grep -qE 'recoveryRequired' "$GSS"
+check "Unconfirmed reap falls to an explicit recovery state" $?
+grep -qE 'coldStartReparentRace' "$BRINGUP"
+check "Real-Mac cold-start reparent race evidence present" $?
+
+echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"
 if [ "$FAIL" -gt 0 ]; then

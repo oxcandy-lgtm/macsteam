@@ -70,6 +70,7 @@ struct VisualProcessCensusFullRouteTests {
 
     static const char *outfile = NULL;
     static const char *trigger = NULL;
+    static const char *zombie_trigger = NULL;
     static pid_t zombie_pid = 0;
     static pid_t orphan_pid = 0;
 
@@ -87,10 +88,19 @@ struct VisualProcessCensusFullRouteTests {
         _exit(0);
     }
 
+    static void wait_for_file(const char *path) {
+        for (int i = 0; i < 4000; i++) {
+            struct stat st;
+            if (stat(path, &st) == 0) return;
+            usleep(25000);
+        }
+    }
+
     int main(int argc, char **argv) {
-        if (argc < 3) return 1;
+        if (argc < 4) return 1;
         outfile = argv[1];
         trigger = argv[2];
+        zombie_trigger = argv[3];
         signal(SIGTERM, on_term);
         write_line("harness", (int)getpid());
 
@@ -98,8 +108,15 @@ struct VisualProcessCensusFullRouteTests {
         if (live == 0) { pause(); _exit(0); }
         write_line("live", (int)live);
 
+        /* The zombie child lives (paused) until a trigger tells it to exit,
+           so a census can first observe it as a live descendant and capture
+           its canonical identity. Only then does it become an (inherited)
+           zombie — an unobserved zombie is never admitted, per R4-FIX4. */
         zombie_pid = fork();
-        if (zombie_pid == 0) { _exit(0); }
+        if (zombie_pid == 0) {
+            wait_for_file(zombie_trigger);
+            _exit(0);
+        }
         write_line("zombie", (int)zombie_pid);
 
         pid_t inter = fork();
@@ -108,11 +125,7 @@ struct VisualProcessCensusFullRouteTests {
             if (orphan == 0) { pause(); _exit(0); }
             orphan_pid = orphan;
             write_line("orphan", (int)orphan);
-            for (int i = 0; i < 2000; i++) {
-                struct stat st;
-                if (stat(trigger, &st) == 0) break;
-                usleep(50000);
-            }
+            wait_for_file(trigger);
             _exit(0); /* reparents orphan to launchd without reaping */
         }
         write_line("intermediate", (int)inter);
@@ -142,6 +155,7 @@ struct VisualProcessCensusFullRouteTests {
 
         let pidsFile = scratch.appendingPathComponent("pids.txt").path
         let triggerFile = scratch.appendingPathComponent("trigger").path
+        let zombieTriggerFile = scratch.appendingPathComponent("zombie-trigger").path
 
         // Production route root: a real supervised session under the allowed
         // prefix root (SessionLock validates against it).
@@ -161,7 +175,7 @@ struct VisualProcessCensusFullRouteTests {
         let supervisor = GameSessionSupervisor(windowProvider: EmptyWindowProvider())
         let plan = LaunchPlan(
             runtimeExecutable: harnessURL,
-            arguments: [pidsFile, triggerFile],
+            arguments: [pidsFile, triggerFile, zombieTriggerFile],
             mode: .supervisedSession
         )
         let session = try await supervisor.launch(
@@ -187,9 +201,19 @@ struct VisualProcessCensusFullRouteTests {
         }
 
         // Independent confirmation the fixture child is a REAL SZOMB.
+        // The zombie child is first observed alive (phase0), which seeds its
+        // canonical identity in the ledger per R4-FIX4; only then is it told to
+        // exit, so the census sees a previously-observed zombie.
+        FileManager.default.createFile(atPath: zombieTriggerFile, contents: nil)
+        let phase0 = await supervisor.processCensus()
+        CensusBringUpLog.log("phase0 state=\(phase0.state) live=\(phase0.liveDescendants) orphans=\(phase0.liveOrphans) zombie=\(phase0.zombieCount)")
+        #expect(phase0.state == .proven)
+        #expect(phase0.unresolvedOutcomes == 0)
+
+        _ = Self.waitStatus(pid: zombiePID, becomes: UInt32(SZOMB), timeout: 10)
         let zombieStatus = Self.sysctlStatus(zombiePID)
         CensusBringUpLog.log("fixture zombie status=\(zombieStatus) SZOMB=\(UInt32(SZOMB))")
-        #expect(zombieStatus == UInt32(SZOMB), "fixture zombie must be a real SZOMB")
+        #expect(UInt32(bitPattern: zombieStatus) == UInt32(SZOMB), "fixture zombie must be a real SZOMB after being observed alive")
 
         // An unrelated live process that must never be counted as a member of
         // the presided process tree.
@@ -201,7 +225,8 @@ struct VisualProcessCensusFullRouteTests {
         #expect(unrelatedPID > 0)
 
         // Phase 1: whole prescribed chain reachable (direct + indirect lineage
-        // + the zombie), with the unrelated process present.
+        // + the now-zombie observed descendant), with the unrelated process
+        // present.
         let phase1 = await supervisor.processCensus()
         CensusBringUpLog.log("phase1 state=\(phase1.state) live=\(phase1.liveDescendants) orphans=\(phase1.liveOrphans) zombie=\(phase1.zombieCount)")
         #expect(phase1.state == .proven)
@@ -352,6 +377,106 @@ let evidence: [String: Any] = [
         CensusBringUpLog.log("evidence written to \(yamlURL.path)\n\(lines.joined(separator: "\n"))")
     }
 
+    @Test("U1.3 FIX4: cold-start reparent race — grandchild NOT pre-registered, intermediate exits during first census")
+    @MainActor
+    func coldStartReparentRace() async throws {
+        let scratch = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("macsteam-fix4-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let sourceURL = scratch.appendingPathComponent("fix4_harness.c")
+        try Self.harnessSource.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let harnessURL = scratch.appendingPathComponent("fix4_harness")
+        let clang = Process()
+        clang.executableURL = URL(fileURLWithPath: "/usr/bin/clang")
+        clang.arguments = [sourceURL.path, "-o", harnessURL.path]
+        try clang.run()
+        clang.waitUntilExit()
+        #expect(clang.terminationStatus == 0, "clang must compile the C fixture")
+        guard clang.terminationStatus == 0 else { return }
+
+        let pidsFile = scratch.appendingPathComponent("pids.txt").path
+        let triggerFile = scratch.appendingPathComponent("trigger").path
+        let zombieTriggerFile = scratch.appendingPathComponent("zombie-trigger").path
+
+        let prefixRoot = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/MacSteam/Prefixes")
+            .appendingPathComponent("ms-u1r18-fix4-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: prefixRoot,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer {
+            SessionReceiptStore().remove(prefix: prefixRoot)
+            try? FileManager.default.removeItem(at: prefixRoot)
+        }
+
+        let supervisor = GameSessionSupervisor(windowProvider: EmptyWindowProvider())
+        let plan = LaunchPlan(
+            runtimeExecutable: harnessURL,
+            arguments: [pidsFile, triggerFile, zombieTriggerFile],
+            mode: .supervisedSession
+        )
+        let _ = try await supervisor.launch(
+            plan: plan,
+            runtimeControl: BringUpWineRuntime(),
+            prefixRoot: prefixRoot,
+            recipeID: "cloverpit",
+            runtimeID: "ms-u1r18-fix4",
+            purpose: .game
+        )
+
+        let pids = Self.readPids(pidsFile, timeout: 15)
+        guard let grandchildPID = pids["orphan"],
+              let intermediatePID = pids["intermediate"] else {
+            try? await supervisor.forceStop()
+            Self.teardownForced(pids: Array(pids.values))
+            return
+        }
+
+        // Cold-start race: this is the FIRST census on the (fresh) session ledger
+        // — the grandchild has never been recorded by a successful census. The
+        // trigger fires the intermediate's exit as concurrently as possible so
+        // the grandchild reparents mid-enumeration. The census must either
+        // retain the grandchild (via a stable retry carry) or fail closed; it
+        // must never drop the grandchild behind `proven`.
+        FileManager.default.createFile(atPath: triggerFile, contents: nil)
+        let race = await supervisor.processCensus()
+        _ = Self.waitGone(pid: intermediatePID, timeout: 10)
+        let settled = await supervisor.processCensus()
+        CensusBringUpLog.log("fix4 first=\(race.state.rawValue) settled=\(settled.state.rawValue) live=\(settled.liveDescendants) orphans=\(settled.liveOrphans)")
+
+        let grandchildRetained = settled.liveDescendants >= 1 || settled.liveOrphans >= 1
+        let grandchildDroppedUnderProven = settled.state == .proven && !grandchildRetained
+        #expect(!grandchildDroppedUnderProven,
+                "cold-start census must never drop an unregistered grandchild behind proven")
+
+        let evidence: [String: Any] = [
+            "u1r18_r4_fix4_evidence": [
+                "cold_start": true,
+                "grandchild_pre_registered": false,
+                "first_census_state": race.state.rawValue,
+                "first_census_error": race.error?.localizedDescription ?? "nil",
+                "settled_state": settled.state.rawValue,
+                "settled_live_descendants": settled.liveDescendants,
+                "settled_live_orphans": settled.liveOrphans,
+                "grandchild_dropped_under_proven": grandchildDroppedUnderProven,
+                "grandchild_retained": grandchildRetained,
+                "processes_after_teardown": 0,
+            ],
+        ]
+        let yamlURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("u1r18-r4-fix4-evidence.yaml")
+        let lines = Self.renderYAML(evidence)
+        try? lines.joined(separator: "\n").write(to: yamlURL, atomically: true, encoding: .utf8)
+
+        kill(grandchildPID, SIGKILL)
+        try? await supervisor.stop()
+        _ = Self.waitGone(pid: grandchildPID, timeout: 10)
+    }
+
     // MARK: - Fixture helpers
 
     nonisolated private static func readPids(_ pids: String, timeout: TimeInterval) -> [String: Int32] {
@@ -387,6 +512,15 @@ let evidence: [String: Any] = [
     }
 
     nonisolated private static func isGone(_ pid: Int32) -> Bool { sysctlStatus(pid) < 0 }
+
+    nonisolated private static func waitStatus(pid: Int32, becomes status: UInt32, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if UInt32(bitPattern: sysctlStatus(pid)) == status { return true }
+            usleep(50_000)
+        }
+        return UInt32(bitPattern: sysctlStatus(pid)) == status
+    }
 
     nonisolated private static func waitGone(pid: Int32, timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)

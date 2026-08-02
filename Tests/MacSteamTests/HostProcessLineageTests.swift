@@ -458,6 +458,92 @@ struct HostProcessLineageTests {
         }
     }
 
+    // MARK: - U1R18 R4-FIX4: unobserved-zombie fail-closed + retry candidate carryover
+
+    @Test("an unobserved zombie with an unresolved canonical fails closed — never present")
+    func unobservedZombieCanonicalFailsClosed() {
+        // A zombie that was NEVER observed (no prior same-PID/start identity),
+        // whose canonical cannot be resolved, is ambiguous — an empty canonical
+        // must never be admitted as `.present`, so the census fails closed.
+        let rootRow = makeRow(100, ppid: 1, startSec: 1000, state: .sleeping, name: "root")
+        let zombieRow = makeRow(200, ppid: 100, startSec: 9000, state: .zombie, name: "zz")
+        var ledger = ProcessCensusLedger(rootIdentity: makeIdentity(100, 1000, name: "root"))
+        // The zombie is NOT in the ledger and gets an unresolvable canonical.
+        let table: [Int32: HostProcessLineage.NativeProcessRow] = [100: rootRow, 200: zombieRow]
+        let result = HostProcessLineage.census(
+            ledger: &ledger,
+            captureTable: { table },
+            canonicalResolver: { row, _ in row.pid == 100 ? "/bin/root" : "" }
+        )
+        #expect(result.state == .incomplete)
+        #expect(result.error == .providerOutcomeUnresolved(1))
+        #expect(!ledger.observed.contains(where: { $0.pid == 200 }),
+                "the empty-canonical zombie must never be admitted to the ledger")
+    }
+
+    @Test("an observed zombie implicit inherits its prior canonical, so it stays present")
+    func observedZombieInheritsCanonical() {
+        let rootRow = makeRow(100, ppid: 1, startSec: 1000, state: .sleeping, name: "root")
+        let zombieRow = makeRow(200, ppid: 100, startSec: 2000, state: .zombie, name: "zz")
+        var ledger = ProcessCensusLedger(rootIdentity: makeIdentity(100, 1000, name: "root"))
+        ledger.record(makeIdentity(200, 2000, name: "zz")) // observed when alive
+        let table: [Int32: HostProcessLineage.NativeProcessRow] = [100: rootRow, 200: zombieRow]
+        let result = HostProcessLineage.census(
+            ledger: &ledger,
+            captureTable: { table },
+            canonicalResolver: { row, known in
+                if row.pid == 100 { return "/bin/root" }
+                // Same-PID/start captured identity is inherited for the zombie.
+                return known?.canonicalExecutable ?? ""
+            }
+        )
+        #expect(result.state == .proven)
+        #expect(result.zombieCount == 1)
+        #expect(ledger.observed.contains(where: { $0.pid == 200 }))
+    }
+
+    @Test("a descendant candidate from an unstable attempt is carried and retained")
+    func carriedCandidateRetainedAcrossAttempts() {
+        // Root -> intermediate -> grandchild. During the first census the
+        // intermediate exits: the reparented grandchild is discovered in one
+        // attempt but the attempt is unstable. The carried candidate must be
+        // resolved by the stable retry — never dropped.
+        let rootRow = makeRow(100, ppid: 1, startSec: 1000, state: .sleeping, name: "root")
+        var ledger = ProcessCensusLedger(rootIdentity: makeIdentity(100, 1000, name: "root"))
+        var attempt = 0
+        let result = HostProcessLineage.census(
+            ledger: &ledger,
+            captureTable: {
+                attempt += 1
+                if attempt == 1 {
+                    // On the first attempt the grandchild is present but the
+                    // intermediate is mid-exit (the second capture differs).
+                    let table: [Int32: HostProcessLineage.NativeProcessRow] = [
+                        100: rootRow,
+                        400: makeRow(400, ppid: 100, startSec: 4000, state: .sleeping, name: "gc"),
+                    ]
+                    return table
+                }
+                // Stable retry: intermediate gone, grandchild reparented to launchd.
+                let table: [Int32: HostProcessLineage.NativeProcessRow] = [
+                    100: rootRow,
+                    400: makeRow(400, ppid: 1, startSec: 4000, state: .sleeping, name: "gc"),
+                ]
+                return table
+            },
+            canonicalResolver: { row, _ in row.pid == 100 ? "/bin/root" : "/bin/gc" }
+        )
+        if result.state == .proven {
+            let retained = result.liveOrphans >= 1 || result.liveDescendants >= 1
+            #expect(retained, "carried grandchild must be retained as descendant or orphan")
+        } else {
+            #expect(result.error != nil, "a non-proven result must carry an error (fail-closed)")
+            #expect(result.error == .snapshotUnstable ||
+                    result.error == .providerOutcomeUnresolved(0),
+                    "unstable retry or explicit resolution failure")
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeIdentity(

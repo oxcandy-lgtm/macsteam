@@ -301,6 +301,66 @@ run_mutation "route-bypass-fix3" \
     "sed -i '' 's/supervisor.processCensus()/HostProcessLineage.census(ledger: \&ledger)/' Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
     "fail"
 
+# 57. unobserved zombie + empty canonical admitted as present
+run_mutation "unobserved-zombie-empty-present" \
+    "sed -i '' 's/if snap.identity.canonicalExecutable.isEmpty {/if snap.isZombie {/' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 58. empty canonical leaked into the retry candidate set
+run_mutation "empty-canonical-candidate-mix" \
+    "sed -i '' 's/if canonical.isEmpty {/if row.state != .zombie \&\& canonical.isEmpty {/' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 59. retry candidate authority removed (no carry-over device)
+run_mutation "retry-candidate-authority-removed" \
+    "sed -i '' '/carriedCandidates/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 60. carry-in / next-attempt relevant set excludes the candidate
+run_mutation "candidate-excluded-from-relevant" \
+    "sed -i '' '/\.union(carriedCandidates\.map/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 61. candidates removed between attempts (snapshot.values loop deleted)
+run_mutation "candidate-cleared-between-attempts" \
+    "sed -i '' '/for snap in snapshots.values where/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 62. candidate silent drop in reconcile (no append of candidate)
+run_mutation "candidate-silent-drop" \
+    "sed -i '' '/considered\.append(candidate)/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 63. candidate upper limit removed
+run_mutation "candidate-limit-removed" \
+    "sed -i '' '/carriedCandidates.count >= maxCensusSize/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 64. ledger updated before stability confirmed (stable retry removed)
+run_mutation "ledger-updated-before-stable" \
+    "sed -i '' '/if !coherent {/,+12d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 65. SIGKILL second wait removed (single wait then rollover)
+run_mutation "sigkill-second-wait-removed" \
+    "sed -i '' '/second bounded reap-wait/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 66. reap-before-discard removed (discard before confirming reap)
+run_mutation "reap-before-discard-removed" \
+    "sed -i '' '/if confirmed/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 67. forced-kill unconfirmed treated as rollback success (no second wait)
+run_mutation "force-kill-unconfirmed-as-rollback" \
+    "sed -i '' '/terminateAndReapOwned/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 68. real-Mac test regressed to a pre-registered grandchild (removes FIX4 cold start)
+run_mutation "real-mac-pre-registered-regression" \
+    "sed -i '' '/coldStartReparentRace/d' Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
+    "fail"
+
 echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"

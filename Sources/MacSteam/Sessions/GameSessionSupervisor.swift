@@ -172,7 +172,9 @@ final class GameSessionSupervisor {
         activeRuntimeControl = nil
         censusLedger = nil
 
-        // Rollback closure: release lock + reset on failure
+        // Rollback closure: release lock + reset on failure. A recovery state
+        // that was explicitly set (e.g. an unconfirmed force-kill reap) is
+        // preserved — rollback never claims success that did not happen.
         defer {
             if !launchCommitted {
                 windowObserver.invalidate()
@@ -182,7 +184,11 @@ final class GameSessionSupervisor {
                 activeHandle = nil
                 activeRuntimeControl = nil
                 censusLedger = nil
-                state = .idle
+                if case .recoveryRequired = state {
+                    // Retain cleanup authority / recovery state.
+                } else {
+                    state = .idle
+                }
             }
         }
 
@@ -207,11 +213,18 @@ final class GameSessionSupervisor {
         // fail the launch (the rollback defer releases the lock and resets
         // state to idle).
         guard let rootIdentity = await processSupervisor.capturedRootIdentity(for: handle) else {
-            await processSupervisor.requestTerminate(handle)
-            if case .timedOut = await processSupervisor.waitForExit(handle, timeout: .seconds(2)) {
-                try? await processSupervisor.requestForceKill(handle)
+            let confirmed = await terminateAndReapOwned(handle)
+            if confirmed {
+                await processSupervisor.discard(handle)
             }
-            await processSupervisor.discard(handle)
+            // If the force-kill was not confirmed, do NOT claim a complete
+            // rollback: retain cleanup authority in an explicit recovery state
+            // so the orphaned process can still be reaped.
+            if !confirmed {
+                state = .recoveryRequired(
+                    "The launched process identity could not be established and its reap was unconfirmed; process cleanup requires recovery"
+                )
+            }
             throw SessionSupervisorError.launchFailed(
                 "The launched process identity could not be established; aborted to avoid an unproven session"
             )
@@ -266,6 +279,25 @@ final class GameSessionSupervisor {
     }
 
     // MARK: - Stop
+
+    /// Terminate an owned process and contend its reap: SIGTERM, bounded wait;
+    /// on timeout SIGKILL, then a second bounded wait to confirm the reap.
+    /// Returns `true` only when the process is confirmed gone. A force-killed
+    /// but unconfirmed process returns `false` — the caller must NOT claim a
+    /// complete rollback and must retain cleanup authority for recovery.
+    @MainActor
+    private func terminateAndReapOwned(_ handle: SupervisedProcessHandle) async -> Bool {
+        await processSupervisor.requestTerminate(handle)
+        if case .timedOut = await processSupervisor.waitForExit(handle, timeout: .seconds(2)) {
+            try? await processSupervisor.requestForceKill(handle)
+            // SIGKILL must itself be contended by a second bounded reap-wait —
+            // a silent force-kill that never reaps is not a confirmed cleanup.
+            if case .timedOut = await processSupervisor.waitForExit(handle, timeout: .seconds(2)) {
+                return false
+            }
+        }
+        return true
+    }
 
     /// Stop the active session completely.
     ///

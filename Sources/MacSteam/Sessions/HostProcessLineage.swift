@@ -346,13 +346,15 @@ if result == 0, len > 0 {
         return nil
     }
 
-    /// A live process is admitted as `present` only if its canonical executable
-    /// identity is non-empty (comm/basename/argv are never substituted). A
-    /// zombie may carry a previously captured (non-empty) canonical via its
-    /// inherited identity; otherwise an unresolvable identity is *ambiguous* —
-    /// never a silent exit and never a proven present.
+    /// A process is admitted as `present` only if its canonical executable
+    /// identity is non-empty (comm/basename/argv are never substituted). This
+    /// holds for zombies too: only a previously captured (same PID + start
+    /// tuple) non-empty canonical is inherited; an *unobserved* zombie whose
+    /// canonical cannot be resolved is ambiguous (`inaccessible`) — never a
+    /// silent exit, never a proven present, and its empty canonical is never
+    /// placed into a snapshot, a retry candidate, or the ledger.
     private static func presentOnlyIfProven(_ snap: HostProcessSnapshot) -> ProcessProbeOutcome {
-        if !snap.isZombie && snap.identity.canonicalExecutable.isEmpty {
+        if snap.identity.canonicalExecutable.isEmpty {
             return .inaccessible
         }
         return .present(snap)
@@ -513,10 +515,15 @@ if result == 0, len > 0 {
     /// behavior can be tested deterministically. Production uses `census(ledger:)`.
     static func census(
         ledger: inout ProcessCensusLedger,
-        captureTable: () -> [Int32: NativeProcessRow],
+        captureTable: @escaping () -> [Int32: NativeProcessRow],
         canonicalResolver: (NativeProcessRow, ProcessIdentity?) -> String = { _, _ in "" }
     ) -> ProcessCensusResult {
         var attemptNumber = 0
+        // Identities discovered during an attempt that later proved unstable are
+        // carried forward so a descendant once seen is never forgotten on a
+        // retry. Everything in `ledger.observed`, the current reachable set, and
+        // these carried candidates is resolved by the final stable attempt.
+        var carriedCandidates: [ProcessIdentity] = []
         while attemptNumber < maxTableRetries {
             attemptNumber += 1
 
@@ -557,18 +564,24 @@ if result == 0, len > 0 {
                 }
             }
 
-            // 3. Resolve the identity of every relevant (reachable or previously
-            //    observed) row. Any live row whose canonical is unresolvable is
-            //    ambiguous and fails the census closed.
+            // 3. Resolve the identity of every relevant row: the current reachable
+            //    descendants ∪ the ledger's observed identities ∪ the candidates
+            //    carried forward from a previous unstable attempt. Every live row
+            //    — and every row (including an *unobserved* zombie) whose canonical
+            //    is unresolvable — is ambiguous and fails the census closed. An
+            //    empty canonical is never placed into a snapshot, a candidate, or
+            //    the ledger.
             var snapshots: [Int32: HostProcessSnapshot] = [:]
-            snapshots.reserveCapacity(reachable.count + ledger.observed.count)
+            snapshots.reserveCapacity(reachable.count + ledger.observed.count + carriedCandidates.count)
             var unresolved = 0
-            var relevant: Set<Int32> = reachable.union(ledger.observed.map(\.pid))
+            var relevant: Set<Int32> = reachable
+                .union(ledger.observed.map(\.pid))
+                .union(carriedCandidates.map(\.pid))
             for pid in relevant {
                 guard let row = first[pid] else { continue }
                 let known = ledger.observed.first(where: { $0.pid == pid })
                 let canonical = canonicalResolver(row, known)
-                if row.state != .zombie && canonical.isEmpty {
+                if canonical.isEmpty {
                     unresolved += 1
                     continue
                 }
@@ -580,8 +593,10 @@ if result == 0, len > 0 {
 
             // 4. Coherence gate: every relevant (owned) row must be identical on
             //    a re-capture (no exit/exec/PID-reuse/reparent during
-            //    resolution), otherwise discard this attempt and retry within
-            //    the bound. Unrelated system churn is ignored — only ownership-
+            //    resolution), otherwise the attempt is unstable. Carry its
+            //    resolved identities forward so a descendant discovered mid-
+            //    transition is retained by the next retry, then retry within the
+            //    bound. Unrelated system churn is ignored — only ownership-
             //    relevant topology is compared.
             let second = captureTable()
             var coherent = true
@@ -592,14 +607,30 @@ if result == 0, len > 0 {
                 }
             }
             if !coherent {
+                for snap in snapshots.values where !ledger.observed.contains(where: { $0.matches(snap.identity) }) {
+                    if !carriedCandidates.contains(where: { $0.matches(snap.identity) }) {
+                        if carriedCandidates.count >= maxCensusSize {
+                            return .incomplete(.limitExceeded(carriedCandidates.count + 1))
+                        }
+                        carriedCandidates.append(snap.identity)
+                    }
+                }
                 if attemptNumber >= maxTableRetries {
                     return .incomplete(.snapshotUnstable)
                 }
                 continue
             }
 
-            // 5. Stable, coherent generation -> reconcile ownership accounting.
-            return reconcile(ledger: &ledger, root: rootSnapshot, all: snapshots, silentSnapshotDrops: 0)
+            // 5. Stable, coherent generation -> reconcile ownership accounting,
+            //    resolving every carried candidate (descendant / orphan /
+            //    confirmed-exited / PID-reuse) before provenance is granted.
+            return reconcile(
+                ledger: &ledger,
+                root: rootSnapshot,
+                all: snapshots,
+                carriedCandidates: carriedCandidates,
+                silentSnapshotDrops: 0
+            )
         }
         return .incomplete(.snapshotUnstable)
     }
@@ -640,10 +671,18 @@ if result == 0, len > 0 {
     ///
     /// Exposed separately so the accounting rules can be tested deterministically
     /// with synthetic snapshots; `census(ledger:)` is the live provider wrapper.
+    ///
+    /// `carriedCandidates` are identities discovered during a previous unstable
+    /// attempt that must be resolved before provenance is granted: each is
+    /// accounted as a descendant (if reachable), an orphan (if present with a
+    /// matching identity but no longer reachable), confirmed-exited (if absent
+    /// from the table), or PID-reuse (if a different identity now occupies its
+    /// PID). A carried candidate is never silently dropped.
     static func reconcile(
         ledger: inout ProcessCensusLedger,
         root: HostProcessSnapshot,
         all: [Int32: HostProcessSnapshot],
+        carriedCandidates: [ProcessIdentity] = [],
         silentSnapshotDrops: Int = 0
     ) -> ProcessCensusResult {
         guard root.identity.matches(ledger.rootIdentity) else {
@@ -686,8 +725,14 @@ if result == 0, len > 0 {
             }
         }
 
-        // Previously observed ledger entries that are no longer reachable.
-        for entry in ledger.observed {
+        // Previously observed ledger entries that are no longer reachable,
+        // plus carried candidates that must resolve before provenance is granted.
+        var considered = ledger.observed
+        for candidate in carriedCandidates
+        where !considered.contains(where: { $0.matches(candidate) }) {
+            considered.append(candidate)
+        }
+        for entry in considered {
             if surviving.contains(where: { $0.matches(entry) }) { continue }
             if reusedPIDs.contains(entry.pid) { continue }
             guard let snap = all[entry.pid] else {
