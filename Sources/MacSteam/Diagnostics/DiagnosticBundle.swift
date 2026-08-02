@@ -79,7 +79,11 @@ struct DiagnosticBundle: Codable, Sendable {
                 orphanCount: wineProcessCensus.orphanCount,
                 totalLive: wineProcessCensus.totalLive,
                 censusError: wineProcessCensus.censusError.map(DiagnosticRedactor.sanitize),
-                hostProcessProof: DiagnosticRedactor.sanitize(wineProcessCensus.hostProcessProof)
+                hostProcessProof: DiagnosticRedactor.sanitize(wineProcessCensus.hostProcessProof),
+                liveDescendants: wineProcessCensus.liveDescendants,
+                liveOrphans: wineProcessCensus.liveOrphans,
+                exitedCount: wineProcessCensus.exitedCount,
+                pidReuseCount: wineProcessCensus.pidReuseCount
             ),
             wineserver: WineserverDiagnostic(
                 state: DiagnosticRedactor.sanitize(wineserver.state)
@@ -167,6 +171,51 @@ struct WineProcessCensusDiagnostic: Codable, Sendable {
     let totalLive: Int
     let censusError: String?
     let hostProcessProof: String
+    let liveDescendants: Int
+    let liveOrphans: Int
+    let exitedCount: Int
+    let pidReuseCount: Int
+
+    init(
+        hostProcessCount: Int,
+        zombieCount: Int,
+        orphanCount: Int,
+        totalLive: Int,
+        censusError: String?,
+        hostProcessProof: String,
+        liveDescendants: Int = 0,
+        liveOrphans: Int = 0,
+        exitedCount: Int = 0,
+        pidReuseCount: Int = 0
+    ) {
+        self.hostProcessCount = hostProcessCount
+        self.zombieCount = zombieCount
+        self.orphanCount = orphanCount
+        self.totalLive = totalLive
+        self.censusError = censusError
+        self.hostProcessProof = hostProcessProof
+        self.liveDescendants = liveDescendants
+        self.liveOrphans = liveOrphans
+        self.exitedCount = exitedCount
+        self.pidReuseCount = pidReuseCount
+    }
+
+    /// Map a fail-closed census result into the diagnostic shape.
+    /// Proof is derived from the census state — never hardcoded.
+    init(census: ProcessCensusResult) {
+        self.init(
+            hostProcessCount: census.liveDescendants,
+            zombieCount: census.zombieCount,
+            orphanCount: census.liveOrphans,
+            totalLive: census.totalLive,
+            censusError: census.error?.errorDescription,
+            hostProcessProof: census.state == .proven ? "proven" : "notProven",
+            liveDescendants: census.liveDescendants,
+            liveOrphans: census.liveOrphans,
+            exitedCount: census.exitedCount,
+            pidReuseCount: census.pidReuseCount
+        )
+    }
 }
 
 struct WineserverDiagnostic: Codable, Sendable {

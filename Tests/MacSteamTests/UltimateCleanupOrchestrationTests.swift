@@ -51,6 +51,9 @@ final class FakeGameSessionSupervisor: GameSessionSupervising {
             state = .stopped
         }
     }
+
+    var censusResult: ProcessCensusResult = .incomplete(.noLedger)
+    func processCensus() async -> ProcessCensusResult { censusResult }
 }
 
 final class FakeInstallerLifecycleSupervisor: @unchecked Sendable, InstallerLifecycleSupervising {
@@ -113,9 +116,42 @@ struct UltimateCleanupOrchestrationTests {
         )
     }
 
-    // MARK: - Cleanup orchestrator tests
+    // MARK: - Census routing via session supervisor
 
-    @Test("all absent returns clean")
+    @Test("coordinator census routes through the session supervisor and maps proven result")
+    func coordinatorCensusRoutesThroughSupervisor() async {
+        let session = FakeGameSessionSupervisor()
+        session.censusResult = ProcessCensusResult(
+            state: .proven,
+            liveDescendants: 2,
+            liveOrphans: 1,
+            zombieCount: 0,
+            exitedCount: 3,
+            pidReuseCount: 1,
+            totalLive: 3,
+            error: nil
+        )
+        let coordinator = makeCoordinator(session: session)
+        let bundle = await coordinator.generateDiagnosticBundle()
+        #expect(bundle.wineProcessCensus.hostProcessProof == "proven")
+        #expect(bundle.wineProcessCensus.liveDescendants == 2)
+        #expect(bundle.wineProcessCensus.liveOrphans == 1)
+        #expect(bundle.wineProcessCensus.exitedCount == 3)
+        #expect(bundle.wineProcessCensus.pidReuseCount == 1)
+        #expect(bundle.wineProcessCensus.totalLive == 3)
+    }
+
+    @Test("coordinator census fails closed when the supervisor has no ledger")
+    func coordinatorCensusFailClosed() async {
+        let coordinator = makeCoordinator(session: FakeGameSessionSupervisor())
+        let bundle = await coordinator.generateDiagnosticBundle()
+        #expect(bundle.wineProcessCensus.hostProcessProof == "notProven")
+        #expect(bundle.wineProcessCensus.censusError != nil)
+        #expect(bundle.wineProcessCensus.liveDescendants == 0)
+        #expect(bundle.wineProcessCensus.liveOrphans == 0)
+    }
+
+    // MARK: - Cleanup orchestrator tests    @Test("all absent returns clean")
     func allAbsent_returnsClean() async {
         let installer = FakeInstallerLifecycleSupervisor()
         let session = FakeGameSessionSupervisor()

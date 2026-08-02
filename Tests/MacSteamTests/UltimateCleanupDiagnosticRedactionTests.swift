@@ -92,6 +92,9 @@ final class RedactionFakeGameSessionSupervisor: GameSessionSupervising {
         stopCallCount += 1
         if let error = stopError { throw error }
     }
+
+    var censusResult: ProcessCensusResult = .incomplete(.noLedger)
+    func processCensus() async -> ProcessCensusResult { censusResult }
 }
 
 final class RedactionFakeInstallerLifecycleSupervisor: @unchecked Sendable, InstallerLifecycleSupervising {

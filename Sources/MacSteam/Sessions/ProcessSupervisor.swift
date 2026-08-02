@@ -76,6 +76,9 @@ actor ProcessSupervisor {
     private var processes: [UUID: Process] = [:]
     private var handleForPID: [Int32: UUID] = [:]
     private var outputBuffers: [UUID: Data] = [:]
+    /// Root identity captured at launch time (production ownership ledger root).
+    /// Never re-acquired at census time.
+    private var rootIdentityByToken: [UUID: ProcessIdentity] = [:]
 
     // MARK: - Launch
 
@@ -155,6 +158,10 @@ actor ProcessSupervisor {
         processes[token] = process
         handleForPID[pid] = token
 
+        // Capture the launch identity for the ownership ledger. The census must
+        // prove ownership against THIS identity — it is never regenerated later.
+        rootIdentityByToken[token] = HostProcessLineage.snapshot(pid: pid)?.identity
+
         return SupervisedProcessHandle(
             token: token,
             pid: pid,
@@ -179,6 +186,12 @@ actor ProcessSupervisor {
             pid: process.processIdentifier,
             startedAt: Date() // approximate
         )
+    }
+
+    /// The root identity captured when this handle's process was launched.
+    /// This is the authoritative ownership root for the census ledger.
+    func capturedRootIdentity(for handle: SupervisedProcessHandle) -> ProcessIdentity? {
+        rootIdentityByToken[handle.token]
     }
 
     // MARK: - Control
@@ -266,6 +279,7 @@ actor ProcessSupervisor {
         guard let process = processes.removeValue(forKey: handle.token) else { return }
         handleForPID.removeValue(forKey: handle.pid)
         outputBuffers.removeValue(forKey: handle.token)
+        rootIdentityByToken.removeValue(forKey: handle.token)
         // Clear readability handlers to avoid leaks
         if let out = process.standardOutput as? Pipe {
             out.fileHandleForReading.readabilityHandler = nil

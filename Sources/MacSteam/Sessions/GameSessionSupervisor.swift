@@ -20,6 +20,14 @@ protocol GameSessionSupervising: AnyObject {
     ) async throws -> GameSession
 
     func stop() async throws
+
+    /// Produce the process census for the active session.
+    ///
+    /// Ownership is rooted in the launch-captured identity held in the session
+    /// ledger (not regenerated at census time) and only ever admits observed
+    /// descendants. Fails closed: `.incomplete` / `notProven` on any provider
+    /// failure, missing acquisition, root drift, or bound violation.
+    func processCensus() async -> ProcessCensusResult
 }
 
 /// State of a single game session.
@@ -104,6 +112,11 @@ final class GameSessionSupervisor {
     private let receiptStore = SessionReceiptStore()
     private let windowObserver: SessionWindowObserver
 
+    /// Session-scoped ownership ledger, seeded from the ProcessSupervisor-
+    /// captured root identity at launch. Reset on every launch/stop so stale
+    /// observations from a previous session are never reused.
+    private var censusLedger: ProcessCensusLedger?
+
     private var sessionLock: SessionLock?
     private var launchCommitted = false
 
@@ -157,6 +170,7 @@ final class GameSessionSupervisor {
         activeSession = nil
         activeHandle = nil
         activeRuntimeControl = nil
+        censusLedger = nil
 
         // Rollback closure: release lock + reset on failure
         defer {
@@ -167,6 +181,7 @@ final class GameSessionSupervisor {
                 activeSession = nil
                 activeHandle = nil
                 activeRuntimeControl = nil
+                censusLedger = nil
                 state = .idle
             }
         }
@@ -184,6 +199,15 @@ final class GameSessionSupervisor {
         let handle = try await processSupervisor.launch(plan: plan)
         self.activeHandle = handle
         self.activeRuntimeControl = LiveRuntimeControl(control: runtimeControl)
+
+        // Seed the ownership ledger with the launch-captured root identity.
+        // Fail-closed: if no identity could be captured at launch, the census
+        // stays incomplete rather than inventing one at census time.
+        if let rootIdentity = await processSupervisor.capturedRootIdentity(for: handle) {
+            self.censusLedger = ProcessCensusLedger(rootIdentity: rootIdentity)
+        } else {
+            self.censusLedger = nil
+        }
 
         // 3. 5-second liveness check
         let deadline = Date().addingTimeInterval(5)
@@ -301,6 +325,7 @@ final class GameSessionSupervisor {
             activeSession = nil
             activeHandle = nil
             activeRuntimeControl = nil
+            censusLedger = nil
             state = .stopped
         } catch {
             state = .recoveryRequired("Stop failed: \(error.localizedDescription)")
@@ -349,6 +374,7 @@ final class GameSessionSupervisor {
             activeSession = nil
             activeHandle = nil
             activeRuntimeControl = nil
+            censusLedger = nil
             try? receiptStore.remove(prefix: session.prefixRoot)
             state = .stopped
         } catch {
@@ -385,6 +411,7 @@ final class GameSessionSupervisor {
     func recover(prefix: URL, runtimeControl: any WineRuntimeControl) async throws {
         // Check if receipt exists
         guard let receipt = receiptStore.read(prefix: prefix) else {
+            censusLedger = nil
             state = .idle
             return
         }
@@ -413,6 +440,7 @@ final class GameSessionSupervisor {
                     state = .recoveryRequired("A previous Steam setup session is still running.")
                 } else {
                     receiptStore.remove(prefix: prefix)
+                    censusLedger = nil
                     state = .idle
                 }
 
@@ -423,6 +451,10 @@ final class GameSessionSupervisor {
                 self.sessionLock = lock
                 _ = acquired // silence unused-result warning
 
+                // Recovery has no ProcessSupervisor-captured root identity, so
+                // the ownership ledger stays absent: the census is fail-closed
+                // (incomplete / notProven) rather than fabricating one.
+                self.censusLedger = nil
                 self.activeSession = GameSession(
                     sessionID: receipt.sessionID,
                     recipeID: receipt.recipeID,
@@ -439,6 +471,7 @@ final class GameSessionSupervisor {
         } else {
             // Receipt exists but server is stopped → stale receipt
             receiptStore.remove(prefix: prefix)
+            censusLedger = nil
             state = .idle
         }
     }
@@ -470,6 +503,20 @@ final class GameSessionSupervisor {
     }
 
     // MARK: - Query
+
+    /// Produce the process census from the session-scoped ownership ledger.
+    ///
+    /// Fails closed: with no active session ledger (no session, failed launch
+    /// capture, or recovery) the census is `.incomplete` and the diagnostic
+    /// reports `notProven`.
+    func processCensus() async -> ProcessCensusResult {
+        guard var ledger = censusLedger else {
+            return .incomplete(.noLedger)
+        }
+        let result = HostProcessLineage.census(ledger: &ledger)
+        censusLedger = ledger
+        return result
+    }
 
     var isRunning: Bool {
         switch state {

@@ -1652,6 +1652,7 @@ final class UltimateSetupCoordinator {
         let sig = prefixLayout?.signature()
         let evidence = steamInstallEvidence
         let session = activeSession
+        let processCensus = await sessionSupervisor.processCensus()
 
         return DiagnosticBundle(
             schemaVersion: DiagnosticBundle.currentSchemaVersion,
@@ -1713,38 +1714,7 @@ final class UltimateSetupCoordinator {
                 recipeID: session?.recipeID,
                 sessionAgeSeconds: session.map { Date().timeIntervalSince($0.startedAt) }
             ),
-            wineProcessCensus: {
-                if let session = session, session.rootPID > 0 {
-                    do {
-                        let result = try HostProcessLineage.lineage(from: session.rootPID)
-                        return WineProcessCensusDiagnostic(
-                            hostProcessCount: result.descendantCount,
-                            zombieCount: result.zombieCount,
-                            orphanCount: result.orphanCount,
-                            totalLive: result.totalLive,
-                            censusError: nil,
-                            hostProcessProof: "proven"
-                        )
-                    } catch {
-                        return WineProcessCensusDiagnostic(
-                            hostProcessCount: 0,
-                            zombieCount: 0,
-                            orphanCount: 0,
-                            totalLive: 0,
-                            censusError: "censusFailed",
-                            hostProcessProof: "notProven"
-                        )
-                    }
-                }
-                return WineProcessCensusDiagnostic(
-                    hostProcessCount: 0,
-                    zombieCount: 0,
-                    orphanCount: 0,
-                    totalLive: 0,
-                    censusError: nil,
-                    hostProcessProof: "notProven"
-                )
-            }(),
+            wineProcessCensus: WineProcessCensusDiagnostic(census: processCensus),
             wineserver: WineserverDiagnostic(
                 state: "unknown"
             ),

@@ -3,6 +3,10 @@ set -euo pipefail
 
 DIAG_DIR="Sources/MacSteam/Diagnostics"
 COORD="Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift"
+LIN="Sources/MacSteam/Sessions/HostProcessLineage.swift"
+SUP="Sources/MacSteam/Sessions/ProcessSupervisor.swift"
+GSS="Sources/MacSteam/Sessions/GameSessionSupervisor.swift"
+BRINGUP="Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift"
 PASS=0
 FAIL=0
 
@@ -86,6 +90,95 @@ check "No String(describing: Error) in coordinator diagnostics" $?
 # 15. Export authority uses validatedTarget (exact, not renamed)
 grep -qE '\bvalidatedTarget\b' "$COORD"
 check "Export authority uses validatedTarget" $?
+
+echo ""
+echo "=== U1R18 R4-FIX1 Lineage / Census Ownership Audit ==="
+echo ""
+
+# 16. Identity is never PID-only: start seconds, start microseconds, and the
+#     canonical executable identity are all part of ownership.
+grep -qE '\bstartSeconds\b' "$LIN"
+check "Identity includes startSeconds (no PID-only ownership)" $?
+grep -qE '\bstartMicroseconds\b' "$LIN"
+check "Identity includes startMicroseconds (no PID-only ownership)" $?
+grep -qE '\bcanonicalExecutable\b' "$LIN"
+check "Identity includes canonical executable (no PID-only ownership)" $?
+grep -qE '\bfunc matches\b' "$LIN"
+check "Stable-process comparison used for PID-reuse detection" $?
+
+# 17. Root identity is captured at launch, never regenerated at census time.
+grep -qE '\bcapturedRootIdentity\b' "$SUP"
+check "ProcessSupervisor captures the launch root identity" $?
+grep -qE '\brootIdentityByToken\b' "$SUP"
+check "Captured identity is stored per launch token" $?
+grep -q "censusLedger = ProcessCensusLedger" "$GSS"
+check "Session ledger is seeded from the captured identity" $?
+
+# 18. Coordinator never calls the static PID census directly (R6 route is via
+#     sessionSupervisor).
+! grep -q "HostProcessLineage" "$COORD"
+check "Coordinator routes census via sessionSupervisor, not static PID census" $?
+grep -q "func processCensus()" "$GSS"
+check "GameSessionSupervising exposes processCensus()" $?
+
+# 19. No name/executable guessing for orphans: orphans are admitted only from
+#     the observed ledger. (The legitimate `matches()` identity comparison
+#     compares against `other`, never against the root by name.)
+! grep -qE 'executableName[^;]*root' "$LIN"
+check "No name/executable-guessed orphan admission" $?
+grep -qE '\bobserved\b' "$LIN"
+check "Orphans admitted only from observed ledger entries" $?
+
+# 20. Fail-closed census: provider failure never maps to a proven zero.
+grep -qE '\bProcessCensusState\b' "$LIN"
+check "Census carries an explicit proof state" $?
+grep -qE '\bcase incomplete\b' "$LIN"
+check "Fail-closed incomplete state exists" $?
+grep -q "init(census:" "$DIAG_DIR/DiagnosticBundle.swift"
+check "Proof derived from census state, not hardcoded" $?
+! grep -q '"proven"' "$COORD"
+check "Coordinator never hardcodes a proven proof string" $?
+
+# 21. Separated accounting: live descendant / live orphan / zombie / exited /
+#     PID-reuse are distinct counters.
+grep -qE '\bliveDescendants\b' "$LIN"
+check "Separated liveDescendants counter" $?
+grep -qE '\bliveOrphans\b' "$LIN"
+check "Separated liveOrphans counter" $?
+grep -qE '\bzombieCount\b' "$LIN"
+check "Separated zombieCount counter (never merged with orphans)" $?
+grep -qE '\bexitedCount\b' "$LIN"
+check "Separated exitedCount counter" $?
+grep -qE '\bpidReuseCount\b' "$LIN"
+check "Separated pidReuseCount counter" $?
+
+# 22. Census never signals processes (zombies are never killed/terminated).
+! grep -qE '\bkill\(|\.terminate\(|SIGKILL|SIGTERM|requestForceKill|requestTerminate' "$LIN"
+check "Census performs no process signaling" $?
+
+# 23. Census never emits raw PIDs/PPIDs/paths/argv.
+! grep -qE '\bprint\(|NSLog|os_log|Logger\(' "$LIN"
+check "Census emits no raw PID/PPID/path/argv output" $?
+
+# 24. Ledger and enumeration are bounded.
+grep -qE '\bmaxCensusSize\b' "$LIN"
+check "Census enumeration is bounded" $?
+grep -qE '\blimitExceeded\b' "$LIN"
+check "Bound violation fails closed" $?
+
+# 25. Stale session ledger reuse is prevented: the ledger is cleared whenever a
+#     session starts or ends.
+grep -q "censusLedger = nil" "$GSS"
+check "Session ledger cleared on launch/stop (no stale reuse)" $?
+
+# 26. Real-Mac zombie evidence is gated and uses a real C fixture — synthetic
+#     enum-only zombie proof is prohibited.
+grep -q 'MACSTEAM_R1_BRINGUP"]' "$BRINGUP"
+check "Real-Mac census evidence suite is MACSTEAM-gated" $?
+grep -q "clang" "$BRINGUP"
+check "Real-Mac census evidence uses a real C zombie fixture" $?
+grep -q "true_posix_zombie_observed" "$BRINGUP"
+check "Real-Mac census evidence records mandatory zombie flag" $?
 
 echo ""
 echo "=== Summary ==="

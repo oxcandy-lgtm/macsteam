@@ -3,6 +3,10 @@ set -euo pipefail
 
 DIAG_SOURCE="Sources/MacSteam/Diagnostics/DiagnosticBundle.swift"
 COORD_SOURCE="Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift"
+LIN_SOURCE="Sources/MacSteam/Sessions/HostProcessLineage.swift"
+SUP_SOURCE="Sources/MacSteam/Sessions/ProcessSupervisor.swift"
+GSS_SOURCE="Sources/MacSteam/Sessions/GameSessionSupervisor.swift"
+BRINGUP_SOURCE="Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift"
 AUDIT="scripts/diagnostic-security-audit.sh"
 TMPDIR_BASE=$(mktemp -d)
 PASS=0
@@ -18,8 +22,14 @@ run_mutation() {
     local workdir="$TMPDIR_BASE/$label"
     mkdir -p "$workdir/Sources/MacSteam/Diagnostics"
     mkdir -p "$workdir/Sources/MacSteam/Ultimate"
+    mkdir -p "$workdir/Sources/MacSteam/Sessions"
+    mkdir -p "$workdir/Tests/MacSteamTests"
     cp "$DIAG_SOURCE" "$workdir/Sources/MacSteam/Diagnostics/"
     cp "$COORD_SOURCE" "$workdir/Sources/MacSteam/Ultimate/"
+    cp "$LIN_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
+    cp "$SUP_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
+    cp "$GSS_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
+    cp "$BRINGUP_SOURCE" "$workdir/Tests/MacSteamTests/"
 
     (cd "$workdir" && eval "$mutation_cmd")
 
@@ -99,6 +109,70 @@ run_mutation "tmp-cleanup-missing" \
 # 10. Caller-parent containment (no validatedTarget)
 run_mutation "no-validated-target" \
     "sed -i '' 's/validatedTarget/validatedTarget_DISABLED/' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" \
+    "fail"
+
+echo ""
+echo "=== U1R18 R4-FIX1 Mutation Fixtures ==="
+echo ""
+
+# 11. PID-only ownership (identity loses start microseconds)
+run_mutation "pid-only-ownership" \
+    "sed -i '' '/startMicroseconds/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 12. Name-guessed orphan admission reintroduced
+run_mutation "name-only-orphan" \
+    "echo 'let _ = rootSnap.identity.executableName == root.identity.executableName' >> Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 13. Root identity regenerated at census time (no launch capture)
+run_mutation "census-time-root-regeneration" \
+    "sed -i '' '/capturedRootIdentity/d' Sources/MacSteam/Sessions/ProcessSupervisor.swift" \
+    "fail"
+
+# 14. Unobserved orphan admission (ledger observation removed)
+run_mutation "unobserved-orphan" \
+    "sed -i '' 's/observed/observed_DISABLED/g' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 15. Provider failure → zero/proven hardcoded in coordinator
+run_mutation "provider-failure-zero-proven" \
+    "sed -i '' 's/WineProcessCensusDiagnostic(census: processCensus)/WineProcessCensusDiagnostic(hostProcessCount: 0, zombieCount: 0, orphanCount: 0, totalLive: 0, censusError: nil, hostProcessProof: \"proven\")/' Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" \
+    "fail"
+
+# 16. Zombie/orphan accounting merged
+run_mutation "zombie-orphan-merge" \
+    "sed -i '' 's/liveOrphans/liveOrphans_MERGED/g' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 17. Zombie signaling reintroduced into census
+run_mutation "zombie-signal" \
+    "echo 'kill(0, SIGKILL)' >> Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 18. Raw PID output reintroduced into census
+run_mutation "raw-pid-output" \
+    "echo 'print(\"pid\")' >> Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 19. Coordinator calls static PID census directly
+run_mutation "coordinator-static-census" \
+    "echo 'let _ = HostProcessLineage.lineage(from: 0)' >> Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift" \
+    "fail"
+
+# 20. Unbounded enumeration/ledger
+run_mutation "unbounded-ledger" \
+    "sed -i '' 's/maxCensusSize/maxCensusSize_UNBOUNDED/g' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 21. Stale session ledger reuse (ledger never cleared)
+run_mutation "stale-ledger-reuse" \
+    "sed -i '' '/censusLedger = nil/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 22. Synthetic-only zombie proof (real-Mac gate removed)
+run_mutation "synthetic-only-zombie-proof" \
+    "sed -i '' 's/MACSTEAM_R1_BRINGUP/MACSTEAM_R1_BRINGUP_DISABLED/' Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
     "fail"
 
 echo ""
