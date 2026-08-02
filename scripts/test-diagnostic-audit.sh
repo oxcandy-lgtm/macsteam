@@ -362,6 +362,55 @@ run_mutation "real-mac-pre-registered-regression" \
     "fail"
 
 echo ""
+echo "=== U1R18 R4-FIX5 Recovery Authority / Cleanup Transaction Mutation Fixtures ==="
+echo ""
+
+# 69. recoveryRequired can hold a nil authority (capture-before-clear removed)
+run_mutation "recovery-nil-authority" \
+    "sed -i '' '/recoveryCleanup = RecoveryCleanupAuthority/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 70. stop/forceStop no-ops again on a nil activeSession (authority retention on entry removed)
+run_mutation "session-nil-still-noop" \
+    "sed -i '' '/recoveryCleanup = authority/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 71. discard-before-reap reintroduced (confirmed branch removed)
+run_mutation "discard-before-reap" \
+    "sed -i '' '/if confirmed {/,+4d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 72. lock released before cleanup finished (Phase 3 terminus removed)
+run_mutation "lock-released-early" \
+    "sed -i '' '/release the lock LAST/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 73. authority cleared on failed retry (recovery entry into explicit state removed)
+run_mutation "authority-cleared-on-retry" \
+    "sed -i '' '/private func enterRecovery/,/^    }/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 74. wineserver shutdown confirmed step removed (never-claim-success guard)
+run_mutation "wineserver-confirm-removed" \
+    "sed -i '' '/wineserverShutdown = true/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 75. new launch permitted during recovery (launch gate removed)
+run_mutation "launch-during-recovery" \
+    "sed -i '' '/guard state == \.idle \|\| state == \.stopped else/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 76. process discard step no longer recorded (double-discard possible)
+run_mutation "double-discard" \
+    "sed -i '' '/processDiscarded = true/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 77. unregistered-started cleanup transaction object removed (no single forward)
+run_mutation "single-transaction-removed" \
+    "sed -i '' '/func runCleanupTransaction/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"
 if [ "$FAIL" -gt 0 ]; then

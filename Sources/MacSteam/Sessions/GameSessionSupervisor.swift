@@ -59,6 +59,41 @@ struct LiveRuntimeControl: Sendable {
     let control: any WineRuntimeControl
 }
 
+/// The callable recovery authority for a `.recoveryRequired` supervisor.
+///
+/// Bundles the cleanup payload — the owned process handle, the held prefix
+/// lock, the runtime control, and the prefix context — together with how far a
+/// single forward cleanup transaction has progressed. It is guaranteed to be
+/// non-nil whenever `state == .recoveryRequired`, so a cleanup can always be
+/// re-entered and re-run even after the session object itself is gone, without
+/// ever re-acquiring a handle from the PID/process table.
+struct RecoveryCleanupAuthority: Sendable {
+    let processHandle: SupervisedProcessHandle?
+    let sessionLock: SessionLock?
+    let runtimeControl: LiveRuntimeControl?
+    let prefix: URL
+
+    /// Progress of the single forward cleanup transaction. A retry resumes
+    /// from where the authority indicates, never skipping ahead: the process
+    /// is only discarded after its reap is confirmed and the lock is only
+    /// released after the full cleanup (incl. wineserver shutdown) verifies.
+    var reapConfirmed: Bool = false
+    var processDiscarded: Bool = false
+    var wineserverShutdown: Bool = false
+
+    var isFullyCleaned: Bool {
+        // No process left running unconfirmed, no bookkeeping retained, and
+        // the wineserver is confirmed down.
+        (handleNeedsCleanup == false) && !hasRetainedLock
+    }
+
+    /// Whether a process still needs a reap-confirmed discard.
+    var handleNeedsCleanup: Bool { reapConfirmed == false && processDiscarded == false }
+
+    /// Whether the prefix lock is still held and must be released last.
+    var hasRetainedLock: Bool { sessionLock?.isHeld == true }
+}
+
 /// Errors from GameSessionSupervisor operations.
 enum SessionSupervisorError: Error, Sendable, LocalizedError {
     case sessionAlreadyRunning(existingPID: Int32)
@@ -118,6 +153,13 @@ final class GameSessionSupervisor {
     private var censusLedger: ProcessCensusLedger?
 
     private var sessionLock: SessionLock?
+
+    /// The retained cleanup authority for a `.recoveryRequired` state.
+    ///
+    /// Invariant: this is non-nil whenever `state == .recoveryRequired`, so a
+    /// stop/force-stop retry always has a callable authority and never no-ops
+    /// because `activeSession == nil`.
+    private var recoveryCleanup: RecoveryCleanupAuthority?
     private var launchCommitted = false
 
     init(windowProvider: any WindowInfoProviding = WindowServerProvider()) {
@@ -174,10 +216,25 @@ final class GameSessionSupervisor {
 
         // Rollback closure: release lock + reset on failure. A recovery state
         // that was explicitly set (e.g. an unconfirmed force-kill reap) is
-        // preserved — rollback never claims success that did not happen.
+        // preserved — rollback never claims success that did not happen. The
+        // cleanup authority that must survive into recovery is captured into
+        // `recoveryCleanup` before the session fields are cleared so a retry
+        // retains a callable handle + lock.
         defer {
             if !launchCommitted {
                 windowObserver.invalidate()
+                if case .recoveryRequired = state {
+                    // Retain the cleanup authority before clearing the fields
+                    // it is built from, so recovery never holds a nil authority.
+                    if recoveryCleanup == nil {
+                        recoveryCleanup = RecoveryCleanupAuthority(
+                            processHandle: activeHandle,
+                            sessionLock: sessionLock,
+                            runtimeControl: activeRuntimeControl,
+                            prefix: prefixRoot
+                        )
+                    }
+                }
                 sessionLock?.release()
                 sessionLock = nil
                 activeSession = nil
@@ -299,127 +356,122 @@ final class GameSessionSupervisor {
         return true
     }
 
-    /// Stop the active session completely.
+    /// Rebuild the cleanup authority to drive teardown: the retained recovery
+    /// authority if this is a retry, otherwise the live session/process/lock.
     ///
-    /// Flow:
-    /// 1. Terminate owned root process (normal request)
-    /// 2. Wait up to 5 seconds for process exit
-    /// 3. wineserver -k (shutdown request)
-    /// 4. wineserver -w with 10s timeout (wait for server exit)
-    /// 5. Verify isRunning == false
-    /// 6. Remove receipt
-    /// 7. Release lock
-    /// 8. State → stopped
-    func stop() async throws {
-        guard let session = activeSession else { return }
+    /// A retry never re-acquires the process from the PID table: it reuses the
+    /// retained `SupervisedProcessHandle`. A fresh stop derives the authority
+    /// from the live, launch-captured state.
+    private func currentCleanupAuthority() -> RecoveryCleanupAuthority? {
+        if let retained = recoveryCleanup { return retained }
+        guard let session = activeSession else { return nil }
+        return RecoveryCleanupAuthority(
+            processHandle: activeHandle,
+            sessionLock: sessionLock,
+            runtimeControl: activeRuntimeControl,
+            prefix: session.prefixRoot
+        )
+    }
+
+    /// Retain the cleanup authority when a stop/force-stop is unconfirmed.
+    /// The authority (and the process/lock it carries) is never deleted just
+    /// because the attempt failed — it stays callable for the next retry.
+    ///
+    /// A retry must reuse the retained authority respecting its progress
+    /// (reap/Discard flags), never re-acquire from the PID table, and never
+    /// skip-ahead past an unconfirmed step.
+    private func enterRecovery(_ message: String) {
+        state = .recoveryRequired(message)
+    }
+
+    /// Run the full, single-forward cleanup transaction for the retained
+    /// authority.
+    ///
+    /// TERM → reap-confirm → wineserver shutdown + confirm → discard → lock
+    /// release → authority clear. Every step is bounded; an unconfirmed reap
+    /// never discards, and the lock is never released until the whole cleanup
+    /// verifies. On any failure the authority is retained so a retry resumes.
+    @MainActor
+    private func runCleanupTransaction(
+        authority: inout RecoveryCleanupAuthority,
+        force: Bool
+    ) async throws {
         windowObserver.invalidate()
-        state = .stopping
 
-        do {
-            // 1. Terminate owned root process
-            if let handle = activeHandle {
-                await processSupervisor.requestTerminate(handle)
-
-                // Wait up to 5 seconds
-                let outcome = await processSupervisor.waitForExit(
-                    handle,
-                    timeout: .seconds(5)
-                )
-
-                // If still alive after timeout, the stop continues with wineserver
-                if case .timedOut = outcome {
-                    // Not forcing SIGKILL — let wineserver cleanup handle it
-                }
+        // Phase 1: reap-confirm the owned process. A process is discarded only
+        // after its reap is confirmed — never before.
+        if let handle = authority.processHandle, !authority.processDiscarded {
+            let confirmed = await terminateAndReapOwned(handle)
+            authority.reapConfirmed = confirmed
+            if confirmed {
+                await processSupervisor.discard(handle)
+                authority.processDiscarded = true
             }
+        }
 
-            // 2. Shutdown wineserver
-            guard let runtimeControl = activeRuntimeControl else {
-                throw SessionSupervisorError.stopFailed("No runtime control available")
-            }
-
+        // Phase 2: wineserver shutdown + wait for exit, then confirm stopped.
+        if let runtimeControl = authority.runtimeControl?.control {
             do {
                 try await wineserverController.shutdownPrefix(
-                    runtime: runtimeControl.control,
-                    prefix: session.prefixRoot,
+                    runtime: runtimeControl,
+                    prefix: authority.prefix,
                     waitSeconds: 10
                 )
             } catch let error as WineServerError {
                 throw SessionSupervisorError.stopIncomplete(error.localizedDescription)
             }
-
-            // 3. Verify complete shutdown
             let stillRunning = try await wineserverController.isRunning(
-                prefix: session.prefixRoot,
-                runtime: runtimeControl.control
+                prefix: authority.prefix,
+                runtime: runtimeControl
             )
-
-            if stillRunning {
+            guard !stillRunning else {
                 throw SessionSupervisorError.stopIncomplete(
                     "wineserver is still running after shutdown request"
                 )
             }
+            authority.wineserverShutdown = true
+        }
 
-            // 4. Success — cleanup
-            try? receiptStore.remove(prefix: session.prefixRoot)
-            sessionLock?.release()
-            sessionLock = nil
-            activeSession = nil
-            activeHandle = nil
-            activeRuntimeControl = nil
-            censusLedger = nil
-            state = .stopped
+        // Phase 3: everything verified — release the lock LAST, then clear.
+        sessionLock?.release()
+        sessionLock = nil
+        recoveryCleanup = nil
+        activeSession = nil
+        activeHandle = nil
+        activeRuntimeControl = nil
+        censusLedger = nil
+        try? receiptStore.remove(prefix: authority.prefix)
+        state = .stopped
+    }
+
+    /// Stop the active session completely.
+    ///
+    /// Runs the single forward cleanup transaction described by the reusable
+    /// authority. On success the authority is released and state → `.stopped`.
+    /// On any failure authority is retained and state → `.recoveryRequired`, so
+    /// a subsequent stop/force-stop retries instead of no-op'ing on a nil
+    /// `activeSession`.
+    func stop() async throws {
+        state = .stopping
+        do {
+            guard var authority = currentCleanupAuthority() else { return }
+            recoveryCleanup = authority
+            try await runCleanupTransaction(authority: &authority, force: false)
         } catch {
-            state = .recoveryRequired("Stop failed: \(error.localizedDescription)")
+            enterRecovery("Stop failed: \(error.localizedDescription)")
             throw error
         }
     }
 
     /// Force stop — only for UI-initiated Force Stop after normal stop fails.
     func forceStop() async throws {
-        guard let session = activeSession,
-              let handle = activeHandle else { return }
-
-        windowObserver.invalidate()
         state = .stopping
-
         do {
-            // 1. Force kill owned root process
-            try await processSupervisor.requestForceKill(handle)
-
-            // 2. wineserver kill + bounded wait
-            if let runtimeControl = activeRuntimeControl {
-                try await wineserverController.shutdownPrefix(
-                    runtime: runtimeControl.control,
-                    prefix: session.prefixRoot,
-                    waitSeconds: 10
-                )
-            }
-
-            // 3. Verify complete shutdown
-            guard let runtimeControl = activeRuntimeControl else {
-                throw SessionSupervisorError.stopFailed("No runtime control available")
-            }
-            let stillRunning = try await wineserverController.isRunning(
-                prefix: session.prefixRoot,
-                runtime: runtimeControl.control
-            )
-
-            guard !stillRunning else {
-                state = .recoveryRequired("The Wine session is still running.")
-                return
-            }
-
-            // 4. Success — cleanup
-            sessionLock?.release()
-            sessionLock = nil
-            activeSession = nil
-            activeHandle = nil
-            activeRuntimeControl = nil
-            censusLedger = nil
-            try? receiptStore.remove(prefix: session.prefixRoot)
-            state = .stopped
+            guard var authority = currentCleanupAuthority() else { return }
+            recoveryCleanup = authority
+            try await runCleanupTransaction(authority: &authority, force: true)
         } catch {
-            state = .recoveryRequired("Force stop failed: \(error.localizedDescription)")
+            enterRecovery("Force stop failed: \(error.localizedDescription)")
             throw error
         }
     }

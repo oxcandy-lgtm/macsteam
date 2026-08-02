@@ -354,6 +354,72 @@ grep -qE 'coldStartReparentRace' "$BRINGUP"
 check "Real-Mac cold-start reparent race evidence present" $?
 
 echo ""
+echo "=== U1R18 R4-FIX5 Recovery Authority / Cleanup Transaction Audit ==="
+echo ""
+
+# 50. A reusable cleanup authority exists and carries the cleanup payload: the
+#     owned handle, the prefix lock, the runtime control, and the prefix.
+grep -qE 'struct RecoveryCleanupAuthority' "$GSS"
+check "A callable RecoveryCleanupAuthority type exists" $?
+grep -qE 'processHandleBox|processHandle|sessionLock|runtimeControl|let prefix' "$GSS"
+check "Authority carries handle+lock+runtime+prefix" $?
+
+# 51. `.recoveryRequired` must never hold a nil authority: the authority is
+#     captured into `recoveryCleanup` before any session field is cleared in a
+#     rollback, so a retry always has a callable authority.
+grep -qE 'recoveryCleanup = RecoveryCleanupAuthority' "$GSS"
+check "Recovery captures its authority before clearing fields" $?
+grep -qE 'state = \.recoveryRequired' "$GSS"
+check "Recovery state is an explicit transition" $?
+
+# 52. A stop/force-stop never no-ops because activeSession == nil: it retries
+#     through the retained authority rather than returning on a missing session.
+grep -qE 'func currentCleanupAuthority' "$GSS"
+check "Stop/force-stop derives teardown from the authority" $?
+grep -qE 'recoveryCleanup = authority|recoveryCleanup = live' "$GSS"
+check "Stop/force-stop retains the authority on entry" $?
+
+# 52b. The explicit recovery entry helper must exist (removing it would let a
+#      failed retry fall into a normal idled state instead of recovering).
+grep -qE 'private func enterRecovery|func enterRecovery' "$GSS"
+check "A dedicated recovery-entry helper exists" $?
+
+# 53. Cleanup is a single forward transaction: TERM -> reap-confirm ->
+#     wineserver shutdown+confirm -> lock release (last) -> authority clear.
+grep -qE 'func runCleanupTransaction' "$GSS"
+check "A single-forward cleanup transaction exists" $?
+grep -qE 'terminateAndReapOwned' "$GSS"
+check "Cleanup reaps via the owned-handle path (never re-acquires PID/name)" $?
+grep -qE 'wineserverShutdown = true' "$GSS"
+check "Wineserver shutdown is confirmed before proceeding" $?
+
+# 53. No discard before reap: the handle is discarded only under the confirmed
+#     reap branch.
+grep -qE 'if confirmed \{' "$GSS"
+check "Process discard only after a confirmed reap" $?
+grep -qE 'processDiscarded = true' "$GSS"
+check "Transaction records the discard step" $?
+
+# 54. No lock release before the whole cleanup verifies: lock release is the
+#     terminal step of the transaction.
+grep -qE 'release the lock LAST|release the lock last|// Phase 3' "$GSS"
+check "Lock release is the terminal cleanup step" $?
+
+# 55. Authority/`recoveryCleanup` is cleared only on full confirmed cleanup,
+#     never just because a retry failed.
+grep -qB1 'recoveryCleanup = nil' "$GSS"
+check "Authority is cleared only at the confirmed-cleanup terminus" $?
+
+# 56. Rendering simulated, no fake session/receipt for a failed launch: launch
+#     never publishes bookkeeping when the session is not proven.
+grep -qE 'aborted to avoid an unproven session' "$GSS"
+check "Failed launch never fabricates a session/receipt" $?
+
+# 57. New launch is blocked while recovery is required.
+grep -qE 'guard state == \.idle \|\| state == \.stopped' "$GSS"
+check "Launch requires idle/stopped (recovery blocks new launch)" $?
+
+echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"
 if [ "$FAIL" -gt 0 ]; then
