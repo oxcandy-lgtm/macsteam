@@ -8,6 +8,8 @@ SUP_SOURCE="Sources/MacSteam/Sessions/ProcessSupervisor.swift"
 GSS_SOURCE="Sources/MacSteam/Sessions/GameSessionSupervisor.swift"
 BRINGUP_SOURCE="Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift"
 LINETESTS_SOURCE="Tests/MacSteamTests/HostProcessLineageTests.swift"
+FIX6_CLEANUP_TESTS="Tests/MacSteamTests/GameSessionSupervisorCleanupTests.swift"
+FIX6_MAC_TESTS="Tests/MacSteamTests/U1R18R4FIX6RealMacCleanupTests.swift"
 AUDIT="scripts/diagnostic-security-audit.sh"
 TMPDIR_BASE=$(mktemp -d)
 PASS=0
@@ -32,6 +34,8 @@ run_mutation() {
     cp "$GSS_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
     cp "$BRINGUP_SOURCE" "$workdir/Tests/MacSteamTests/"
     cp "$LINETESTS_SOURCE" "$workdir/Tests/MacSteamTests/"
+    cp "$FIX6_CLEANUP_TESTS" "$workdir/Tests/MacSteamTests/"
+    cp "$FIX6_MAC_TESTS" "$workdir/Tests/MacSteamTests/"
 
     (cd "$workdir" && eval "$mutation_cmd")
 
@@ -362,52 +366,82 @@ run_mutation "real-mac-pre-registered-regression" \
     "fail"
 
 echo ""
-echo "=== U1R18 R4-FIX5 Recovery Authority / Cleanup Transaction Mutation Fixtures ==="
+echo "=== U1R18 R4-FIX6 Stored Recovery Cleanup Transaction Mutation Fixtures (semantic) ==="
 echo ""
+# Each mutation breaks a REAL control-flow statement; the paired semantic audit
+# guard (S1..S14) rejects it. No mutation targets a comment or a bare identifier.
 
-# 69. recoveryRequired can hold a nil authority (capture-before-clear removed)
-run_mutation "recovery-nil-authority" \
-    "sed -i '' '/recoveryCleanup = RecoveryCleanupAuthority/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+# M1 (S1): reap-unconfirmed halt removed — the guard-else throw is gone, so an
+#     unconfirmed reap would fall through to discard/wineserver/lock-release.
+run_mutation "fix6-unconfirmed-halt-removed" \
+    "sed -i '' '/guard confirmed else {/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
-# 70. stop/forceStop no-ops again on a nil activeSession (authority retention on entry removed)
-run_mutation "session-nil-still-noop" \
+# M2 (S2): immediate persistence removed — completed progress is never written
+#     back to the stored authority.
+run_mutation "fix6-immediate-persistence-removed" \
     "sed -i '' '/recoveryCleanup = authority/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
-# 71. discard-before-reap reintroduced (confirmed branch removed)
-run_mutation "discard-before-reap" \
-    "sed -i '' '/if confirmed {/,+4d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+# M3 (S3): authority-owned lock release regressed to the bare field release.
+run_mutation "fix6-field-lock-release" \
+    "sed -i '' 's/authority.sessionLock?.release()/sessionLock?.release()/' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
-# 72. lock released before cleanup finished (Phase 3 terminus removed)
-run_mutation "lock-released-early" \
-    "sed -i '' '/release the lock LAST/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+# M4 (S4): retry re-runs a confirmed discard (progress condition removed).
+run_mutation "fix6-retry-reruns-discard" \
+    "sed -i '' 's/!authority.processDiscarded/true/' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
-# 73. authority cleared on failed retry (recovery entry into explicit state removed)
-run_mutation "authority-cleared-on-retry" \
-    "sed -i '' '/private func enterRecovery/,/^    }/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+# M5 (S5): discard step removed from the seam.
+run_mutation "fix6-discard-removed" \
+    "sed -i '' '/cleanupProcesses.discard(handle)/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
-# 74. wineserver shutdown confirmed step removed (never-claim-success guard)
-run_mutation "wineserver-confirm-removed" \
-    "sed -i '' '/wineserverShutdown = true/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+# M6 (S6): wineserver shutdown removed.
+run_mutation "fix6-wineserver-shutdown-removed" \
+    "sed -i '' '/cleanupWineserver.shutdownPrefix/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
-# 75. new launch permitted during recovery (launch gate removed)
-run_mutation "launch-during-recovery" \
-    "sed -i '' '/guard state == \.idle \|\| state == \.stopped else/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+# M7 (S7): wineserver stopped-confirmation removed.
+run_mutation "fix6-wineserver-confirm-removed" \
+    "sed -i '' '/cleanupWineserver.isRunning/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
-# 76. process discard step no longer recorded (double-discard possible)
-run_mutation "double-discard" \
-    "sed -i '' '/processDiscarded = true/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+# M8 (S8): authority never cleared at the terminal (terminal clear removed).
+run_mutation "fix6-terminal-clear-removed" \
+    "sed -i '' '/recoveryCleanup = nil/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
-# 77. unregistered-started cleanup transaction object removed (no single forward)
-run_mutation "single-transaction-removed" \
-    "sed -i '' '/func runCleanupTransaction/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+# M9 (S9): unconfirmed-reap halt becomes a silent path (explicit throw removed).
+run_mutation "fix6-silent-unconfirmed-path" \
+    "sed -i '' '/cleanup halted before discard/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# M10 (S10): stop/force-stop no-op on nil activeSession again (authority seeding
+#      removed).
+run_mutation "fix6-nil-session-noop" \
+    "sed -i '' '/recoveryCleanup = currentCleanupAuthority()/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# M11 (S11): recovery rollback no longer captures the retained authority.
+run_mutation "fix6-rollback-no-authority" \
+    "sed -i '' '/recoveryCleanup = RecoveryCleanupAuthority(/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# M12 (S12): wineserver-shutdown progress no longer recorded on the authority.
+run_mutation "fix6-wineserver-progress-unrecorded" \
+    "sed -i '' '/authority.wineserverShutdown = true/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# M13 (S13): SIGKILL escalation removed from the reap path.
+run_mutation "fix6-sigkill-escalation-removed" \
+    "sed -i '' '/cleanupProcesses.requestForceKill/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# M14 (S14): terminal .stopped transition removed.
+run_mutation "fix6-terminal-state-removed" \
+    "sed -i '' '/state = .stopped/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
     "fail"
 
 echo ""

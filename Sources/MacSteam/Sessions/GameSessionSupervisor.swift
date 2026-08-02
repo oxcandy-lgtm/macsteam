@@ -59,6 +59,31 @@ struct LiveRuntimeControl: Sendable {
     let control: any WineRuntimeControl
 }
 
+/// Process-control surface the cleanup transaction drives.
+///
+/// Conformed to by the production `ProcessSupervisor` actor and by test fakes
+/// that count calls and script reap outcomes, so the cleanup invariants
+/// (reap-before-discard, halt-on-unconfirmed, no re-run on retry) are provable
+/// behaviorally — not by inspecting comments or identifiers.
+protocol CleanupProcessControlling: Sendable {
+    func requestTerminate(_ handle: SupervisedProcessHandle) async
+    func requestForceKill(_ handle: SupervisedProcessHandle) async throws
+    func waitForExit(_ handle: SupervisedProcessHandle, timeout: Duration) async -> ProcessWaitOutcome
+    func discard(_ handle: SupervisedProcessHandle) async
+}
+
+/// Wineserver-control surface the cleanup transaction drives.
+///
+/// Conformed to by the production `WineServerController` actor and by test
+/// fakes that script shutdown failure / still-running outcomes.
+protocol CleanupWineServerControlling: Sendable {
+    func shutdownPrefix(runtime: any WineRuntimeControl, prefix: URL, waitSeconds: Int) async throws -> Bool
+    func isRunning(prefix: URL, runtime: any WineRuntimeControl) async throws -> Bool
+}
+
+extension ProcessSupervisor: CleanupProcessControlling {}
+extension WineServerController: CleanupWineServerControlling {}
+
 /// The callable recovery authority for a `.recoveryRequired` supervisor.
 ///
 /// Bundles the cleanup payload — the owned process handle, the held prefix
@@ -147,6 +172,13 @@ final class GameSessionSupervisor {
     private let receiptStore = SessionReceiptStore()
     private let windowObserver: SessionWindowObserver
 
+    /// Cleanup-transaction control surface. Defaults to the production actors;
+    /// injectable so the cleanup invariants are provable with counting fakes.
+    /// Launch/census keep using the concrete actors above; only the forward
+    /// cleanup transaction routes through these seams.
+    private let cleanupProcesses: any CleanupProcessControlling
+    private let cleanupWineserver: any CleanupWineServerControlling
+
     /// Session-scoped ownership ledger, seeded from the ProcessSupervisor-
     /// captured root identity at launch. Reset on every launch/stop so stale
     /// observations from a previous session are never reused.
@@ -162,8 +194,14 @@ final class GameSessionSupervisor {
     private var recoveryCleanup: RecoveryCleanupAuthority?
     private var launchCommitted = false
 
-    init(windowProvider: any WindowInfoProviding = WindowServerProvider()) {
+    init(
+        windowProvider: any WindowInfoProviding = WindowServerProvider(),
+        cleanupProcesses: (any CleanupProcessControlling)? = nil,
+        cleanupWineserver: (any CleanupWineServerControlling)? = nil
+    ) {
         self.windowObserver = SessionWindowObserver(provider: windowProvider)
+        self.cleanupProcesses = cleanupProcesses ?? processSupervisor
+        self.cleanupWineserver = cleanupWineserver ?? wineserverController
     }
 
     // MARK: - Validation
@@ -214,18 +252,18 @@ final class GameSessionSupervisor {
         activeRuntimeControl = nil
         censusLedger = nil
 
-        // Rollback closure: release lock + reset on failure. A recovery state
-        // that was explicitly set (e.g. an unconfirmed force-kill reap) is
-        // preserved — rollback never claims success that did not happen. The
-        // cleanup authority that must survive into recovery is captured into
-        // `recoveryCleanup` before the session fields are cleared so a retry
-        // retains a callable handle + lock.
+        // Rollback closure: reset on failure. A recovery state that was explicitly
+        // set (e.g. an unconfirmed force-kill reap) is preserved — rollback never
+        // claims success that did not happen. In recovery the cleanup authority
+        // is captured (before the session fields are cleared) and OWNS the held
+        // lock, so the lock is NOT released here — it is released only at the
+        // cleanup transaction's terminal step.
         defer {
             if !launchCommitted {
                 windowObserver.invalidate()
                 if case .recoveryRequired = state {
-                    // Retain the cleanup authority before clearing the fields
-                    // it is built from, so recovery never holds a nil authority.
+                    // Recovery: retain a callable authority and keep the lock it
+                    // owns. Never release the lock on the recovery rollback.
                     if recoveryCleanup == nil {
                         recoveryCleanup = RecoveryCleanupAuthority(
                             processHandle: activeHandle,
@@ -234,16 +272,18 @@ final class GameSessionSupervisor {
                             prefix: prefixRoot
                         )
                     }
-                }
-                sessionLock?.release()
-                sessionLock = nil
-                activeSession = nil
-                activeHandle = nil
-                activeRuntimeControl = nil
-                censusLedger = nil
-                if case .recoveryRequired = state {
-                    // Retain cleanup authority / recovery state.
+                    activeSession = nil
+                    activeHandle = nil
+                    activeRuntimeControl = nil
+                    censusLedger = nil
+                    // sessionLock intentionally retained: owned by the authority.
                 } else {
+                    sessionLock?.release()
+                    sessionLock = nil
+                    activeSession = nil
+                    activeHandle = nil
+                    activeRuntimeControl = nil
+                    censusLedger = nil
                     state = .idle
                 }
             }
@@ -344,12 +384,12 @@ final class GameSessionSupervisor {
     /// complete rollback and must retain cleanup authority for recovery.
     @MainActor
     private func terminateAndReapOwned(_ handle: SupervisedProcessHandle) async -> Bool {
-        await processSupervisor.requestTerminate(handle)
-        if case .timedOut = await processSupervisor.waitForExit(handle, timeout: .seconds(2)) {
-            try? await processSupervisor.requestForceKill(handle)
+        await cleanupProcesses.requestTerminate(handle)
+        if case .timedOut = await cleanupProcesses.waitForExit(handle, timeout: .seconds(2)) {
+            try? await cleanupProcesses.requestForceKill(handle)
             // SIGKILL must itself be contended by a second bounded reap-wait —
             // a silent force-kill that never reaps is not a confirmed cleanup.
-            if case .timedOut = await processSupervisor.waitForExit(handle, timeout: .seconds(2)) {
+            if case .timedOut = await cleanupProcesses.waitForExit(handle, timeout: .seconds(2)) {
                 return false
             }
         }
@@ -384,79 +424,111 @@ final class GameSessionSupervisor {
         state = .recoveryRequired(message)
     }
 
-    /// Run the full, single-forward cleanup transaction for the retained
-    /// authority.
-    ///
-    /// TERM → reap-confirm → wineserver shutdown + confirm → discard → lock
-    /// release → authority clear. Every step is bounded; an unconfirmed reap
-    /// never discards, and the lock is never released until the whole cleanup
-    /// verifies. On any failure the authority is retained so a retry resumes.
-    @MainActor
-    private func runCleanupTransaction(
-        authority: inout RecoveryCleanupAuthority,
-        force: Bool
-    ) async throws {
-        windowObserver.invalidate()
+    /// Test seam: install a recovery authority directly so the cleanup
+    /// invariants can be exercised behaviorally (with counting fakes) without a
+    /// live launch. Internal only — not part of the public supervising API.
+    func installRecoveryAuthorityForTesting(_ authority: RecoveryCleanupAuthority) {
+        self.recoveryCleanup = authority
+        self.state = .recoveryRequired("test-installed recovery authority")
+    }
 
-        // Phase 1: reap-confirm the owned process. A process is discarded only
-        // after its reap is confirmed — never before.
+    /// Test seam: read the stored cleanup authority so persistence/retention
+    /// invariants can be asserted. Internal only.
+    var recoveryCleanupForTesting: RecoveryCleanupAuthority? { recoveryCleanup }
+
+    /// Run the full, single-forward cleanup transaction.
+    ///
+    /// The authoritative record is the STORED `recoveryCleanup` itself — never a
+    /// detached local copy. Each completed step is persisted to it immediately,
+    /// so a retry resumes exactly where the last attempt stopped and never
+    /// re-runs a confirmed step.
+    ///
+    /// Order: TERM → bounded wait → SIGKILL (if needed) → second reap-confirm
+    /// wait → discard (only once confirmed) → wineserver shutdown + stopped
+    /// confirm → release the authority-owned lock (last, once) → delete
+    /// receipt/bookkeeping → clear the authority → `.stopped`.
+    ///
+    /// If the reap is unconfirmed, the transaction HALTS: discard, wineserver,
+    /// lock release, and authority clear all execute zero times, and the
+    /// authority is retained for a later retry.
+    @MainActor
+    private func runCleanupTransaction(force: Bool) async throws {
+        windowObserver.invalidate()
+        guard var authority = recoveryCleanup else { return }
+
+        // Phase 1 — reap-confirm the owned process. Persist the outcome at
+        // once. On an unconfirmed reap, stop the whole transaction here.
         if let handle = authority.processHandle, !authority.processDiscarded {
             let confirmed = await terminateAndReapOwned(handle)
             authority.reapConfirmed = confirmed
-            if confirmed {
-                await processSupervisor.discard(handle)
-                authority.processDiscarded = true
+            recoveryCleanup = authority                       // persist immediately
+            guard confirmed else {
+                // Reap unconfirmed: no discard / wineserver / lock-release /
+                // authority-clear may run. The retained authority is the only
+                // cleanup record; a retry re-contends the reap.
+                throw SessionSupervisorError.stopIncomplete(
+                    "process reap unconfirmed; cleanup halted before discard/wineserver/lock-release"
+                )
             }
+            await cleanupProcesses.discard(handle)
+            authority.processDiscarded = true
+            recoveryCleanup = authority                       // persist immediately
         }
 
-        // Phase 2: wineserver shutdown + wait for exit, then confirm stopped.
-        if let runtimeControl = authority.runtimeControl?.control {
+        // Phase 2 — wineserver shutdown + stopped confirmation. A failure here
+        // retains the already-persisted reap/discard progress for the retry.
+        if let runtime = authority.runtimeControl?.control, !authority.wineserverShutdown {
             do {
-                try await wineserverController.shutdownPrefix(
-                    runtime: runtimeControl,
+                _ = try await cleanupWineserver.shutdownPrefix(
+                    runtime: runtime,
                     prefix: authority.prefix,
                     waitSeconds: 10
                 )
             } catch let error as WineServerError {
+                recoveryCleanup = authority                   // keep reap/discard progress
                 throw SessionSupervisorError.stopIncomplete(error.localizedDescription)
             }
-            let stillRunning = try await wineserverController.isRunning(
+            let stillRunning = try await cleanupWineserver.isRunning(
                 prefix: authority.prefix,
-                runtime: runtimeControl
+                runtime: runtime
             )
             guard !stillRunning else {
+                recoveryCleanup = authority                   // keep reap/discard progress
                 throw SessionSupervisorError.stopIncomplete(
                     "wineserver is still running after shutdown request"
                 )
             }
             authority.wineserverShutdown = true
+            recoveryCleanup = authority                       // persist immediately
         }
 
-        // Phase 3: everything verified — release the lock LAST, then clear.
-        sessionLock?.release()
-        sessionLock = nil
+        // Phase 3 — terminal. Release ONLY the authority-owned lock, exactly
+        // once; then delete receipt/bookkeeping; then clear the authority.
+        authority.sessionLock?.release()
+        try? receiptStore.remove(prefix: authority.prefix)
         recoveryCleanup = nil
+        sessionLock = nil
         activeSession = nil
         activeHandle = nil
         activeRuntimeControl = nil
         censusLedger = nil
-        try? receiptStore.remove(prefix: authority.prefix)
         state = .stopped
     }
 
     /// Stop the active session completely.
     ///
-    /// Runs the single forward cleanup transaction described by the reusable
-    /// authority. On success the authority is released and state → `.stopped`.
-    /// On any failure authority is retained and state → `.recoveryRequired`, so
-    /// a subsequent stop/force-stop retries instead of no-op'ing on a nil
-    /// `activeSession`.
+    /// Drives the single forward cleanup transaction from the stored authority.
+    /// On success the authority is cleared and state → `.stopped`. On any
+    /// failure the authority (with its persisted progress) is retained and
+    /// state → `.recoveryRequired`, so a subsequent stop/force-stop resumes
+    /// instead of no-op'ing on a nil `activeSession`.
     func stop() async throws {
         state = .stopping
+        if recoveryCleanup == nil {
+            recoveryCleanup = currentCleanupAuthority()
+        }
         do {
-            guard var authority = currentCleanupAuthority() else { return }
-            recoveryCleanup = authority
-            try await runCleanupTransaction(authority: &authority, force: false)
+            try await runCleanupTransaction(force: false)
         } catch {
             enterRecovery("Stop failed: \(error.localizedDescription)")
             throw error
@@ -466,10 +538,11 @@ final class GameSessionSupervisor {
     /// Force stop — only for UI-initiated Force Stop after normal stop fails.
     func forceStop() async throws {
         state = .stopping
+        if recoveryCleanup == nil {
+            recoveryCleanup = currentCleanupAuthority()
+        }
         do {
-            guard var authority = currentCleanupAuthority() else { return }
-            recoveryCleanup = authority
-            try await runCleanupTransaction(authority: &authority, force: true)
+            try await runCleanupTransaction(force: true)
         } catch {
             enterRecovery("Force stop failed: \(error.localizedDescription)")
             throw error

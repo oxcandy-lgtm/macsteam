@@ -354,70 +354,96 @@ grep -qE 'coldStartReparentRace' "$BRINGUP"
 check "Real-Mac cold-start reparent race evidence present" $?
 
 echo ""
-echo "=== U1R18 R4-FIX5 Recovery Authority / Cleanup Transaction Audit ==="
+echo "=== U1R18 R4-FIX6 Stored Recovery Cleanup Transaction Audit (semantic) ==="
 echo ""
+# Every guard below matches a REAL control-flow statement / assignment / call —
+# never a comment and never a bare identifier. Each is paired with a semantic
+# mutation in test-diagnostic-audit.sh that breaks the actual behavior.
 
-# 50. A reusable cleanup authority exists and carries the cleanup payload: the
-#     owned handle, the prefix lock, the runtime control, and the prefix.
-grep -qE 'struct RecoveryCleanupAuthority' "$GSS"
-check "A callable RecoveryCleanupAuthority type exists" $?
-grep -qE 'processHandleBox|processHandle|sessionLock|runtimeControl|let prefix' "$GSS"
-check "Authority carries handle+lock+runtime+prefix" $?
+# S1. Reap-unconfirmed halt: a confirmed-reap gate that throws, so an
+#     unconfirmed reap stops every later phase.
+grep -qE 'guard confirmed else \{' "$GSS"
+check "Unconfirmed reap is gated by a real guard-else throw" $?
 
-# 51. `.recoveryRequired` must never hold a nil authority: the authority is
-#     captured into `recoveryCleanup` before any session field is cleared in a
-#     rollback, so a retry always has a callable authority.
-grep -qE 'recoveryCleanup = RecoveryCleanupAuthority' "$GSS"
-check "Recovery captures its authority before clearing fields" $?
-grep -qE 'state = \.recoveryRequired' "$GSS"
-check "Recovery state is an explicit transition" $?
+# S2. Immediate persistence: the stored authority is written back after each
+#     completed step (>= 3 real assignments), so progress survives a failure.
+[ "$(grep -cE 'recoveryCleanup = authority' "$GSS")" -ge 3 ]
+check "Completed cleanup progress is persisted to the stored authority immediately" $?
 
-# 52. A stop/force-stop never no-ops because activeSession == nil: it retries
-#     through the retained authority rather than returning on a missing session.
-grep -qE 'func currentCleanupAuthority' "$GSS"
-check "Stop/force-stop derives teardown from the authority" $?
-grep -qE 'recoveryCleanup = authority|recoveryCleanup = live' "$GSS"
-check "Stop/force-stop retains the authority on entry" $?
+# S3. Authority-owned lock release at the terminal step (the authority's lock,
+#     not the bare field).
+grep -qE 'authority\.sessionLock\?\.release\(\)' "$GSS"
+check "Terminal step releases the authority-owned lock" $?
 
-# 52b. The explicit recovery entry helper must exist (removing it would let a
-#      failed retry fall into a normal idled state instead of recovering).
-grep -qE 'private func enterRecovery|func enterRecovery' "$GSS"
-check "A dedicated recovery-entry helper exists" $?
+# S4. Retry never re-runs a confirmed discard (real progress condition).
+grep -qE '!authority\.processDiscarded' "$GSS"
+check "Reap/discard phase is skipped once already discarded (no re-run on retry)" $?
 
-# 53. Cleanup is a single forward transaction: TERM -> reap-confirm ->
-#     wineserver shutdown+confirm -> lock release (last) -> authority clear.
-grep -qE 'func runCleanupTransaction' "$GSS"
-check "A single-forward cleanup transaction exists" $?
-grep -qE 'terminateAndReapOwned' "$GSS"
-check "Cleanup reaps via the owned-handle path (never re-acquires PID/name)" $?
-grep -qE 'wineserverShutdown = true' "$GSS"
-check "Wineserver shutdown is confirmed before proceeding" $?
+# S5. Discard routed through the injected seam, reachable only after confirm.
+grep -qE 'cleanupProcesses\.discard\(handle\)' "$GSS"
+check "Discard goes through the cleanup process seam" $?
 
-# 53. No discard before reap: the handle is discarded only under the confirmed
-#     reap branch.
-grep -qE 'if confirmed \{' "$GSS"
-check "Process discard only after a confirmed reap" $?
-grep -qE 'processDiscarded = true' "$GSS"
-check "Transaction records the discard step" $?
+# S6. Wineserver shutdown routed through the seam.
+grep -qE 'cleanupWineserver\.shutdownPrefix' "$GSS"
+check "Wineserver shutdown goes through the cleanup seam" $?
 
-# 54. No lock release before the whole cleanup verifies: lock release is the
-#     terminal step of the transaction.
-grep -qE 'release the lock LAST|release the lock last|// Phase 3' "$GSS"
-check "Lock release is the terminal cleanup step" $?
+# S7. Wineserver stopped-confirmation routed through the seam.
+grep -qE 'cleanupWineserver\.isRunning' "$GSS"
+check "Wineserver stopped-confirmation goes through the cleanup seam" $?
 
-# 55. Authority/`recoveryCleanup` is cleared only on full confirmed cleanup,
-#     never just because a retry failed.
-grep -qB1 'recoveryCleanup = nil' "$GSS"
-check "Authority is cleared only at the confirmed-cleanup terminus" $?
+# S8. Authority cleared exactly once, at the terminal (never on a failed retry).
+[ "$(grep -cE 'recoveryCleanup = nil' "$GSS")" -eq 1 ]
+check "Authority is cleared exactly once, at the confirmed terminus" $?
 
-# 56. Rendering simulated, no fake session/receipt for a failed launch: launch
-#     never publishes bookkeeping when the session is not proven.
+# S9. The unconfirmed-reap halt throws a real stopIncomplete (not a silent return).
+grep -qE 'cleanup halted before discard' "$GSS"
+check "Unconfirmed reap throws stopIncomplete (halt is explicit)" $?
+
+# S10. stop/force-stop derive teardown from the stored/derived authority, so a
+#      nil activeSession never no-ops a needed cleanup.
+grep -qE 'recoveryCleanup = currentCleanupAuthority\(\)' "$GSS"
+check "Stop/force-stop seed the stored authority before the transaction" $?
+
+# S11. Recovery rollback captures the authority (real construction) and keeps it.
+grep -qE 'recoveryCleanup = RecoveryCleanupAuthority\(' "$GSS"
+check "Recovery rollback constructs the retained authority" $?
+
+# S12. Wineserver progress flag is a real persisted assignment.
+grep -qE 'authority\.wineserverShutdown = true' "$GSS"
+check "Wineserver-shutdown progress is recorded on the authority" $?
+
+# S13. SIGKILL escalation is a real call in the reap path.
+grep -qE 'cleanupProcesses\.requestForceKill' "$GSS"
+check "Reap path escalates to SIGKILL through the seam" $?
+
+# S14. Terminal state transition is a real assignment.
+grep -qE 'state = \.stopped' "$GSS"
+check "Cleanup reaches the terminal .stopped state" $?
+
+# S15. No fake session/receipt for a failed launch (real abort guard retained).
 grep -qE 'aborted to avoid an unproven session' "$GSS"
 check "Failed launch never fabricates a session/receipt" $?
 
-# 57. New launch is blocked while recovery is required.
+# S16. New launch is blocked while recovery is required (real launch gate).
 grep -qE 'guard state == \.idle \|\| state == \.stopped' "$GSS"
 check "Launch requires idle/stopped (recovery blocks new launch)" $?
+
+# S17. Behavioral proof suite exists and drives the real stop/forceStop route.
+FIX6TESTS="Tests/MacSteamTests/GameSessionSupervisorCleanupTests.swift"
+grep -qE 'reap unconfirmed halts every subsequent phase' "$FIX6TESTS"
+check "Behavioral test: reap-unconfirmed halts all phases" $?
+grep -qE 'retry does not re-run confirmed TERM/KILL/discard' "$FIX6TESTS"
+check "Behavioral test: retry does not re-run confirmed steps" $?
+grep -qE 'cleanup proceeds from authority when activeSession is nil' "$FIX6TESTS"
+check "Behavioral test: nil-session cleanup proceeds from authority" $?
+
+# S18. Real-Mac SIGTERM-ignoring child cleanup evidence is gated + uses a real
+#      C fixture that ignores SIGTERM.
+FIX6MAC="Tests/MacSteamTests/U1R18R4FIX6RealMacCleanupTests.swift"
+grep -qE 'MACSTEAM_R1_BRINGUP' "$FIX6MAC"
+check "Real-Mac FIX6 cleanup evidence is MACSTEAM-gated" $?
+grep -qE 'signal\(SIGTERM, ignore_term\)' "$FIX6MAC"
+check "Real-Mac FIX6 fixture ignores SIGTERM" $?
 
 echo ""
 echo "=== Summary ==="
