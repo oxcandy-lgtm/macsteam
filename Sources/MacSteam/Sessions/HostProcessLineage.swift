@@ -20,10 +20,17 @@ struct ProcessIdentity: Sendable, Equatable, Hashable {
     /// Stable-process comparison used for PID-reuse detection. Start time is
     /// authoritative (allocated once by the kernel). The canonical executable
     /// identity is a required part of the ownership comparison — a comm name
-    /// is never substituted for it. A process whose canonical executable
-    /// differs (or a PID whose identity drifted at all) is a reused PID.
+    /// is never substituted for it, and an **empty** canonical executable can
+    /// never satisfy an ownership match. A PID whose canonical executable
+    /// differs or whose identity drifted at all is a reused (or unproven) PID.
     func matches(_ other: ProcessIdentity) -> Bool {
-        pid == other.pid
+        // Fail-closed: an empty canonical executable carries no ownership
+        // proof. Two empty-canonical identities must never match (this also
+        // forbids the "empty == empty" false positive).
+        guard !canonicalExecutable.isEmpty, !other.canonicalExecutable.isEmpty else {
+            return false
+        }
+        return pid == other.pid
             && startSeconds == other.startSeconds
             && startMicroseconds == other.startMicroseconds
             && canonicalExecutable == other.canonicalExecutable
@@ -204,6 +211,7 @@ enum HostProcessLineage {
         case limitExceeded(Int)
         case enumerationTruncated
         case providerOutcomeUnresolved(Int)
+        case snapshotUnstable
         case noLedger
 
         var errorDescription: String? {
@@ -215,6 +223,7 @@ enum HostProcessLineage {
             case .limitExceeded(let n): return "Census limit exceeded: \(n)"
             case .enumerationTruncated: return "Process enumeration may be truncated"
             case .providerOutcomeUnresolved(let n): return "\(n) ambiguous process probe outcome(s)"
+            case .snapshotUnstable: return "Process table never settled to a coherent snapshot"
             case .noLedger: return "No supervised session ledger for census"
             }
         }
@@ -240,7 +249,7 @@ enum HostProcessLineage {
         )
         if size > 0 {
             let name = withUnsafeBytes(of: info.pbi_comm) { commName($0) }
-            return .present(HostProcessSnapshot(
+            return presentOnlyIfProven(HostProcessSnapshot(
                 identity: ProcessIdentity(
                     pid: pid,
                     startSeconds: info.pbi_start_tvsec,
@@ -273,9 +282,9 @@ enum HostProcessLineage {
         var kp = kinfo_proc()
         var len = MemoryLayout<kinfo_proc>.size
         let result = sysctl(&mib, u_int(mib.count), &kp, &len, nil, 0)
-        if result == 0, len > 0 {
+if result == 0, len > 0 {
             let name = withUnsafeBytes(of: kp.kp_proc.p_comm) { commName($0) }
-            return .present(HostProcessSnapshot(
+            return presentOnlyIfProven(HostProcessSnapshot(
                 identity: ProcessIdentity(
                     pid: pid,
                     startSeconds: UInt64(kp.kp_proc.p_starttime.tv_sec),
@@ -328,12 +337,25 @@ enum HostProcessLineage {
     /// Convenience snapshot of a single process.
     ///
     /// Retained for the one-shot lineage walk and single-PID probes. The
-    /// production census uses `probe` so every outcome is explicitly accounted
-    /// for — a nil here means the process is absent or its identity could not
-    /// be established, and callers must treat it accordingly.
+    /// production census uses the coherent native-table provider so every
+    /// outcome is explicitly accounted for — a nil here means the process is
+    /// absent or its identity could not be established, and callers must treat
+    /// it accordingly.
     static func snapshot(pid: Int32) -> HostProcessSnapshot? {
         if case .present(let snap) = probe(pid: pid) { return snap }
         return nil
+    }
+
+    /// A live process is admitted as `present` only if its canonical executable
+    /// identity is non-empty (comm/basename/argv are never substituted). A
+    /// zombie may carry a previously captured (non-empty) canonical via its
+    /// inherited identity; otherwise an unresolvable identity is *ambiguous* —
+    /// never a silent exit and never a proven present.
+    private static func presentOnlyIfProven(_ snap: HostProcessSnapshot) -> ProcessProbeOutcome {
+        if !snap.isZombie && snap.identity.canonicalExecutable.isEmpty {
+            return .inaccessible
+        }
+        return .present(snap)
     }
 
     private static func commName(_ raw: UnsafeRawBufferPointer) -> String {
@@ -405,103 +427,213 @@ enum HostProcessLineage {
 
     // MARK: - Production census
 
-    /// Run a fail-closed census against the session ledger.
-    ///
-    /// - Root identity is the launch-captured identity stored in the ledger —
-    ///   it is never re-acquired at census time. If the live root no longer
-    ///   matches (gone, unavailable, or PID reused), the census is
-    ///   `.incomplete`.
-    /// - Descendants are discovered only via the full PPID chain from the
-    ///   root. Orphans are admitted only from previously observed ledger
-    ///   entries; no name or executable guessing is performed.
-    /// - Every provider probe outcome is accounted for explicitly — no silent
-    ///   drops. Any single ambiguous outcome (a probe that is `inaccessible`
-    ///   or a `providerFailure`) makes the census `.incomplete`, and observed
-    ///   identities are never pruned from the ledger because of an ambiguous
-    ///   outcome. Truncation and bound overflow also fail closed (never a
-    ///   proven zero).
-    static func census(ledger: inout ProcessCensusLedger) -> ProcessCensusResult {
-        census(ledger: &ledger) { pid, known in
-            probe(pid: pid, knownIdentity: known)
-        }
+    // MARK: - Coherent native-table snapshot (production authority)
+
+    /// One raw row of the native process table, captured in a single
+    /// `sysctl(KERN_PROC_ALL)` read so a snapshot generation is topologically
+    /// coherent (PID, PPID, state, and start time are all from one read).
+    struct NativeProcessRow: Hashable, Sendable {
+        var pid: Int32
+        var ppid: Int32
+        var state: HostProcessState
+        var startSeconds: UInt64
+        var startMicroseconds: UInt64
+        var name: String
     }
 
-    /// Internal seam used by the production census; the provider is injectable
-    /// so the ambiguous-outcome fail-closed behavior can be tested
-    /// deterministically. Production callers use `census(ledger:)`.
-    static func census(
-        ledger: inout ProcessCensusLedger,
-        probing: (Int32, ProcessIdentity?) -> ProcessProbeOutcome
-    ) -> ProcessCensusResult {
-        // 1. Probe the root with the launch-captured identity so a zombie root
-        //    inherits its previously acquired identity instead of fabricating
-        //    a new one.
-        let rootSnap: HostProcessSnapshot
-        switch probing(ledger.rootIdentity.pid, ledger.rootIdentity) {
-        case .present(let snap):
-            rootSnap = snap
-        case .confirmedExited:
-            return .incomplete(.rootNotFound(ledger.rootIdentity.pid))
-        case .inaccessible, .providerFailure:
-            return .incomplete(.rootUnavailable(ledger.rootIdentity.pid))
-        }
-
-        // 2. Revalidate the live root against the launch capture. The canonical
-        // executable identity participates in this ownership comparison.
-        guard rootSnap.identity.matches(ledger.rootIdentity) else {
-            return .incomplete(.rootIdentityMismatch)
-        }
-
-        // 3. Complete, bounded enumeration. A buffer that fills exactly is
-        // possibly truncated; growing past the bound also fails closed.
-        var allPIDs: [Int32] = []
-        var count = 0
-        var capacity = 4096
-        while true {
-            var buffer = [Int32](repeating: 0, count: capacity)
-            let n = proc_listallpids(&buffer, Int32(capacity * MemoryLayout<Int32>.size))
-            if n <= 0 {
-                return .incomplete(.censusFailed)
-            }
-            if n < capacity {
-                allPIDs = buffer
-                count = Int(n)
-                break
+    /// Capture the whole process table (PID, PPID, state, start time) in one
+    /// `sysctl(KERN_PROC_ALL)` read. Consistently bounded by `maxCensusSize`.
+    static func nativeTableSnapshot() -> [Int32: NativeProcessRow] {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        var capacity = 2048
+        while capacity <= maxCensusSize {
+            var buffer = [kinfo_proc](repeating: kinfo_proc(), count: capacity)
+            var size = buffer.count * MemoryLayout<kinfo_proc>.size
+            let result = sysctl(&mib, u_int(mib.count), &buffer, &size, nil, 0)
+            if result == 0 {
+                let n = min(buffer.count, max(0, size) / MemoryLayout<kinfo_proc>.size)
+                var rows: [Int32: NativeProcessRow] = [:]
+                for i in 0..<n {
+                    let kp = buffer[i]
+                    let pid = Int32(kp.kp_proc.p_pid)
+                    guard pid > 0 else { continue }
+                    let name = withUnsafeBytes(of: kp.kp_proc.p_comm) { commName($0) }
+                    rows[pid] = NativeProcessRow(
+                        pid: pid,
+                        ppid: Int32(kp.kp_eproc.e_ppid),
+                        state: HostProcessState(darwinStatus: UInt32(kp.kp_proc.p_stat)),
+                        startSeconds: UInt64(kp.kp_proc.p_starttime.tv_sec),
+                        startMicroseconds: UInt64(kp.kp_proc.p_starttime.tv_usec),
+                        name: name
+                    )
+                }
+                return rows
             }
             if capacity >= maxCensusSize {
-                return .incomplete(.enumerationTruncated)
+                return [:]
             }
             capacity = min(capacity * 2, maxCensusSize)
         }
-        if count >= maxCensusSize {
-            return .incomplete(.limitExceeded(count))
-        }
+        return [:]
+    }
 
-        // 4. Snapshot every enumerated PID. Each probe outcome is explicitly
-        //    classified; any ambiguous outcome fails the census closed (the
-        //    ledger is left untouched on such a failure).
-        var snapshots: [Int32: HostProcessSnapshot] = [:]
-        snapshots.reserveCapacity(count)
-        var unresolved = 0
-        for i in 0..<count {
-            let pid = allPIDs[i]
-            guard pid > 0 else { continue }
-            let known = ledger.observed.first(where: { $0.pid == pid })
-            switch probing(pid, known) {
-            case .present(let snap):
-                snapshots[pid] = snap
-            case .confirmedExited:
-                break // definite absence — not ambiguous, not counted
-            case .inaccessible, .providerFailure:
-                unresolved += 1
+    /// Run a fail-closed census against the session ledger.
+    ///
+    /// The production authority is a **coherent native snapshot**: the whole
+    /// table is captured in one generation; the topology must be byte-identical
+    /// on a re-capture before the census is trusted. Ownership is proven only
+    /// against the launch-captured identity — never re-acquired at census time.
+    ///
+    /// - Root identity is the launch-captured identity stored in the ledger. If
+    ///   the live root no longer matches (gone, unavailable, PID reused), the
+    ///   census is `.incomplete`.
+    /// - Descendants are discovered only via the full PPID chain within the
+    ///   coherent snapshot. Orphans are admitted only from previously observed
+    ///   ledger entries; no name or executable guessing is performed.
+    /// - If the table never stabilises (a process repeatedly exits / execs /
+    ///   re-sets PID / burps PPID during capture), the attempt is bounded and
+    ///   the census fails closed as `.snapshotUnstable`. An owned grandchild is
+    ///   never silently dropped behind a proven result.
+    /// - An ambiguous (live process whose canonical executable cannot be
+    ///   resolved) *owned* row forces `.providerOutcomeUnresolved`. Truncation
+    ///   and bound overflow also fail closed.
+    static func census(ledger: inout ProcessCensusLedger) -> ProcessCensusResult {
+        census(
+            ledger: &ledger,
+            captureTable: { nativeTableSnapshot() },
+            canonicalResolver: { row, known in resolveCanonical(row, known: known) }
+        )
+    }
+
+    /// Retries before a census is declared unstable/incomplete.
+    static let maxTableRetries = 3
+
+    /// Internal seam used by the production census; the coherent-table provider
+    /// and canonical resolver are injectable so the stability / ambiguity
+    /// behavior can be tested deterministically. Production uses `census(ledger:)`.
+    static func census(
+        ledger: inout ProcessCensusLedger,
+        captureTable: () -> [Int32: NativeProcessRow],
+        canonicalResolver: (NativeProcessRow, ProcessIdentity?) -> String = { _, _ in "" }
+    ) -> ProcessCensusResult {
+        var attemptNumber = 0
+        while attemptNumber < maxTableRetries {
+            attemptNumber += 1
+
+            let first = captureTable()
+            guard !first.isEmpty else {
+                if attemptNumber >= maxTableRetries {
+                    return .incomplete(.censusFailed)
+                }
+                continue
             }
-        }
-        if unresolved > 0 {
-            return .incomplete(.providerOutcomeUnresolved(unresolved), unresolvedOutcomes: unresolved)
-        }
+            if first.count > maxCensusSize {
+                return .incomplete(.limitExceeded(first.count))
+            }
 
-        // 5. Reconcile the ledger against the complete snapshot table.
-        return reconcile(ledger: &ledger, root: rootSnap, all: snapshots, silentSnapshotDrops: 0)
+            // 1. Root must be present and its canonical identity revalidated.
+            guard let rootRow = first[ledger.rootIdentity.pid] else {
+                return .incomplete(.rootNotFound(ledger.rootIdentity.pid))
+            }
+            let knownRoot = ledger.rootIdentity
+            let rootCanonical = canonicalResolver(rootRow, knownRoot)
+            let rootSnapshot = makeSnapshot(row: rootRow, canonical: rootCanonical)
+            if rootRow.state != .zombie && rootCanonical.isEmpty {
+                // The live root's canonical executable could not be established.
+                return .incomplete(.rootUnavailable(ledger.rootIdentity.pid))
+            }
+            guard rootSnapshot.identity.matches(ledger.rootIdentity) else {
+                return .incomplete(.rootIdentityMismatch)
+            }
+
+            // 2. Reachable set via the full PPID chain over the coherent table.
+            var reachable: Set<Int32> = [ledger.rootIdentity.pid]
+            var stack: [Int32] = [ledger.rootIdentity.pid]
+            while let pid = stack.popLast() {
+                for (childPID, childRow) in first where childRow.ppid == pid {
+                    if reachable.insert(childPID).inserted {
+                        stack.append(childPID)
+                    }
+                }
+            }
+
+            // 3. Resolve the identity of every relevant (reachable or previously
+            //    observed) row. Any live row whose canonical is unresolvable is
+            //    ambiguous and fails the census closed.
+            var snapshots: [Int32: HostProcessSnapshot] = [:]
+            snapshots.reserveCapacity(reachable.count + ledger.observed.count)
+            var unresolved = 0
+            var relevant: Set<Int32> = reachable.union(ledger.observed.map(\.pid))
+            for pid in relevant {
+                guard let row = first[pid] else { continue }
+                let known = ledger.observed.first(where: { $0.pid == pid })
+                let canonical = canonicalResolver(row, known)
+                if row.state != .zombie && canonical.isEmpty {
+                    unresolved += 1
+                    continue
+                }
+                snapshots[pid] = makeSnapshot(row: row, canonical: canonical)
+            }
+            if unresolved > 0 {
+                return .incomplete(.providerOutcomeUnresolved(unresolved), unresolvedOutcomes: unresolved)
+            }
+
+            // 4. Coherence gate: every relevant (owned) row must be identical on
+            //    a re-capture (no exit/exec/PID-reuse/reparent during
+            //    resolution), otherwise discard this attempt and retry within
+            //    the bound. Unrelated system churn is ignored — only ownership-
+            //    relevant topology is compared.
+            let second = captureTable()
+            var coherent = true
+            for pid in relevant {
+                if first[pid] != second[pid] {
+                    coherent = false
+                    break
+                }
+            }
+            if !coherent {
+                if attemptNumber >= maxTableRetries {
+                    return .incomplete(.snapshotUnstable)
+                }
+                continue
+            }
+
+            // 5. Stable, coherent generation -> reconcile ownership accounting.
+            return reconcile(ledger: &ledger, root: rootSnapshot, all: snapshots, silentSnapshotDrops: 0)
+        }
+        return .incomplete(.snapshotUnstable)
+    }
+
+    /// Resolve the canonical executable identity for a table row, inheriting the
+    /// previously observed canonical for a known zombie. An empty result means
+    /// the identity could not be established — never substituted with comm name.
+    private static func resolveCanonical(_ row: NativeProcessRow, known: ProcessIdentity?) -> String {
+        if let resolved = canonicalExecutablePath(row.pid), !resolved.isEmpty {
+            return resolved
+        }
+        if row.state == .zombie, let known,
+           known.pid == row.pid,
+           known.startSeconds == row.startSeconds,
+           known.startMicroseconds == row.startMicroseconds,
+           !known.canonicalExecutable.isEmpty {
+            return known.canonicalExecutable
+        }
+        return ""
+    }
+
+    /// Build a `HostProcessSnapshot` for a row carrying the resolved canonical.
+    private static func makeSnapshot(row: NativeProcessRow, canonical: String) -> HostProcessSnapshot {
+        HostProcessSnapshot(
+            identity: ProcessIdentity(
+                pid: row.pid,
+                startSeconds: row.startSeconds,
+                startMicroseconds: row.startMicroseconds,
+                executableName: row.name,
+                canonicalExecutable: canonical
+            ),
+            ppid: row.ppid,
+            state: row.state
+        )
     }
 
     /// Reconcile the ledger against a snapshot table.

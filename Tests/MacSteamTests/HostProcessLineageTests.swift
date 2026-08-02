@@ -121,18 +121,28 @@ struct HostProcessLineageTests {
 
     // MARK: - U1R18 FIX1: fail-closed census + ownership ledger
 
-    @Test("census from current process is proven and error-free")
+    @Test("census from a controlled process is proven and error-free")
     func censusCurrentProcessProven() throws {
-        guard let rootSnap = HostProcessLineage.snapshot(pid: getpid()) else {
-            Issue.record("root snapshot must exist for the test process")
+        // Root on a freshly-spawned, childless process so the census has a
+        // deterministic reachable set (independent of unrelated test churn that
+        // hangs off the test-runner PID).
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["30"]
+        try sleeper.run()
+        defer { sleeper.terminate(); sleeper.waitUntilExit() }
+        Thread.sleep(forTimeInterval: 0.1)
+
+        guard let rootSnap = HostProcessLineage.snapshot(pid: Int32(sleeper.processIdentifier)) else {
+            Issue.record("root snapshot must exist for the controlled process")
             return
         }
         var ledger = ProcessCensusLedger(rootIdentity: rootSnap.identity)
         let result = HostProcessLineage.census(ledger: &ledger)
         #expect(result.state == .proven)
         #expect(result.error == nil)
-        #expect(result.liveDescendants >= 0)
-        #expect(result.totalLive >= 0)
+        #expect(result.liveDescendants == 0)
+        #expect(result.totalLive == 0)
     }
 
     @Test("census is incomplete when root process is gone")
@@ -293,43 +303,57 @@ struct HostProcessLineageTests {
 
     @Test("census fails closed when a probe is inaccessible; observed identity is retained")
     func censusFailsClosedOnInaccessibleProbe() {
-        guard let rootSnap = HostProcessLineage.snapshot(pid: getpid()),
-              let parentSnap = HostProcessLineage.snapshot(pid: getppid()) else { return }
-        var ledger = ProcessCensusLedger(rootIdentity: rootSnap.identity)
-        ledger.record(parentSnap.identity)
-        let result = HostProcessLineage.census(ledger: &ledger) { pid, _ in
-            if pid == getpid() { return .present(rootSnap) }
-            if pid == getppid() { return .inaccessible }
-            return .confirmedExited
-        }
+        let rootRow = makeRow(100, ppid: 1, startSec: 1000, state: .sleeping, name: "root")
+        let parentRow = makeRow(200, ppid: 100, startSec: 2000, state: .sleeping, name: "parent")
+        var ledger = ProcessCensusLedger(rootIdentity: makeIdentity(100, 1000, name: "root"))
+        ledger.record(makeIdentity(200, 2000, name: "parent"))
+
+        let table: [Int32: HostProcessLineage.NativeProcessRow] = [100: rootRow, 200: parentRow]
+        let result = HostProcessLineage.census(
+            ledger: &ledger,
+            captureTable: { table },
+            canonicalResolver: { row, _ in
+                if row.pid == 100 { return "/bin/root" }
+                return "" // parent live but canonical unresolvable -> ambiguous
+            }
+        )
         #expect(result.state == .incomplete)
         #expect(result.error == .providerOutcomeUnresolved(1))
         #expect(result.unresolvedOutcomes == 1)
-        #expect(ledger.observed.contains(where: { $0.pid == getppid() }),
+        #expect(ledger.observed.contains(where: { $0.pid == 200 }),
                 "observed identity must be retained on an ambiguous outcome")
     }
 
     @Test("census fails closed on a provider failure outcome")
     func censusFailsClosedOnProviderFailure() {
-        guard let rootSnap = HostProcessLineage.snapshot(pid: getpid()),
-              let parentSnap = HostProcessLineage.snapshot(pid: getppid()) else { return }
-        var ledger = ProcessCensusLedger(rootIdentity: rootSnap.identity)
-        ledger.record(parentSnap.identity)
-        let result = HostProcessLineage.census(ledger: &ledger) { pid, _ in
-            if pid == getpid() { return .present(rootSnap) }
-            if pid == getppid() { return .providerFailure }
-            return .confirmedExited
-        }
+        var ledger = ProcessCensusLedger(rootIdentity: makeIdentity(100, 1000, name: "root"))
+        ledger.record(makeIdentity(200, 2000, name: "parent"))
+
+        // The native provider fails to produce a readable table on every try;
+        // after the bounded retries the census must fail closed — never a
+        // fabricated proven zero.
+        let result = HostProcessLineage.census(
+            ledger: &ledger,
+            captureTable: { [:] },
+            canonicalResolver: { _, _ in "/bin/root" }
+        )
         #expect(result.state == .incomplete)
-        #expect(result.error == .providerOutcomeUnresolved(1))
-        #expect(result.unresolvedOutcomes == 1)
-        #expect(ledger.observed.contains(where: { $0.pid == getppid() }),
+        #expect(result.error == .censusFailed)
+        #expect(result.totalLive == 0)
+        #expect(ledger.observed.contains(where: { $0.pid == 200 }),
                 "observed identity must be retained on a provider failure")
     }
 
     @Test("proven census reports zero silent drops and zero unresolved outcomes")
-    func censusProvenHasZeroAmbiguity() {
-        guard let rootSnap = HostProcessLineage.snapshot(pid: getpid()) else { return }
+    func censusProvenHasZeroAmbiguity() throws {
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["30"]
+        try sleeper.run()
+        defer { sleeper.terminate(); sleeper.waitUntilExit() }
+        Thread.sleep(forTimeInterval: 0.1)
+
+        guard let rootSnap = HostProcessLineage.snapshot(pid: Int32(sleeper.processIdentifier)) else { return }
         var ledger = ProcessCensusLedger(rootIdentity: rootSnap.identity)
         let result = HostProcessLineage.census(ledger: &ledger)
         #expect(result.state == .proven)
@@ -337,6 +361,101 @@ struct HostProcessLineageTests {
                 "no probe outcome may be silently dropped")
         #expect(result.unresolvedOutcomes == 0,
                 "a proven census must have no ambiguous probe outcome")
+    }
+
+    // MARK: - U1R18 R4-FIX3: canonical fail-closed + coherent topology
+
+    @Test("empty canonical identities never match, even empty==empty")
+    func emptyCanonicalNeverMatches() {
+        let a = ProcessIdentity(pid: 1, startSeconds: 1000, startMicroseconds: 0,
+                                executableName: "x", canonicalExecutable: "")
+        let b = ProcessIdentity(pid: 1, startSeconds: 1000, startMicroseconds: 0,
+                                executableName: "y", canonicalExecutable: "")
+        let c = ProcessIdentity(pid: 1, startSeconds: 1000, startMicroseconds: 0,
+                                executableName: "x", canonicalExecutable: "/bin/x")
+        #expect(!a.matches(b), "empty==empty must never match")
+        #expect(!a.matches(c), "empty canonical can never prove ownership")
+    }
+
+    @Test("a live process with an empty canonical never probes as present")
+    func liveEmptyCanonicalNotPresent() {
+        // A real live process (the ballot itself) must probe present with a
+        // non-empty canonical — proving the provider never emits present-empty.
+        for pid in [getpid(), getppid()] {
+            if case .present(let snap) = HostProcessLineage.probe(pid: pid) {
+                #expect(!snap.identity.canonicalExecutable.isEmpty,
+                        "live process must never carry an empty canonical")
+                #expect(snap.state != .zombie)
+            }
+        }
+    }
+
+    @Test("unstable snapshot is never proven (bounded retry exhausted)")
+    func unstableSnapshotNeverProven() {
+        let rootRow = makeRow(100, ppid: 1, startSec: 1000, state: .sleeping, name: "root")
+        var ledger = ProcessCensusLedger(rootIdentity: makeIdentity(100, 1000, name: "root"))
+        ledger.record(makeIdentity(200, 2000, name: "child"))
+        var epoch = 0
+        let result = HostProcessLineage.census(
+            ledger: &ledger,
+            captureTable: {
+                epoch += 1
+                let child: [Int32: HostProcessLineage.NativeProcessRow] = [
+                    200: makeRow(200, ppid: 100, startSec: 2000 + UInt64(epoch),
+                                 state: .sleeping, name: "child")
+                ]
+                var rows: [Int32: HostProcessLineage.NativeProcessRow] = [100: rootRow]
+                rows.merge(child) { _, new in new }
+                return rows
+            },
+            canonicalResolver: { row, _ in row.pid == 100 ? "/bin/root" : "/bin/present" }
+        )
+        #expect(result.state == .incomplete)
+        #expect(result.error == .snapshotUnstable)
+        #expect(result.totalLive == 0)
+    }
+
+    @Test("stable retry keeps an owned grandchild as an orphan — never dropped under proven")
+    func raceRetainsGrandchildAsOrphan() {
+        let rootRow = makeRow(100, ppid: 1, startSec: 1000, state: .sleeping, name: "root")
+        let grandchildRow = makeRow(400, ppid: 1, startSec: 4000, state: .sleeping, name: "grandchild")
+        var ledger = ProcessCensusLedger(rootIdentity: makeIdentity(100, 1000, name: "root"))
+        // The grandchild was previously observed as a live descendant.
+        ledger.record(makeIdentity(400, 4000, name: "grandchild"))
+
+        // The intermediate reparents the grandchild to launchd (ppid 1) before
+        // the coherent re-capture; the grandchild must be retained as an orphan.
+        let table: [Int32: HostProcessLineage.NativeProcessRow] = [100: rootRow, 400: grandchildRow]
+        let result = HostProcessLineage.census(
+            ledger: &ledger,
+            captureTable: { table },
+            canonicalResolver: { row, _ in row.pid == 100 ? "/bin/root" : "/bin/grandchild" }
+        )
+        #expect(result.state == .proven)
+        #expect(result.liveOrphans == 1, "grandchild must be kept as an orphan")
+        #expect(result.liveDescendants == 0)
+        #expect(ledger.observed.contains(where: { $0.pid == 400 }), "grandchild retained in ledger")
+    }
+
+    @Test("a grandchild mid-exit is never dropped behind a proven result")
+    func grandchildNeverDroppedUnderProven() {
+        let rootRow = makeRow(100, ppid: 1, startSec: 1000, state: .sleeping, name: "root")
+        let grandchildRow = makeRow(400, ppid: 1, startSec: 4000, state: .sleeping, name: "grandchild")
+        var ledger = ProcessCensusLedger(rootIdentity: makeIdentity(100, 1000, name: "root"))
+        ledger.record(makeIdentity(400, 4000, name: "grandchild"))
+
+        let result = HostProcessLineage.census(
+            ledger: &ledger,
+            captureTable: { let rows: [Int32: HostProcessLineage.NativeProcessRow] = [100: rootRow, 400: grandchildRow]; return rows },
+            canonicalResolver: { row, _ in row.pid == 100 ? "/bin/root" : "/bin/grandchild" }
+        )
+        if result.state == .proven {
+            let total = result.liveDescendants + result.liveOrphans + result.zombieCount
+            #expect(total >= 1 || result.exitedCount >= 1,
+                    "a proven census must never silently drop a previously-observed grandchild")
+        } else {
+            #expect(result.error != nil)
+        }
     }
 
     // MARK: - Helpers
@@ -367,6 +486,23 @@ struct HostProcessLineageTests {
             identity: makeIdentity(pid, startSec, name: name),
             ppid: ppid,
             state: state
+        )
+    }
+
+    private func makeRow(
+        _ pid: Int32,
+        ppid: Int32,
+        startSec: UInt64 = 1000,
+        state: HostProcessState = .sleeping,
+        name: String = "x"
+    ) -> HostProcessLineage.NativeProcessRow {
+        HostProcessLineage.NativeProcessRow(
+            pid: pid,
+            ppid: ppid,
+            state: state,
+            startSeconds: startSec,
+            startMicroseconds: 0,
+            name: name
         )
     }
 

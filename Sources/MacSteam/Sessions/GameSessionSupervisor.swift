@@ -201,13 +201,22 @@ final class GameSessionSupervisor {
         self.activeRuntimeControl = LiveRuntimeControl(control: runtimeControl)
 
         // Seed the ownership ledger with the launch-captured root identity.
-        // Fail-closed: if no identity could be captured at launch, the census
-        // stays incomplete rather than inventing one at census time.
-        if let rootIdentity = await processSupervisor.capturedRootIdentity(for: handle) {
-            self.censusLedger = ProcessCensusLedger(rootIdentity: rootIdentity)
-        } else {
-            self.censusLedger = nil
+        // Fail-closed: an identity-less handle/session/receipt/ledger must never
+        // be published. If the launch identity cannot be established, terminate
+        // and reap the launched process, delete every bit of bookkeeping, and
+        // fail the launch (the rollback defer releases the lock and resets
+        // state to idle).
+        guard let rootIdentity = await processSupervisor.capturedRootIdentity(for: handle) else {
+            await processSupervisor.requestTerminate(handle)
+            if case .timedOut = await processSupervisor.waitForExit(handle, timeout: .seconds(2)) {
+                try? await processSupervisor.requestForceKill(handle)
+            }
+            await processSupervisor.discard(handle)
+            throw SessionSupervisorError.launchFailed(
+                "The launched process identity could not be established; aborted to avoid an unproven session"
+            )
         }
+        self.censusLedger = ProcessCensusLedger(rootIdentity: rootIdentity)
 
         // 3. 5-second liveness check
         let deadline = Date().addingTimeInterval(5)

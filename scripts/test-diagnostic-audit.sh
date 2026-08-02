@@ -227,6 +227,81 @@ run_mutation "provider-failure-test-deleted" \
     "fail"
 
 echo ""
+echo "=== U1R18 R4-FIX3 Mutation Fixtures ==="
+echo ""
+
+# 32. Empty canonical probed as .present (fail-closed guard removed)
+run_mutation "empty-canonical-present" \
+    "sed -i '' '/presentOnlyIfProven/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 33. Empty==empty canonical match permitted (guard removed)
+run_mutation "empty-canonical-match" \
+    "sed -i '' '/guard !canonicalExecutable.isEmpty/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 34. comm fallback to satisfy canonical identity
+run_mutation "comm-canonical-fallback" \
+    "echo 'let _ = identity.executableName == canonicalExecutable' >> Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 35. root identity failure allowed to continue launch (guard removed)
+run_mutation "identity-failure-launch-continues" \
+    "sed -i '' '/aborted to avoid an unproven session/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 36. identity-failure cleanup removed (process not terminated/reaped)
+run_mutation "identity-failure-cleanup-missing" \
+    "sed -i '' '/processSupervisor.discard/d' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
+# 37. unobserved/zombie identity fabrication: inherit without the same start
+#     tuple (a zombie may then claim an unrelated process's canonical)
+run_mutation "zombie-identity-fabrication" \
+    "sed -i '' '/known.startSeconds == row.startSeconds/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 38. regression to sequential PID topology (native snapshot removed)
+run_mutation "sequential-pid-topology" \
+    "sed -i '' '/KERN_PROC_ALL/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 39. mixed snapshot generation (coherence gate removed)
+run_mutation "mixed-snapshot-generation" \
+    "sed -i '' '/!coherent {/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 40. candidate disappearance treated as normal exit (instability removed)
+run_mutation "candidate-disappearance-as-exit" \
+    "sed -i '' '/snapshotUnstable/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 41. stability retry removed (bounded retries deleted)
+run_mutation "stability-retry-removed" \
+    "sed -i '' '/maxTableRetries/d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 42. retry failure still proven (retry cap removed)
+run_mutation "retry-cap-removed" \
+    "sed -i '' 's/snapshotUnstable/proven/g' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 43. ledger mutation before stability confirmed (reconcile before coherence gate)
+run_mutation "ledger-mutated-before-stable" \
+    "sed -i '' '/coherent = true/,+5d' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# 44. race test removed (grandchild-never-dropped invariant)
+run_mutation "race-race-test-removed" \
+    "sed -i '' '/grandchild_dropped_under_proven/d' Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
+    "fail"
+
+# 45. real-Mac route bypass (supervisor.processCensus replaced)
+run_mutation "route-bypass-fix3" \
+    "sed -i '' 's/supervisor.processCensus()/HostProcessLineage.census(ledger: \&ledger)/' Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift" \
+    "fail"
+
+echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"
 if [ "$FAIL" -gt 0 ]; then

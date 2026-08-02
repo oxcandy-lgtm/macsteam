@@ -246,6 +246,67 @@ grep -qE 'fails closed on a provider failure outcome' "$LINETESTS"
 check "Provider-failure fail-closed unit test present" $?
 
 echo ""
+echo "=== U1R18 R4-FIX3 Canonical Fail-Closed / Coherent Snapshot / Identity-Bound Launch Audit ==="
+echo ""
+
+# 34. Live canonical executable is never empty and never substituted (comm /
+#     basename / argv). An unprovable live identity is ambiguous, not present.
+grep -qE 'presentOnlyIfProven' "$LIN"
+check "Live empty-canonical is rejected by the provider (never present)" $?
+grep -qE 'return \.inaccessible' "$LIN"
+check "An unresolvable live canonical degrades to an ambiguous outcome" $?
+! grep -vE '^[[:space:]]*//' "$LIN" | grep -qE 'executableName.*canonicalExecutable|comm.*canonical|basename.*canonical'
+check "Comm / basename substitution for canonical is forbidden" $?
+
+# 35. An empty canonical never satisfies an ownership match (empty==empty
+#     forbidden).
+grep -qE 'guard !canonicalExecutable.isEmpty' "$LIN"
+check "Empty-canonical identity never matches (matches() guard)" $?
+
+# 36. A zombie may inherit a previously captured non-empty canonical, but never
+#     invents a replacement identity (inheritance requires the SAME PID and the
+#     SAME start tuple).
+grep -qE 'known.startSeconds == row.startSeconds' "$LIN"
+check "Zombie inherits canonical only from a same-PID/start captured identity" $?
+
+# 37. Root identity must be established at launch; otherwise the process is
+#     terminated/reaped and all bookkeeping is removed before failing the launch
+#     (no unproven handle/session/receipt/ledger is published).
+grep -qE 'guard let rootIdentity = await processSupervisor.capturedRootIdentity' "$GSS"
+check "Launch requires a captured root identity" $?
+grep -qE 'requestForceKill|requestTerminate' "$GSS"
+check "Identity-failure terminates the launched process" $?
+grep -qE 'processSupervisor.discard' "$GSS"
+check "Identity-failure deletes ProcessSupervisor bookkeeping" $?
+grep -qE 'aborted to avoid an unproven session' "$GSS"
+check "Identity failure bears the unproven-session abort guard" $?
+
+# 38. Production census authority is a coherent native snapshot (single
+#     KERN_PROC_ALL generation), NOT sequential PID probing.
+grep -qE 'KERN_PROC_ALL' "$LIN"
+check "Census uses a single-generation native table snapshot" $?
+grep -qE 'func nativeTableSnapshot' "$LIN"
+check "Native coherent table capture exists" $?
+grep -qE 'NativeProcessRow' "$LIN"
+check "Coherent row model (pid/ppid/state/start) exists" $?
+
+# 39. Coherent topology gate: a second capture must match; otherwise bounded
+#     retry, then fail closed as snapshotUnstable. An owned grandchild is never
+#     dropped behind `proven`.
+grep -qE 'snapshotUnstable' "$LIN"
+check "Unstable snapshot fails closed (snapshotUnstable)" $?
+grep -qE 'coherent = false' "$LIN"
+check "A changed relevant row sets the coherence flag" $?
+grep -qE 'if !coherent' "$LIN"
+check "A second capture must match the first (coherence gate)" $?
+grep -qE 'maxTableRetries' "$LIN"
+check "Stability retry is explicitly bounded" $?
+grep -qE 'case .snapshotUnstable' "$LIN"
+check "snapshotUnstable is a first-class census error" $?
+grep -qE 'grandchild_dropped_under_proven' "$BRINGUP"
+check "Real-Mac race evidence asserts grandchild-never-dropped-under-proven" $?
+
+echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"
 if [ "$FAIL" -gt 0 ]; then

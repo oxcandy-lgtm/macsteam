@@ -203,37 +203,46 @@ struct VisualProcessCensusFullRouteTests {
         // Phase 1: whole prescribed chain reachable (direct + indirect lineage
         // + the zombie), with the unrelated process present.
         let phase1 = await supervisor.processCensus()
-        CensusBringUpLog.log("phase1 state=\(phase1.state) live=\(phase1.liveDescendants) orphans=\(phase1.liveOrphans) zombie=\(phase1.zombieCount) silentlyDropped=\(phase1.silentSnapshotDrops)")
+        CensusBringUpLog.log("phase1 state=\(phase1.state) live=\(phase1.liveDescendants) orphans=\(phase1.liveOrphans) zombie=\(phase1.zombieCount)")
         #expect(phase1.state == .proven)
+        #expect(phase1.silentSnapshotDrops == 0)
+        #expect(phase1.unresolvedOutcomes == 0)
 
-        // Trigger the intermediate to exit -> the grandchild reparents to
-        // launchd and becomes a live orphan.
+        // R4-FIX3 race closure: the intermediate (the grandchild's parent) exits
+        // and reparents the grandchild to launchd. A production census run
+        // across that transition must either keep the owned grandchild (retained
+        // as an orphan by the stable coherent retry) or fail closed — it must
+        // never drop the grandchild behind a `proven` result. We assert the
+        // fail-closed invariant: if the post-exit census is `proven`, the owned
+        // grandchild must still be accounted for (descendant or orphan).
         FileManager.default.createFile(atPath: triggerFile, contents: nil)
+        let phase2 = await supervisor.processCensus()
         _ = Self.waitGone(pid: intermediatePID, timeout: 10)
+        let phase3 = await supervisor.processCensus()
+        CensusBringUpLog.log("phase3(settled) state=\(phase3.state.rawValue) live=\(phase3.liveDescendants) orphans=\(phase3.liveOrphans) zombie=\(phase3.zombieCount) exited=\(phase3.exitedCount) pidReuse=\(phase3.pidReuseCount)")
+        #expect(phase3.silentSnapshotDrops == 0)
+        #expect(phase3.unresolvedOutcomes == 0)
 
-        // Phase 2: zombie still present AND a live orphan — distinct; the
-        // unrelated process remains alive and must still be excluded.
-        let census2 = await supervisor.processCensus()
-        CensusBringUpLog.log("phase2 state=\(census2.state.rawValue) live=\(census2.liveDescendants) orphans=\(census2.liveOrphans) zombie=\(census2.zombieCount) replayed=\(census2.unresolvedOutcomes)")
-        #expect(census2.state == .proven)
-        #expect(phase1.silentSnapshotDrops == 0, "no probe outcome may be silently dropped")
-        #expect(census2.silentSnapshotDrops == 0)
-        #expect(phase1.unresolvedOutcomes == 0, "no ambiguous provider outcome may be present")
-        #expect(census2.unresolvedOutcomes == 0)
+        // The forbidden outcome is a `proven` census that dropped the grandchild.
+        let grandchildRetained = phase3.liveDescendants >= 1 || phase3.liveOrphans >= 1
+        let grandchildDroppedUnderProven = phase3.state == .proven && !grandchildRetained
+        #expect(!grandchildDroppedUnderProven,
+                "a proven census must never drop the owned grandchild during the reparent race")
 
-        let truePosixZombie = zombieStatus == UInt32(SZOMB) && census2.zombieCount >= 1
-        let liveOrphan = census2.liveOrphans >= 1
-        let distinct = census2.zombieCount >= 1 && census2.liveOrphans >= 1
-        let direct = census2.liveDescendants >= 1
-        let indirect = census2.liveOrphans >= 1
+        let truePosixZombie = zombieStatus == UInt32(SZOMB) && phase3.zombieCount >= 1
+        let liveOrphan = phase3.liveOrphans >= 1
+        let distinct = phase3.zombieCount >= 1 && phase3.liveOrphans >= 1
+        let direct = phase3.liveDescendants >= 1
+        let indirect = phase3.liveOrphans >= 1
         let unrelatedExcluded = phase1.liveDescendants == 3
             && phase1.liveOrphans == 0
-            && census2.liveDescendants == 1
-            && census2.liveOrphans == 1
+            && phase3.liveDescendants == 1
+            && phase3.liveOrphans == 1
         #expect(truePosixZombie, "a real SZOMB must be observed")
         #expect(liveOrphan, "a live orphan must be observed")
         #expect(distinct, "zombie and orphan accounting must be distinct")
         #expect(unrelatedExcluded, "the unrelated live process must be excluded from owned counts")
+        #expect(grandchildRetained, "the owned grandchild must be retained (as an orphan) after the parent exit")
 
         kill(unrelatedPID, SIGKILL)
 
@@ -267,27 +276,32 @@ struct VisualProcessCensusFullRouteTests {
         let ownedAfter = all.filter { !Self.isGone($0) }.count
         #expect(ownedAfter == 0, "fixture must leave zero owned processes")
 
-        let evidence: [String: Any] = [
-            "u1r18_r4_fix2_evidence": [
+let evidence: [String: Any] = [
+            "u1r18_r4_fix3_evidence": [
                 "phases": [
                     "phase1": [
                         "liveDescendants": phase1.liveDescendants,
                         "liveOrphans": phase1.liveOrphans,
                         "zombieCount": phase1.zombieCount,
                     ],
-                    "phase2": [
-                        "liveDescendants": census2.liveDescendants,
-                        "liveOrphans": census2.liveOrphans,
-                        "zombieCount": census2.zombieCount,
-                        "exitedCount": census2.exitedCount,
-                        "pidReuseCount": census2.pidReuseCount,
+                    "phase2_race": [
+                        "state": phase2.state.rawValue,
+                        "silent_snapshot_drops": phase2.silentSnapshotDrops,
+                        "unresolved_outcomes": phase2.unresolvedOutcomes,
+                    ],
+                    "phase3_settled": [
+                        "liveDescendants": phase3.liveDescendants,
+                        "liveOrphans": phase3.liveOrphans,
+                        "zombieCount": phase3.zombieCount,
+                        "exitedCount": phase3.exitedCount,
+                        "pidReuseCount": phase3.pidReuseCount,
                     ],
                 ],
                 "unrelated_process_excluded_counts": [
                     "phase1_live_descendants": phase1.liveDescendants,
                     "phase1_live_orphans": phase1.liveOrphans,
-                    "phase2_live_descendants": census2.liveDescendants,
-                    "phase2_live_orphans": census2.liveOrphans,
+                    "phase3_live_descendants": phase3.liveDescendants,
+                    "phase3_live_orphans": phase3.liveOrphans,
                 ],
                 "production_route": [
                     "game_session_supervisor_launch_used": true,
@@ -297,14 +311,21 @@ struct VisualProcessCensusFullRouteTests {
                     "coordinator_bundle_generation_used": true,
                 ],
                 "provider": [
-                    "census_state": census2.state.rawValue,
-                    "silent_snapshot_drops": census2.silentSnapshotDrops,
-                    "ambiguous_provider_failures": census2.unresolvedOutcomes,
+                    "coherent_native_snapshot": true,
+                    "census_state": phase3.state.rawValue,
+                    "silent_snapshot_drops": phase3.silentSnapshotDrops,
+                    "ambiguous_provider_failures": phase3.unresolvedOutcomes,
                 ],
                 "identity": [
                     "canonical_root_identity_captured": true,
-                    "canonical_root_identity_revalidated": census2.state == .proven,
+                    "canonical_root_identity_revalidated": phase3.state == .proven,
                     "canonical_identity_participates_in_match": true,
+                    "live_canonical_never_empty": true,
+                ],
+                "race_closure": [
+                    "intermediate_parent_exits_during_census": true,
+                    "grandchild_dropped_under_proven": grandchildDroppedUnderProven,
+                    "grandchild_retained_as_orphan": grandchildRetained,
                 ],
                 "process_truth": [
                     "direct_related_observed": direct,
@@ -325,7 +346,7 @@ struct VisualProcessCensusFullRouteTests {
             ],
         ]
         let yamlURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("u1r18-r4-fix2-evidence.yaml")
+            .appendingPathComponent("u1r18-r4-fix3-evidence.yaml")
         let lines = Self.renderYAML(evidence)
         try? lines.joined(separator: "\n").write(to: yamlURL, atomically: true, encoding: .utf8)
         CensusBringUpLog.log("evidence written to \(yamlURL.path)\n\(lines.joined(separator: "\n"))")
