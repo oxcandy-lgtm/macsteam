@@ -7,6 +7,7 @@ LIN="Sources/MacSteam/Sessions/HostProcessLineage.swift"
 SUP="Sources/MacSteam/Sessions/ProcessSupervisor.swift"
 GSS="Sources/MacSteam/Sessions/GameSessionSupervisor.swift"
 BRINGUP="Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift"
+OBS="Sources/MacSteam/Sessions/SessionWindowObserver.swift"
 PASS=0
 FAIL=0
 
@@ -566,6 +567,86 @@ RESET_AT=$(grep -nE 'terminationTransactionStarted = false' "$APP" | head -1 | c
 ABORT_AT=$(grep -nE 'sender\.reply\(toApplicationShouldTerminate: false\)' "$APP" | head -1 | cut -d: -f1)
 [ -n "$RESET_AT" ] && [ -n "$ABORT_AT" ] && [ "$RESET_AT" -lt "$ABORT_AT" ]
 check "Dock Quit resets exact-once token strictly before abort reply" $?
+
+echo ""
+echo "=== U1R18 R3 Ownership-Bound Real Window Detection Audit ==="
+echo ""
+
+OBS="Sources/MacSteam/Sessions/SessionWindowObserver.swift"
+TREE="Sources/MacSteam/Sessions/ProcessTree.swift"
+
+# R3.G1. The prohibited parallel-authority module (SessionProcessTree /
+#        ProcessTree.swift) must not exist.
+[ ! -f "$TREE" ]
+check "ProcessTree.swift (SessionProcessTree) is absent — no parallel raw-PID authority" $?
+
+# R3.G2. SessionWindowObserver delegates ownership to an injective closure,
+#        not to a raw sessionRootPID field or a static process-tree walk.
+grep -q 'ownershipSnapshot' "$OBS"
+check "Ownership is an async closure, not a raw PID field" $?
+
+# R3.G3. No residual sessionRootPID field on SessionWindowObserver.
+! grep -q 'sessionRootPID' "$OBS"
+check "No sessionRootPID field on SessionWindowObserver" $?
+
+# R3.G4. No residual SessionProcessTree reference in observer.
+! grep -q 'SessionProcessTree' "$OBS"
+check "No SessionProcessTree reference in observer" $?
+
+# R3.G5. The observation enum has all six required cases.
+grep -q 'case ownedPositive' "$OBS"
+check "WindowObservation has ownedPositive" $?
+grep -q 'case ownedMiss' "$OBS"
+check "WindowObservation has ownedMiss" $?
+grep -q 'case foreignCandidatesOnly' "$OBS"
+check "WindowObservation has foreignCandidatesOnly" $?
+grep -q 'case ownershipIncomplete' "$OBS"
+check "WindowObservation has ownershipIncomplete" $?
+grep -q 'case windowSnapshotFailed' "$OBS"
+check "WindowObservation has windowSnapshotFailed" $?
+grep -q 'case unsupported' "$OBS"
+check "WindowObservation has unsupported" $?
+
+# R3.G6. Fail-closed reducer: ownershipIncomplete and windowSnapshotFailed
+#        are preserved (return next), never mapped to positive or miss.
+grep -q 'case .unsupported, .ownershipIncomplete, .windowSnapshotFailed' "$OBS"
+check "Reducer groups fail-closed cases for preservation" $?
+
+# R3.G7. unknown + miss never reaches hidden: the hidden transition is gated
+#        on negativeStreak >= threshold AND phase == .visible.
+grep -q 'negativeStreak >= threshold, next.phase == .visible' "$OBS"
+check "Hidden transition requires visible + threshold misses" $?
+
+# R3.G8. Lease policy: visible → unknown after bounded lease when no proven
+#        observation has arrived.
+grep -q 'leaseDuration' "$OBS"
+check "Lease duration constant exists" $?
+grep -qE 'func applyLease' "$OBS"
+check "Lease application function exists" $?
+grep -q 'next.phase = .unknown' "$OBS"
+check "Lease can degrade visible to unknown" $?
+
+# R3.G9. A single observation requires BOTH snapshot and ownership success.
+grep -q 'guard let owned = await ownershipSnapshot()' "$OBS"
+check "Observation awaits ownership closure (both snapshot + ownership required)" $?
+
+# R3.G10. Lifecycle tokens: stale generation/sessionID rejected in tickOnce.
+grep -q 'lease.sessionID' "$OBS"
+check "tickOnce rejects stale lease (sessionID + generation)" $?
+
+# R3.G11. startWindowMonitor passes ownershipSnapshot closure (not sessionRootPID).
+grep -q 'ownershipSnapshot:' "$GSS"
+check "startWindowMonitor injects ownershipSnapshot closure" $?
+! grep -q 'sessionRootPID' "$GSS"
+check "GameSessionSupervisor no longer sets sessionRootPID" $?
+
+# R3.G12. HostProcessLineage has the single-capture ownedProcessIDs extension.
+grep -qE 'func ownedProcessIDs' "$LIN"
+check "HostProcessLineage has ownedProcessIDs(ledger:) extension" $?
+
+# R3.G13. No pgrep/pkill/killall/ps in observer or supervisor.
+! grep -qE '\bpgrep\b|\bpkill\b|\bkillall\b|\bps -' "$OBS"
+check "No shell ps/pgrep/pkill/killall in observer" $?
 
 echo ""
 echo "=== Summary ==="

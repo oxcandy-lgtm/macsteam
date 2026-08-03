@@ -6,6 +6,7 @@ COORD_SOURCE="Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift"
 LIN_SOURCE="Sources/MacSteam/Sessions/HostProcessLineage.swift"
 SUP_SOURCE="Sources/MacSteam/Sessions/ProcessSupervisor.swift"
 GSS_SOURCE="Sources/MacSteam/Sessions/GameSessionSupervisor.swift"
+OBS_SOURCE="Sources/MacSteam/Sessions/SessionWindowObserver.swift"
 BRINGUP_SOURCE="Tests/MacSteamTests/U1R18ProcessCensusBringUpTests.swift"
 LINETESTS_SOURCE="Tests/MacSteamTests/HostProcessLineageTests.swift"
 FIX6_CLEANUP_TESTS="Tests/MacSteamTests/GameSessionSupervisorCleanupTests.swift"
@@ -35,6 +36,7 @@ run_mutation() {
     cp "$LIN_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
     cp "$SUP_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
     cp "$GSS_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
+    cp "$OBS_SOURCE" "$workdir/Sources/MacSteam/Sessions/"
     cp "$APP_SOURCE" "$workdir/Sources/MacSteam/App/"
     cp "$BRINGUP_SOURCE" "$workdir/Tests/MacSteamTests/"
     cp "$LINETESTS_SOURCE" "$workdir/Tests/MacSteamTests/"
@@ -542,10 +544,56 @@ run_mutation "dockquit-fail-closed-guard-weakened-to-terminateNow" \
     "fail"
 
 # MR5.8 (R5.F7): the reset-before-abort ordering is broken by deleting the token
-#     reset on the incomplete path, so a re-entrant Dock Quit during the abort
-#     reply could be shadowed by the no-op early return.
+#      reset on the incomplete path, so a re-entrant Dock Quit during the abort
+#      reply could be shadowed by the no-op early return.
 run_mutation "dockquit-reset-before-abort-deleted" \
     "sed -i '' '/terminationTransactionStarted = false/d' Sources/MacSteam/App/MacSteamApp.swift" \
+    "fail"
+
+echo ""
+echo "=== U1R18 R3 Ownership-Bound Window Detection Mutation Fixtures ==="
+echo ""
+
+OBS_FILE="Sources/MacSteam/Sessions/SessionWindowObserver.swift"
+
+# Add SessionWindowObserver to the copy list for R3 mutations
+# (extend the run_mutation copy block above)
+# Note: the copy block already copies GSS and LIN; we need OBS too.
+# We'll include OBS in the run_mutation setup by patching the copy loop.
+
+# R3.M1: reintroduce the prohibited SessionProcessTree reference.
+run_mutation "r3-sessionprocesstree-reintroduced" \
+    "echo 'let _ = SessionProcessTree.closure(around: 1)' >> Sources/MacSteam/Sessions/SessionWindowObserver.swift" \
+    "fail"
+
+# R3.M2: remove the ownershipSnapshot closure entirely (reverts to keyword-only).
+run_mutation "r3-ownership-snapshot-removed" \
+    "sed -i '' '/ownershipSnapshot/d' Sources/MacSteam/Sessions/SessionWindowObserver.swift" \
+    "fail"
+
+# R3.M3: remove the ownershipIncomplete enum case (bypass fail-closed grouping).
+run_mutation "r3-ownership-incomplete-case-removed" \
+    "sed -i '' '/case ownershipIncomplete$/d' Sources/MacSteam/Sessions/SessionWindowObserver.swift" \
+    "fail"
+
+# R3.M4: remove the lease policy (visible never degrades).
+run_mutation "r3-lease-removed" \
+    "sed -i '' '/func applyLease/,/}/d' Sources/MacSteam/Sessions/SessionWindowObserver.swift" \
+    "fail"
+
+# R3.M5: remove the hidden→visible gate (miss reaches hidden from unknown).
+run_mutation "r3-hidden-from-unknown" \
+    "sed -i '' 's/if next.negativeStreak >= threshold, next.phase == .visible/if next.negativeStreak >= threshold/' Sources/MacSteam/Sessions/SessionWindowObserver.swift" \
+    "fail"
+
+# R3.M6: remove the leaseDuration constant.
+run_mutation "r3-lease-duration-removed" \
+    "sed -i '' '/leaseDuration/d' Sources/MacSteam/Sessions/SessionWindowObserver.swift" \
+    "fail"
+
+# R3.M7: bypass ownership check (observe returns positive without ownership).
+run_mutation "r3-ownership-bypass" \
+    "sed -i '' 's/guard let owned = await ownershipSnapshot()/let owned = Set(found)/' Sources/MacSteam/Sessions/SessionWindowObserver.swift" \
     "fail"
 
 echo ""

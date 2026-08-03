@@ -652,12 +652,28 @@ final class GameSessionSupervisor {
         windowObserver.startMonitoring(
             sessionID: sessionID,
             target: target,
+            ownershipSnapshot: { [weak self] in
+                guard let self else { return nil }
+                return await self.ownedProcessSnapshot()
+            },
             applyState: { [weak self] observedState in
                 guard let self = self else { return }
                 guard self.activeSession?.sessionID == sessionID else { return }
                 self.applyWindowObservation(observedState)
             }
         )
+    }
+
+    /// Ownership-bound PID snapshot for window scoping.
+    ///
+    /// Runs a single coherent census against the session ledger and returns
+    /// the set of PIDs proven to belong to the supervised session, or `nil`
+    /// when ownership cannot be proven (no ledger, incomplete census). The
+    /// ledger is updated in place so subsequent censuses remain consistent.
+    private func ownedProcessSnapshot() async -> Set<Int32>? {
+        guard var ledger = censusLedger else { return nil }
+        defer { self.censusLedger = ledger }
+        return HostProcessLineage.ownedProcessIDs(ledger: &ledger)
     }
 
     private func applyWindowObservation(_ observedState: GameSessionState) {

@@ -23,9 +23,9 @@ private func makeTempPrefix() throws -> URL {
     return dir
 }
 
-private func cloverPitWindow() -> WindowInfo {
+private func cloverPitWindow(pid: Int32) -> WindowInfo {
     WindowInfo(
-        ownerPID: 4242,
+        ownerPID: pid,
         ownerName: "CloverPit",
         windowTitle: "CloverPit",
         layer: 0,
@@ -79,13 +79,19 @@ struct GameSessionSupervisorWindowTests {
         #expect(supervisor.isRunning)
         #expect(supervisor.isWindowMonitoring)
 
-        provider.windows = [cloverPitWindow()]
+        let rootPID = supervisor.activeSession?.rootPID ?? 0
+        provider.windows = [cloverPitWindow(pid: rootPID)]
         #expect(await waitForState(supervisor, .runningVisible))
         #expect(supervisor.isRunning)
 
         provider.windows = []
         #expect(await waitForState(supervisor, .runningHidden))
         #expect(supervisor.isRunning)
+
+        // A look-alike window owned by an unrelated PID must never satisfy
+        // the session-scoped matcher.
+        provider.windows = [cloverPitWindow(pid: rootPID + 1_000_000)]
+        #expect(supervisor.state == .runningHidden)
 
         try? await supervisor.forceStop()
     }
@@ -253,7 +259,8 @@ struct GameSessionSupervisorWindowTests {
         await expectDuplicateRejected()
         expectSessionPreserved(.runningUnknown)
 
-        provider.windows = [cloverPitWindow()]
+        let rootPID = supervisor.activeSession?.rootPID ?? 0
+        provider.windows = [cloverPitWindow(pid: rootPID)]
         #expect(await waitForState(supervisor, .runningVisible))
         #expect(supervisor.isRunning)
 
