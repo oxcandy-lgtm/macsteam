@@ -70,6 +70,8 @@ jobs:
         run: bash scripts/test-diagnostic-audit.sh
       - name: Diagnostic security audit
         run: bash scripts/diagnostic-security-audit.sh
+      - name: Test U1R18 audit fixtures
+        run: bash scripts/test-r3-window-authority-audit.sh
 
   license-validation:
     name: License Validation

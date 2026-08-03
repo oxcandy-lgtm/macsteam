@@ -972,3 +972,232 @@ struct SessionWindowObserverLifecycleTests {
         #expect(secondApplied.isEmpty)
     }
 }
+
+// MARK: - R3 Window Authority Regression Tests
+
+/// Production-linked regression tests for U1R18-R3 ownership-bound window
+/// detection. Each test drives through the real `SessionWindowObserver` →
+/// `observe` → `ownershipSnapshot` pipeline.
+struct R3WindowAuthorityRegressionTests {
+
+    // MARK: - Positive path (owned + target identity)
+
+    @Test("owned Steam + Steam target reaches visible") @MainActor
+    func ownedSteamSteamTargetVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+    }
+
+    @Test("owned CloverPit + CloverPit target reaches visible") @MainActor
+    func ownedCloverPitCloverPitTargetVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "CloverPit", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .cloverPit,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+    }
+
+    // MARK: - Cross-target rejection
+
+    @Test("owned Steam + CloverPit target never visible") @MainActor
+    func ownedSteamCloverPitTargetNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .cloverPit,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    @Test("owned CloverPit + Steam target never visible") @MainActor
+    func ownedCloverPitSteamTargetNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "CloverPit", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    // MARK: - Generic owned window rejection
+
+    @Test("owned generic Wine window never visible") @MainActor
+    func ownedGenericWineNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Wine", title: "Wine", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    // MARK: - Foreign candidate rejection
+
+    @Test("foreign Steam candidate never visible") @MainActor
+    func foreignSteamCandidateNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 1)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    @Test("foreign CloverPit candidate never visible") @MainActor
+    func foreignCloverPitCandidateNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "CloverPit", pid: 1)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .cloverPit,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    // MARK: - Ownership failure (nil closure)
+
+    @Test("ownership nil with target window present stays unknown") @MainActor
+    func ownershipNilWithTargetWindowStaysUnknown() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .steam,
+            ownershipSnapshot: { nil },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    @Test("ownership nil with non-target geometry window stays unknown") @MainActor
+    func ownershipNilWithNonTargetGeometryWindowStaysUnknown() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Wine", title: "Wine", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .steam,
+            ownershipSnapshot: { nil },
+            applyState: { applied.append($0) }
+        )
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    // MARK: - Visible + failure (fail-closed, never hidden from failure)
+
+    @Test("visible + provider failure degrades to unknown, never hidden") @MainActor
+    func visiblePlusProviderFailureDegradesToUnknown() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            pollInterval: .milliseconds(10),
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+
+        provider.shouldThrow = true
+        applied.removeAll()
+
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < deadline {
+            await observer.tickOnce(lease: observer.currentLease)
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        observer.invalidate()
+        #expect(applied.contains(.runningUnknown))
+        #expect(!applied.contains(.runningHidden))
+    }
+
+    @Test("visible + ownership failure degrades to unknown, never hidden") @MainActor
+    func visiblePlusOwnershipFailureDegradesToUnknown() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var ownershipEnabled = true
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(), target: .steam,
+            ownershipSnapshot: { [ownPID = Int32(100)] in
+                ownershipEnabled ? Set([ownPID]) : nil
+            },
+            pollInterval: .milliseconds(10),
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+
+        ownershipEnabled = false
+        let deadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < deadline {
+            await observer.tickOnce(lease: observer.currentLease)
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        observer.invalidate()
+        #expect(applied.contains(.runningUnknown))
+        #expect(!applied.contains(.runningHidden))
+    }
+}
