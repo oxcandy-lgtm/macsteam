@@ -25,6 +25,11 @@ import os
 import re
 import sys
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None
+
 # === SHA constants (must match generate-green.py) ===
 BOOTSTRAP_HEAD = "dad91d9ea3a6338b795f1472d0e4f729a1e419db"
 R7_HEAD = "f3ae89d2caa07930ffda7a84059ecdfb18942e3d"
@@ -45,7 +50,7 @@ BEFORE_COMMIT_TS = "2026-08-03T02:00:00Z"
 
 # === IDs ===
 BOOTSTRAP_REVIEW_ID = 4840817794
-REPAIR_REVIEW_ID = 4843792148
+REPAIR_REVIEW_ID = 4847645684
 QUARANTINED_REVIEW_ID = 4841357081
 NORMAL_REVIEW_ID = 4840817795
 
@@ -54,11 +59,12 @@ GATE_ADVANCE_RUN_ID = 30790400002
 SUBMISSION_RUN_ID = 30790400003
 
 REQUIRED_JOBS = ["Swift Build", "Public Audit", "Recipe Validation", "License Validation", "Gitignore Validation"]
+FIX3_WORKSTREAM = "U1R18-R7-FIX3"
 FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
-REPAIR_COMMIT_MSG = "ci: bind trusted submission receipt (U1R18-R7-FIX2)"
+REPAIR_COMMIT_MSG = "ci: wire hosted submission lane (U1R18-R7-FIX3)"
 REPAIR_COMMIT_MSG_FIX1 = "ci: close workstream review authority gate (U1R18-R7-FIX1)"
-REPAIR_CLASSIFICATION = "RED_U1R18_R7_FIX1_CANONICAL_SUBMISSION_RECEIPT_NOT_BOUND"
+REPAIR_CLASSIFICATION = "RED_U1R18_R7_FIX2_HOSTED_SUBMISSION_LANE_NOT_WIRED"
 BOOTSTRAP_CLASSIFICATION = "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
 
 WORKER_REPORT_COMMENT_ID = 5161887211
@@ -92,6 +98,20 @@ def get_pr_head(d):
     return pr["head"]["sha"]
 
 
+def is_submission_run(run):
+    """A stored submission run is identified by its canonical display_title.
+
+    FIX3 stores the workflow-level run-name in `display_title` while `name`
+    carries the static workflow name "Workstream Review Gate".
+    """
+    if isinstance(run, dict):
+        title = str(run.get("display_title", ""))
+        if "phase=submission" in title:
+            return True
+        return "submission" in str(run.get("name", "")).lower()
+    return False
+
+
 def save_policy(temp_dir, policy):
     save_json(temp_dir, "policy.json", policy)
 
@@ -123,7 +143,7 @@ def get_worker_report_body(head_sha, parent_sha, **overrides):
     report = {
         "schema_version": 1,
         "kind": "worker_report",
-        "workstream": FIX2_WORKSTREAM,
+        "workstream": FIX3_WORKSTREAM,
         "head_sha": head_sha,
         "parent_sha": parent_sha,
         "commit_count": 1,
@@ -429,7 +449,7 @@ def m_repair_wrong_commit_message(d):
 
 def m_repair_wrong_workstream_trailer(d):
     commit = load_json(d, "commit_HEAD.json")
-    commit["commit"]["message"] = REPAIR_COMMIT_MSG.replace("\n\nWorkstream: U1R18-R7-FIX1", "")
+    commit["commit"]["message"] = REPAIR_COMMIT_MSG.replace("\n\nWorkstream: U1R18-R7-FIX3", "")
     save_json(d, "commit_HEAD.json", commit)
 
 
@@ -1008,7 +1028,7 @@ def m_submission_run_wrong_branch(d):
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        if "submission" in run.get("name", "").lower():
+        if is_submission_run(run):
             run["head_branch"] = "wrong-branch"
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
@@ -1018,53 +1038,53 @@ def m_submission_run_wrong_event(d):
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        if "submission" in run.get("name", "").lower():
+        if is_submission_run(run):
             run["event"] = "push"
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
 
 def m_submission_run_wrong_phase_in_name(d):
-    """Submission run name does not encode phase=submission."""
+    """Submission run display_title does not encode phase=submission."""
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        name = run.get("name", "")
-        if "submission" in name.lower():
-            run["name"] = name.replace("submission", "wrong_phase")
+        title = run.get("display_title", "")
+        if "phase=submission" in title:
+            run["display_title"] = title.replace("phase=submission", "phase=review")
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
 
 def m_submission_run_wrong_pr_in_name(d):
-    """Submission run name does not encode correct PR number."""
+    """Submission run display_title does not encode correct PR number."""
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        name = run.get("name", "")
-        if "PR=2" in name:
-            run["name"] = name.replace("PR=2", "PR=99")
+        title = run.get("display_title", "")
+        if "PR=2" in title:
+            run["display_title"] = title.replace("PR=2", "PR=99")
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
 
 def m_submission_run_wrong_report_id_in_name(d):
-    """Submission run name does not encode correct worker report comment ID."""
+    """Submission run display_title does not encode correct worker report comment ID."""
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        name = run.get("name", "")
-        if f"REPORT={WORKER_REPORT_COMMENT_ID}" in name:
-            run["name"] = name.replace(f"REPORT={WORKER_REPORT_COMMENT_ID}", "REPORT=9999999999")
+        title = run.get("display_title", "")
+        if f"REPORT={WORKER_REPORT_COMMENT_ID}" in title:
+            run["display_title"] = title.replace(f"REPORT={WORKER_REPORT_COMMENT_ID}", "REPORT=9999999999")
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
 
 def m_submission_run_wrong_head_in_name(d):
-    """Submission run name does not encode correct HEAD SHA (targets HEAD run)."""
+    """Submission run display_title does not encode correct HEAD SHA (targets HEAD run)."""
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     head = get_pr_head(d)
     for run in runs_list:
-        name = run.get("name", "")
-        if f"HEAD={head}" in name:
-            run["name"] = name.replace(f"HEAD={head}", f"HEAD={WRONG_SHA}")
+        title = run.get("display_title", "")
+        if f"HEAD={head}" in title:
+            run["display_title"] = title.replace(f"HEAD={head}", f"HEAD={WRONG_SHA}")
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
 
@@ -1073,7 +1093,7 @@ def m_submission_run_attempt_gt_one(d):
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        if "submission" in run.get("name", "").lower():
+        if is_submission_run(run):
             run["run_attempt"] = 2
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
@@ -1083,7 +1103,7 @@ def m_submission_run_incomplete(d):
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        if "submission" in run.get("name", "").lower():
+        if is_submission_run(run):
             run["status"] = "in_progress"
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
@@ -1093,7 +1113,7 @@ def m_submission_run_failed(d):
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        if "submission" in run.get("name", "").lower():
+        if is_submission_run(run):
             run["conclusion"] = "failure"
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
@@ -1147,13 +1167,33 @@ def m_submission_gate_job_duplicate(d):
     save_json(d, "submission-jobs.json", {"jobs": jobs_list})
 
 
+def m_receipt_submission_job_wrong_name(d):
+    """Submission run gate job renamed to a non-canonical name."""
+    jobs = load_json(d, "submission-jobs.json")
+    jobs_list = jobs.get("jobs", []) if isinstance(jobs, dict) else jobs
+    for j in jobs_list:
+        if j.get("name") == "Submission Gate":
+            j["name"] = "Review Gate"
+            break
+    save_json(d, "submission-jobs.json", {"jobs": jobs_list})
+
+
+def m_receipt_wrong_workflow_path(d):
+    """Submission run workflow path wrong (or points at another workflow)."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        run["path"] = ".github/workflows/ci.yml"
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
 def m_report_created_after_submission_run(d):
     """Worker report comment created at > submission run started at."""
     submission_started = "2026-08-03T02:30:00Z"
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        if "submission" in run.get("name", "").lower():
+        if is_submission_run(run):
             run["started_at"] = submission_started
             run["created_at"] = submission_started
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
@@ -1174,7 +1214,7 @@ def m_submission_completed_after_review(d):
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        if "submission" in run.get("name", "").lower():
+        if is_submission_run(run):
             run["completed_at"] = "2026-08-03T05:00:00Z"
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
@@ -1356,7 +1396,7 @@ def m_submission_run_id_mismatch(d):
     runs = load_json(d, "submission-runs.json")
     runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
     for run in runs_list:
-        if "submission" in run.get("name", "").lower():
+        if is_submission_run(run):
             run["id"] = 7777777777
     save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
 
@@ -1447,6 +1487,188 @@ def rebuild_body(json_data, marker=CONTROLLER_MARKER):
 
 def rebuild_worker_body(json_data):
     return rebuild_body(json_data, WORKER_MARKER)
+
+
+# === Workflow YAML mutations (FIX3 §12/§13) ===
+
+def load_workflow(d):
+    path = os.path.join(d, "workflow.yml")
+    if not os.path.exists(path):
+        raise ValueError(f"workflow.yml missing in {d}")
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def save_workflow(d, doc):
+    with open(os.path.join(d, "workflow.yml"), "w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+
+
+def wf_triggers(doc):
+    for key in (True, "on", "On", "ON"):
+        if isinstance(doc, dict) and key in doc:
+            return doc[key]
+    return {}
+
+
+def m_workflow_worker_report_input_missing(d):
+    doc = load_workflow(d)
+    inputs = wf_triggers(doc).get("workflow_dispatch", {}).get("inputs", {})
+    if "worker_report_comment_id" in inputs:
+        del inputs["worker_report_comment_id"]
+    save_workflow(d, doc)
+
+
+def m_workflow_worker_report_input_optional(d):
+    doc = load_workflow(d)
+    inputs = wf_triggers(doc).get("workflow_dispatch", {}).get("inputs", {})
+    if isinstance(inputs.get("worker_report_comment_id"), dict):
+        inputs["worker_report_comment_id"]["required"] = False
+    save_workflow(d, doc)
+
+
+def m_workflow_submission_cli_arg_missing(d):
+    doc = load_workflow(d)
+    jobs = doc.get("jobs", {})
+    for job in jobs.values():
+        if job.get("name") == "Submission Gate":
+            steps = job.get("steps", [])
+            for step in steps:
+                if isinstance(step.get("run"), str):
+                    step["run"] = step["run"].replace(
+                        " --worker-report-comment-id ${{ inputs.worker_report_comment_id }}", "")
+    save_workflow(d, doc)
+
+
+def m_workflow_submission_cli_arg_hardcoded(d):
+    doc = load_workflow(d)
+    jobs = doc.get("jobs", {})
+    for job in jobs.values():
+        if job.get("name") == "Submission Gate":
+            steps = job.get("steps", [])
+            for step in steps:
+                if isinstance(step.get("run"), str):
+                    step["run"] = step["run"].replace(
+                        "${{ inputs.worker_report_comment_id }}", "1234567890")
+    save_workflow(d, doc)
+
+
+def m_workflow_review_cli_arg_missing(d):
+    doc = load_workflow(d)
+    jobs = doc.get("jobs", {})
+    for job in jobs.values():
+        if job.get("name") == "Review Gate":
+            steps = job.get("steps", [])
+            for step in steps:
+                if isinstance(step.get("run"), str):
+                    step["run"] = step["run"].replace(
+                        " --worker-report-comment-id ${{ inputs.worker_report_comment_id }}", "")
+    save_workflow(d, doc)
+
+
+def m_workflow_run_name_missing(d):
+    doc = load_workflow(d)
+    doc.pop("run-name", None)
+    save_workflow(d, doc)
+
+
+def m_workflow_run_name_missing_phase(d):
+    doc = load_workflow(d)
+    if isinstance(doc.get("run-name"), str):
+        doc["run-name"] = doc["run-name"].replace(" / phase=${{ inputs.phase }}", "")
+    save_workflow(d, doc)
+
+
+def m_workflow_run_name_missing_pr(d):
+    doc = load_workflow(d)
+    if isinstance(doc.get("run-name"), str):
+        doc["run-name"] = doc["run-name"].replace(" / PR=${{ inputs.pr_number }}", "")
+    save_workflow(d, doc)
+
+
+def m_workflow_run_name_missing_head(d):
+    doc = load_workflow(d)
+    if isinstance(doc.get("run-name"), str):
+        doc["run-name"] = doc["run-name"].replace(" / HEAD=${{ inputs.expected_head }}", "")
+    save_workflow(d, doc)
+
+
+def m_workflow_run_name_missing_report(d):
+    doc = load_workflow(d)
+    if isinstance(doc.get("run-name"), str):
+        doc["run-name"] = doc["run-name"].replace(" / REPORT=${{ inputs.worker_report_comment_id }}", "")
+    save_workflow(d, doc)
+
+
+def m_workflow_submission_job_wrong_name(d):
+    doc = load_workflow(d)
+    jobs = doc.get("jobs", {})
+    for job in jobs.values():
+        if job.get("name") == "Submission Gate":
+            job["name"] = "Manual Gate"
+    save_workflow(d, doc)
+
+
+def m_workflow_submission_job_duplicate(d):
+    doc = load_workflow(d)
+    jobs = doc.get("jobs", {})
+    for job_id, job in list(jobs.items()):
+        if job.get("name") == "Submission Gate":
+            jobs[job_id + "_dup"] = {"name": "Submission Gate", "if": job.get("if"),
+                                     "steps": job.get("steps")}
+            break
+    save_workflow(d, doc)
+
+
+def m_workflow_generic_manual_job_restored(d):
+    doc = load_workflow(d)
+    doc.setdefault("jobs", {})["manual"] = {
+        "name": "Manual Gate",
+        "if": "github.event_name == 'workflow_dispatch'",
+        "steps": [{"run": "echo manual"}],
+    }
+    save_workflow(d, doc)
+
+
+def m_workflow_submission_condition_too_broad(d):
+    doc = load_workflow(d)
+    jobs = doc.get("jobs", {})
+    for job in jobs.values():
+        if job.get("name") == "Submission Gate":
+            job["if"] = "github.event_name == 'workflow_dispatch'"
+    save_workflow(d, doc)
+
+
+def m_workflow_checkout_expected_head_missing(d):
+    doc = load_workflow(d)
+    jobs = doc.get("jobs", {})
+    for job in jobs.values():
+        if job.get("name") in ("Submission Gate", "Review Gate"):
+            steps = job.get("steps", [])
+            for step in steps:
+                if isinstance(step.get("uses"), str) and "actions/checkout" in step.get("uses", ""):
+                    step.setdefault("with", {}).pop("ref", None)
+    save_workflow(d, doc)
+
+
+def m_workflow_yaml_unparseable(d):
+    with open(os.path.join(d, "workflow.yml"), "w") as f:
+        f.write("name: [broken\n  : ::\n")
+
+
+def m_workflow_inputs_block_missing(d):
+    doc = load_workflow(d)
+    for key in (True, "on", "On", "ON"):
+        if key in doc:
+            del doc[key]
+            break
+    save_workflow(d, doc)
+
+
+def m_workflow_jobs_block_missing(d):
+    doc = load_workflow(d)
+    doc.pop("jobs", None)
+    save_workflow(d, doc)
 
 
 # === Mutation registry ===
@@ -1610,6 +1832,35 @@ MUTATIONS = {
     "api_404_commit": m_api_404_commit,
     "api_404_comments": m_api_404_comments,
     "api_404_reviews": m_api_404_reviews,
+
+
+# === FIX3: Hosted submission lane mutations ===
+    "receipt_display_title_wrong_phase": m_submission_run_wrong_phase_in_name,
+    "receipt_display_title_wrong_pr": m_submission_run_wrong_pr_in_name,
+    "receipt_display_title_wrong_head": m_submission_run_wrong_head_in_name,
+    "receipt_display_title_wrong_report": m_submission_run_wrong_report_id_in_name,
+    "receipt_submission_job_wrong_name": m_receipt_submission_job_wrong_name,
+    "receipt_submission_job_missing": m_submission_gate_job_missing,
+    "receipt_submission_job_duplicate": m_submission_gate_job_duplicate,
+    "receipt_wrong_workflow_path": m_receipt_wrong_workflow_path,
+    "workflow_worker_report_input_missing": m_workflow_worker_report_input_missing,
+    "workflow_worker_report_input_optional": m_workflow_worker_report_input_optional,
+    "workflow_submission_cli_arg_missing": m_workflow_submission_cli_arg_missing,
+    "workflow_submission_cli_arg_hardcoded": m_workflow_submission_cli_arg_hardcoded,
+    "workflow_review_cli_arg_missing": m_workflow_review_cli_arg_missing,
+    "workflow_run_name_missing": m_workflow_run_name_missing,
+    "workflow_run_name_missing_phase": m_workflow_run_name_missing_phase,
+    "workflow_run_name_missing_pr": m_workflow_run_name_missing_pr,
+    "workflow_run_name_missing_head": m_workflow_run_name_missing_head,
+    "workflow_run_name_missing_report": m_workflow_run_name_missing_report,
+    "workflow_submission_job_wrong_name": m_workflow_submission_job_wrong_name,
+    "workflow_submission_job_duplicate": m_workflow_submission_job_duplicate,
+    "workflow_generic_manual_job_restored": m_workflow_generic_manual_job_restored,
+    "workflow_submission_condition_too_broad": m_workflow_submission_condition_too_broad,
+    "workflow_checkout_expected_head_missing": m_workflow_checkout_expected_head_missing,
+    "workflow_yaml_unparseable": m_workflow_yaml_unparseable,
+    "workflow_inputs_block_missing": m_workflow_inputs_block_missing,
+    "workflow_jobs_block_missing": m_workflow_jobs_block_missing,
 }
 
 

@@ -1,4 +1,4 @@
-# Workstream Review Gate — R7 / U1R18-R7-FIX1
+# Workstream Review Gate — R7 / U1R18-R7-FIX3
 
 One NX = one workstream. One submitted commit per workstream. This gate enforces
 sequential advancement on a single PR.
@@ -119,22 +119,63 @@ by exact commit ID match, exact state, and exact classification in the body
 rather than by marker. `classification.startswith("GREEN_")` alone never grants
 approval — the exact classification string must appear in the review body.
 
-## Repair authorization — R7-FIX2
+## Repair authorization — R7-FIX3
 
-The repair authorization is a one-time exception for the `U1R18-R7-FIX2`
-workstream. The parent commit `4b7cbe1...` was RED (canonical submission receipt
-not bound). This repair authorization allows exactly one direct child commit that:
+The repair authorization is a one-time exception for the `U1R18-R7-FIX3`
+workstream. The parent commit `4d2cdeec...` was RED (hosted submission lane not
+wired). This repair authorization allows exactly one direct child commit that:
 
-- Has parent == `4b7cbe1...`
+- Has parent == `4d2cdeec...`
 - Is not a merge commit
-- Has commit message exactly matching `ci: bind trusted submission receipt (U1R18-R7-FIX2)`
-- Has `Workstream: U1R18-R7-FIX2` trailer
+- Has commit message exactly matching `ci: wire hosted submission lane (U1R18-R7-FIX3)`
+- Has `Workstream: U1R18-R7-FIX3` trailer
 - Changes only files in the allowed path set (§3)
 - Has production source delta 0 (no `Sources/**` or `Tests/**` changes)
 
 The repair authorization is linked to the exact controller RED review with ID
-`4843792148`, anchored to `4b7cbe1...`, whose body contains the exact
-classification `RED_U1R18_R7_FIX1_CANONICAL_SUBMISSION_RECEIPT_NOT_BOUND`.
+`4847645684`, anchored to `4d2cdeec...`, whose body contains the exact
+classification `RED_U1R18_R7_FIX2_HOSTED_SUBMISSION_LANE_NOT_WIRED`.
+
+## Hosted submission lane (FIX3)
+
+The hosted lane is the GitHub Actions workflow `.github/workflows/workstage-review-gate.yml`.
+It exposes exactly three phase-specific jobs — `Advance Gate` (pull_request-only),
+`Submission Gate`, and `Review Gate` (both `workflow_dispatch` + exact phase
+condition). The `workflow_dispatch` input `worker_report_comment_id` is required
+and is passed through to the gate script as `--worker-report-comment-id`.
+
+The workflow defines a workflow-level `run-name` that binds all four dispatch
+inputs:
+
+```
+run-name: MacSteam Gate / phase=${{ inputs.phase }} / PR=${{ inputs.pr_number }} / HEAD=${{ inputs.expected_head }} / REPORT=${{ inputs.worker_report_comment_id }}
+```
+
+GitHub surfaces this `run-name` as the workflow run's `name` and `display_title`.
+The review phase validates the receipt's dynamic identity against this
+`display_title` exact match (`phase=submission`, `PR=<pr_number>`,
+`HEAD=<expected_head>`, `REPORT=<worker_report_comment_id>`), in addition to
+the static identity (canonical workflow `path`, `head_sha`, `head_branch`,
+`event`). Because the workflow declares a `run-name`, the run's `name` field is
+the interpolated run-name rather than the workflow `name:` value, so the static
+workflow identity is determined by its canonical path
+`.github/workflows/workstage-review-gate.yml`.
+
+The submission phase is fail-closed: a gate invocation that is not actually
+running inside the hosted lane (missing `GITHUB_ACTIONS`, wrong event,
+repository mismatch, missing/invalid `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT != 1`,
+wrong workflow name, invalid expected_head, or missing worker report comment ID)
+exits 2 with a REJECTED state and never emits a hosted submission receipt. The
+submission success output always records the real `GITHUB_RUN_ID` and attempt 1.
+
+The workflow file itself is audited (`--check-workflow`) against the §12
+semantic contract: name, run-name binding, required inputs (no default),
+no manual `advance` input, exactly one `Submission Gate`/`Review Gate`/`Advance
+Gate` job each, exact phase conditions, no generic `Manual Gate` job, checkout
+bound to `inputs.expected_head` with `persist-credentials: false`, and
+`--worker-report-comment-id ${{ inputs.worker_report_comment_id }}` on both
+submission and review commands. Missing/unparseable protected blocks exit 2;
+semantic mismatch exits 1.
 
 ## Submission run receipt (§8)
 
@@ -204,6 +245,10 @@ fixtures.
 ```bash
 # Verify clean fixtures pass
 bash scripts/test-workstage-review-gate.sh
+
+# Audit the live workflow file against the §12 semantic contract
+python3 scripts/workstage-review-gate.py \
+  --check-workflow .github/workflows/workstage-review-gate.yml
 ```
 
 ## Permissions

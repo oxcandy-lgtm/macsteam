@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Source code mutation applier for workstage-review-gate — U1R18-R7-FIX1.
+Source code mutation applier for workstage-review-gate — U1R18-R7-FIX3.
 
 Usage:
   python3 apply-source-mutation.py <MUTATION_NAME> <gate_script_path>
@@ -56,9 +56,9 @@ def apply_mutation(source, mutation_name):
 
         # === M4: report/ — Change workstream check ===
         "m4_wrong_workstream": (
-            'if workstream != FIX2_WORKSTREAM:',
+            'if workstream != expected_ws:',
             'if workstream != "U1R18-R7":',
-            "Worker report: check for U1R18-R7 instead of the active FIX2 workstream (rejects valid workstream)"
+            "Worker report: check for U1R18-R7 instead of the active FIX3 workstream (rejects valid workstream)"
         ),
 
         # === M5: report/ — Invert before_commit timestamp comparison ===
@@ -168,16 +168,23 @@ def apply_mutation(source, mutation_name):
 
         # === M20: receipt/ — Invert submission gate job check ===
         "m20_invert_gate_job_status": (
-            'if j.get("status") != "completed":',
-            'if j.get("status") == "completed":',
+            'if gate_job.get("status") != "completed":',
+            'if gate_job.get("status") == "completed":',
             "Submission job: invert job status completed check (rejects valid completed jobs)"
         ),
 
         # === M21: receipt/ — Invert submission gate job conclusion ===
         "m21_invert_gate_job_conclusion": (
-            'if j.get("conclusion") != "success":',
-            'if j.get("conclusion") == "success":',
+            'if conclusion != "success":',
+            'if conclusion == "success":',
             "Submission job: invert job conclusion success check (rejects valid successful jobs)"
+        ),
+
+        # === M26: receipt/ — Read dynamic identity from run.name not display_title ===
+        "receipt_dynamic_identity_reads_name_not_display_title": (
+            'display_title = run.get("display_title", "")',
+            'display_title = run.get("name", "")',
+            "Submission receipt: read dynamic identity from run.name instead of display_title (rejects valid runs)"
         ),
 
         # === M22: receipt/ — Skip submission run chronology check ===

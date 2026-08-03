@@ -2,7 +2,7 @@
   "number": 2,
   "head": {
     "ref": "feat/ultimate-cloverpit-u1",
-    "sha": "b7c4f9a8c2d6e103547a9b8c0d2e3f4a5b6c7d8e",
+    "sha": "111122223333444455556666777788889999aabb",
     "repo": {
       "full_name": "oxcandy-lgtm/macsteam"
     }
@@ -17,6 +17,6 @@
   "draft": true,
   "merged": false,
   "mergeable": "MERGEABLE",
-  "title": "MacsTeam Ultimate U1R18-R7-FIX2 NX Dispatch",
+  "title": "MacsTeam Ultimate U1R18-R7-FIX3 NX Dispatch",
   "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2"
 }

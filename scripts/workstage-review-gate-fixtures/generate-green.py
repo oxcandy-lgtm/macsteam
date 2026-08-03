@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Generate GREEN fixture bundles for workstage-review-gate — U1R18-R7-FIX2.
+"""Generate GREEN fixture bundles for workstage-review-gate — U1R18-R7-FIX3.
 
 Creates all GREEN fixture directories that should pass the gate with exit code 0.
 
-FIX2 notes:
+FIX2/FIX3 notes:
   - Every normal-family parent controller review triggers §9 submission-receipt
     revalidation, so such fixtures carry a submission run anchored at the parent.
   - Submission-phase fixtures are routed through `_validate_parent_review`, so
     they MUST include a valid parent controller review (not just []).
-  - Review-phase fixtures need BOTH a parent submission run (for §9 parent
+  - Review-phase fixtures need BOTH a parent submission run (for §6 parent
     revalidation) and a head submission run (for `_validate_submission_receipt`).
+  - FIX3 stored submission runs expose `display_title` (the canonical run-name)
+    while `name` is the static workflow name "Workstream Review Gate"; the gate
+    verifies dynamic identity from `display_title` only.
 """
 
 import json
@@ -24,17 +27,22 @@ BOOTSTRAP_HEAD = "dad91d9ea3a6338b795f1472d0e4f729a1e419db"
 R7_HEAD = "f3ae89d2caa07930ffda7a84059ecdfb18942e3d"
 FIX1_HEAD = "4b7cbe162d0dbf4e660972b2eda3f369588884e3"
 FIX2_HEAD = "b7c4f9a8c2d6e103547a9b8c0d2e3f4a5b6c7d8e"
+FIX3_PARENT = "4d2cdeec23a098deeff4d7ceacc36c9dc4c8c595"
+FIX3_HEAD = "111122223333444455556666777788889999aabb"
 NORMAL_PARENT = "6656ec33d15289ce122f4ba9d1e2db71f260d8b7"
 NORMAL_HEAD = "0123456789abcdef0123456789abcdef01234567"
 HISTORICAL_HEAD = "9999999999999999999999999999999999999999"
 HISTORICAL_PARENT = "8888888888888888888888888888888888888888"
 FUTURE_CHILD_HEAD = "c8d5f0ae1b2c3d4e5f6078901234567890abcdef"
+WRONG_SHA = "cafe1234cafe1234cafe1234cafe1234cafe1234"
 
-FIX2_WORKSTREAM = "U1R18-R7-FIX2"
-REPAIR_COMMIT_MSG = "ci: bind trusted submission receipt (U1R18-R7-FIX2)\n\nWorkstream: U1R18-R7-FIX2"
+FIX3_WORKSTREAM = "U1R18-R7-FIX3"
+WORKER_REPORT_WORKSTREAM = FIX3_WORKSTREAM
+FIX3_REPAIR_COMMIT_MSG = ("ci: wire hosted submission lane (U1R18-R7-FIX3)\n\n"
+                          "Workstream: U1R18-R7-FIX3")
 
 BOOTSTRAP_REVIEW_ID = 4840817794
-REPAIR_REVIEW_ID = 4843792148
+REPAIR_REVIEW_ID = 4847645684
 REPAIR_REVIEW_ID_CHILD = 4843792150
 NORMAL_REVIEW_ID = 4840817795
 HISTORICAL_REVIEW_ID = 4840817800
@@ -92,7 +100,7 @@ def pr_json(head_sha):
         "draft": True,
         "merged": False,
         "mergeable": "MERGEABLE",
-        "title": "MacsTeam Ultimate U1R18-R7-FIX2 NX Dispatch",
+        "title": "MacsTeam Ultimate U1R18-R7-FIX3 NX Dispatch",
         "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2",
     }
 
@@ -115,7 +123,7 @@ def worker_report_json(head_sha, parent_sha, comment_id=WORKER_REPORT_COMMENT_ID
     report = {
         "schema_version": 1,
         "kind": "worker_report",
-        "workstream": FIX2_WORKSTREAM,
+        "workstream": WORKER_REPORT_WORKSTREAM,
         "head_sha": head_sha,
         "parent_sha": parent_sha,
         "commit_count": 1,
@@ -149,7 +157,9 @@ def digest(comment):
 def submission_run_json(run_id, head_sha, report_comment_id, started, completed):
     return {
         "id": run_id,
-        "name": f"MacSteam Workstage Review Gate / submission / PR=2 / HEAD={head_sha} / REPORT={report_comment_id}",
+        "name": "Workstream Review Gate",
+        "display_title": f"MacSteam Gate / phase=submission / PR=2 / HEAD={head_sha} / REPORT={report_comment_id}",
+        "path": ".github/workflows/workstage-review-gate.yml",
         "head_sha": head_sha,
         "head_branch": "feat/ultimate-cloverpit-u1",
         "workflow_id": 325971670,
@@ -193,6 +203,7 @@ def gate_advance_run_json(run_id, head_sha):
         "head_sha": head_sha,
         "head_branch": "feat/ultimate-cloverpit-u1",
         "workflow_id": 325971670,
+        "path": ".github/workflows/workstage-review-gate.yml",
         "event": "workflow_dispatch",
         "status": "completed",
         "conclusion": "success",
@@ -338,13 +349,13 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=FIX2_HEAD, parent_sha=FIX1_HEAD, message=REPAIR_COMMIT_MSG)
-    repair_body = (controller_review_json(FIX1_HEAD, decision="rejected",
-                                          classification="RED_U1R18_R7_FIX1_CANONICAL_SUBMISSION_RECEIPT_NOT_BOUND")
-                   + "\n\nR7 repair authorization granted for U1R18-R7-FIX2. "
+    _base(d, head_sha=FIX3_HEAD, parent_sha=FIX3_PARENT, message=FIX3_REPAIR_COMMIT_MSG)
+    repair_body = (controller_review_json(FIX3_PARENT, decision="rejected",
+                                          classification="RED_U1R18_R7_FIX2_HOSTED_SUBMISSION_LANE_NOT_WIRED")
+                   + "\n\nR7 repair authorization granted for U1R18-R7-FIX3. "
                      "This RED review authorizes a single direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(FIX1_HEAD, REPAIR_REVIEW_ID, repair_body, "APPROVED", REPAIR_REVIEW_TS)])
+                  [review_json(FIX3_PARENT, REPAIR_REVIEW_ID, repair_body, "APPROVED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json", {"total_count": 0, "files": []})
 
 

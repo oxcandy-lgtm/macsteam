@@ -1,5 +1,7 @@
 name: Workstream Review Gate
 
+run-name: MacSteam Gate / phase=${{ inputs.phase }} / PR=${{ inputs.pr_number }} / HEAD=${{ inputs.expected_head }} / REPORT=${{ inputs.worker_report_comment_id }}
+
 on:
   pull_request:
     branches:
@@ -14,14 +16,19 @@ on:
         required: true
         type: choice
         options:
-          - advance
           - submission
           - review
       pr_number:
         required: true
+        type: string
       expected_head:
         required: true
+        type: string
         description: "Exact 40-character HEAD SHA to validate"
+      worker_report_comment_id:
+        required: true
+        type: string
+        description: "Exact issue comment ID of the canonical Worker report"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.sha }}
@@ -55,23 +62,48 @@ jobs:
             --repo ${{ github.repository }} \
             --policy .github/workstage-review-gate-policy.json
 
-  manual:
-    name: "Manual Gate (phase: ${{ inputs.phase }})"
-    if: github.event_name == 'workflow_dispatch'
+  submission:
+    name: Submission Gate
+    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'submission'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ inputs.expected_head }}
           persist-credentials: false
       - name: Set up gh CLI token
         run: echo "GH_TOKEN=${GITHUB_TOKEN}" >> "$GITHUB_ENV"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Run workstage ${{ inputs.phase }} gate
+      - name: Run workstage submission gate
         run: |
           python3 scripts/workstage-review-gate.py \
-            --phase ${{ inputs.phase }} \
+            --phase submission \
             --pr-number ${{ inputs.pr_number }} \
             --expected-head ${{ inputs.expected_head }} \
             --repo ${{ github.repository }} \
-            --policy .github/workstage-review-gate-policy.json
+            --policy .github/workstage-review-gate-policy.json \
+            --worker-report-comment-id ${{ inputs.worker_report_comment_id }}
+
+  review:
+    name: Review Gate
+    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'review'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.expected_head }}
+          persist-credentials: false
+      - name: Set up gh CLI token
+        run: echo "GH_TOKEN=${GITHUB_TOKEN}" >> "$GITHUB_ENV"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run workstage review gate
+        run: |
+          python3 scripts/workstage-review-gate.py \
+            --phase review \
+            --pr-number ${{ inputs.pr_number }} \
+            --expected-head ${{ inputs.expected_head }} \
+            --repo ${{ github.repository }} \
+            --policy .github/workstage-review-gate-policy.json \
+            --worker-report-comment-id ${{ inputs.worker_report_comment_id }}

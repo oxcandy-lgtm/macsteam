@@ -3,7 +3,9 @@
   "workflow_runs": [
     {
       "id": 30790400004,
-      "name": "MacSteam Workstage Review Gate / submission / PR=2 / HEAD=6656ec33d15289ce122f4ba9d1e2db71f260d8b7 / REPORT=5161887211",
+      "name": "Workstream Review Gate",
+      "display_title": "MacSteam Gate / phase=submission / PR=2 / HEAD=6656ec33d15289ce122f4ba9d1e2db71f260d8b7 / REPORT=5161887211",
+      "path": ".github/workflows/workstage-review-gate.yml",
       "head_sha": "6656ec33d15289ce122f4ba9d1e2db71f260d8b7",
       "head_branch": "feat/ultimate-cloverpit-u1",
       "workflow_id": 325971670,
@@ -23,7 +25,9 @@
     },
     {
       "id": 30790400003,
-      "name": "MacSteam Workstage Review Gate / submission / PR=2 / HEAD=0123456789abcdef0123456789abcdef01234567 / REPORT=5161887211",
+      "name": "Workstream Review Gate",
+      "display_title": "MacSteam Gate / phase=submission / PR=2 / HEAD=0123456789abcdef0123456789abcdef01234567 / REPORT=5161887211",
+      "path": ".github/workflows/workstage-review-gate.yml",
       "head_sha": "0123456789abcdef0123456789abcdef01234567",
       "head_branch": "feat/ultimate-cloverpit-u1",
       "workflow_id": 325971670,

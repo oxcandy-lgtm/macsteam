@@ -11,11 +11,80 @@ GATE="${SCRIPT_DIR}/workstage-review-gate.py"
 DEFAULT_POLICY="${SCRIPT_DIR}/../.github/workstage-review-gate-policy.json"
 TEMP_BASE="/tmp/wrg-test-$$"
 
+# The FIX3 workflow YAML audit requires PyYAML. The gate itself still fails
+# closed (exit 2) on unparseable YAML without it, but the semantic-audit
+# harness section can only run when PyYAML is available.
+HAS_YAML=$(python3 -c "import yaml; print('yes')" 2>/dev/null || echo "no")
+
 PASS=0
 FAIL=0
 
 ok()   { PASS=$((PASS+1)); }
 bad()  { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+
+# Unique positive run IDs so each hosted (submission) gate run is distinct.
+HOSTED_RUN_SEQ=30000000000
+next_hosted_run_id() {
+  HOSTED_RUN_SEQ=$((HOSTED_RUN_SEQ + 1))
+  echo "$HOSTED_RUN_SEQ"
+}
+
+# --- Provide the synthetic hosted context for submission-phase gate runs ---
+# FIX3: only production live mode fails closed; the fixture harness must supply
+# an explicit synthetic hosted context so submission fixtures exercise their
+# real checks instead of dying on hosted_submission_context_missing.
+HOSTED_ENV_VARS=(GITHUB_ACTIONS GITHUB_EVENT_NAME GITHUB_REPOSITORY
+                 GITHUB_RUN_ID GITHUB_RUN_ATTEMPT GITHUB_WORKFLOW)
+set_hosted_env() {
+  export GITHUB_ACTIONS="true"
+  export GITHUB_EVENT_NAME="workflow_dispatch"
+  export GITHUB_REPOSITORY="oxcandy-lgtm/macsteam"
+  export GITHUB_RUN_ID="$(next_hosted_run_id)"
+  export GITHUB_RUN_ATTEMPT="1"
+  export GITHUB_WORKFLOW="Workstream Review Gate"
+}
+clear_hosted_env() {
+  for v in "${HOSTED_ENV_VARS[@]}"; do
+    unset "$v" 2>/dev/null || true
+  done
+}
+
+# --- Run the gate, capturing stdout and the exit code ---
+GATE_OUT=""
+GATE_RC=0
+run_gate_env() {
+  local gate="$1"
+  local phase="$2"
+  shift 2
+  if [ "$phase" = "submission" ]; then
+    set_hosted_env
+  fi
+  set +e
+  GATE_OUT=$(python3 "$gate" "$@" 2>&1)
+  GATE_RC=$?
+  set -e
+  if [ "$phase" = "submission" ]; then
+    clear_hosted_env
+  fi
+}
+
+guard_of() {
+  python3 -c '
+import sys, json
+for line in sys.stdin.read().splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(d, dict) and "guard_label" in d:
+        print(d.get("guard_label", ""))
+        sys.exit(0)
+sys.exit(0)
+' 2>/dev/null || echo ""
+}
 
 mkdir -p "$TEMP_BASE"
 
@@ -39,14 +108,15 @@ run_green_pass() {
   local policy_arg
   policy_arg=$(get_policy_arg "$fixture_dir")
 
-  python3 "$GATE" \
+  run_gate_env "$GATE" "$phase" \
     --phase "$phase" \
     --pr-number 2 \
     --expected-head "$expected_head" \
     --repo "oxcandy-lgtm/macsteam" \
     --fixtures "$fixture_dir" \
     --policy "$policy_arg" \
-    $extra_args > /dev/null 2>&1
+    $extra_args
+  return "$GATE_RC"
 }
 
 # --- Run a fixture with a fixture mutation, expect failure ---
@@ -84,14 +154,15 @@ run_fixture_mutation() {
     policy_arg=$(get_policy_arg "$fixture_dir")
   fi
 
-  python3 "$GATE" \
+  run_gate_env "$GATE" "$phase" \
     --phase "$phase" \
     --pr-number 2 \
     --expected-head "$expected_head" \
     --repo "oxcandy-lgtm/macsteam" \
     --fixtures "$fixture_dir" \
     --policy "$policy_arg" \
-    $extra_args > /dev/null 2>&1
+    $extra_args
+  return "$GATE_RC"
 }
 
 # --- Run a fixture with a source mutation, expect failure ---
@@ -113,14 +184,15 @@ run_source_mutation() {
   local expected_head
   expected_head=$(python3 -c "import json; print(json.load(open('${fixture_dir}/pr.json'))['head']['sha'])")
 
-  python3 "$mut_gate" \
+  run_gate_env "$mut_gate" "$phase" \
     --phase "$phase" \
     --pr-number 2 \
     --expected-head "$expected_head" \
     --repo "oxcandy-lgtm/macsteam" \
     --fixtures "$fixture_dir" \
     --policy "$DEFAULT_POLICY" \
-    $extra_args > /dev/null 2>&1
+    $extra_args
+  return "$GATE_RC"
 }
 
 # ================================================
@@ -133,7 +205,7 @@ GREEN_FIXTURES=(
   "advance_repair|advance|"
   "advance_normal_commented|advance|"
   "advance_normal_approved|advance|"
-  "latest_accept_after_reject|review|"
+  "latest_accept_after_reject|review|--worker-report-comment-id 5161887211"
   "multi_page_comments|submission|--worker-report-comment-id 5161887211"
   "multi_page_reviews|advance|"
   "multi_page_runs_jobs|submission|--worker-report-comment-id 5161887211"
@@ -451,6 +523,130 @@ for mut_name in "${PR_POLICY_MUTATIONS[@]}"; do
 done
 
 # ================================================
+# TEST 2h: FIX3 review receipt — display_title / workflow identity / gate job
+# ================================================
+echo ""
+echo "=== Fixture Mutations: FIX3 Receipt Display Title / Workflow Identity ==="
+
+# name|expected_guard
+FIX3_RECEIPT_MUTATIONS=(
+  "receipt_display_title_wrong_phase|receipt_display_title_wrong_phase"
+  "receipt_display_title_wrong_pr|receipt_display_title_wrong_pr"
+  "receipt_display_title_wrong_head|receipt_display_title_wrong_head"
+  "receipt_display_title_wrong_report|receipt_display_title_wrong_report"
+  "receipt_submission_job_wrong_name|receipt_submission_job_wrong_name"
+  "receipt_wrong_workflow_path|receipt_wrong_workflow_path"
+)
+
+for entry in "${FIX3_RECEIPT_MUTATIONS[@]}"; do
+  IFS='|' read -r mut_name expected_guard <<< "$entry"
+  base_dir="${FIXTURE_DIR}/green/review_exact_submission_receipt"
+  fixture_dir="${TEMP_BASE}/fm_${mut_name}"
+  rm -rf "$fixture_dir"
+  mkdir -p "$fixture_dir"
+  cp -r "${base_dir}/." "$fixture_dir/"
+  expected_head=$(python3 -c "import json; print(json.load(open('${fixture_dir}/pr.json'))['head']['sha'])")
+  python3 "${FIXTURE_DIR}/apply-mutation.py" "$mut_name" "$fixture_dir" 2>/dev/null || true
+  run_gate_env "$GATE" "review" \
+    --phase review --pr-number 2 --expected-head "$expected_head" \
+    --repo "oxcandy-lgtm/macsteam" --fixtures "$fixture_dir" \
+    --policy "$(get_policy_arg "$fixture_dir")" --worker-report-comment-id 5161887211
+  if [ "$GATE_RC" -ne 0 ] && [ "$(guard_of <<< "$GATE_OUT")" = "$expected_guard" ]; then
+    ok
+    echo "  PASS: ${mut_name} (${expected_guard})"
+  else
+    bad "${mut_name} expected guard ${expected_guard}, got rc=${GATE_RC} guard=$(guard_of <<< "$GATE_OUT")"
+  fi
+done
+
+# ================================================
+# TEST 2i: FIX3 hosted submission context — fail closed without synthetic env
+# ================================================
+echo ""
+echo "=== Fixture Mutations: FIX3 Hosted Submission Context (fail-closed) ==="
+
+fixture_dir="${TEMP_BASE}/hf_hosted"
+rm -rf "$fixture_dir"
+mkdir -p "$fixture_dir"
+cp -r "${FIXTURE_DIR}/green/submission_exact_comment_id/." "$fixture_dir/"
+expected_head=$(python3 -c "import json; print(json.load(open('${fixture_dir}/pr.json'))['head']['sha'])")
+run_gate_env "$GATE" "advance" \
+  --phase submission --pr-number 2 --expected-head "$expected_head" \
+  --repo "oxcandy-lgtm/macsteam" --fixtures "$fixture_dir" \
+  --policy "$DEFAULT_POLICY" --worker-report-comment-id 5161887711
+if [ "$GATE_RC" -eq 2 ] && [ "$(guard_of <<< "$GATE_OUT")" = "hosted_submission_context_missing" ]; then
+  ok
+  echo "  PASS: hosted_submission_context_missing (no synthetic env)"
+else
+  bad "hosted submission context should fail closed (rc=${GATE_RC}, guard=$(guard_of <<< "$GATE_OUT"))"
+fi
+
+# ================================================
+# TEST 2j: Workflow semantic audit (--check-workflow)
+# ================================================
+echo ""
+echo "=== Workflow Semantic Audit (FIX3 §12) ==="
+
+if [ "$HAS_YAML" != "yes" ]; then
+  echo "  SKIP: PyYAML unavailable; workflow YAML audit tests skipped (gate still fails closed)"
+else
+REAL_WORKFLOW="${SCRIPT_DIR}/../.github/workflows/workstage-review-gate.yml"
+wf_tmp="${TEMP_BASE}/wf-workflow.yml"
+cp "$REAL_WORKFLOW" "$wf_tmp"
+run_gate_env "$GATE" "advance" --check-workflow "$wf_tmp"
+WF_STATE=$(python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('state',''))" <<< "$GATE_OUT" 2>/dev/null)
+if [ "$GATE_RC" -eq 0 ] && [ "$WF_STATE" = "WORKFLOW_AUDIT_OK" ]; then
+  ok
+  echo "  PASS: workflow audit baseline (rc=0, WORKFLOW_AUDIT_OK)"
+else
+  bad "workflow audit baseline should succeed (rc=$GATE_RC state=$WF_STATE)"
+fi
+
+run_workflow_mutation() {
+  local mut_name="$1"
+  local expected_rc="$2"
+  local fixture_dir="${TEMP_BASE}/wf_${mut_name}"
+  mkdir -p "$fixture_dir"
+  cp "$REAL_WORKFLOW" "$fixture_dir/workflow.yml"
+  python3 "${FIXTURE_DIR}/apply-mutation.py" "$mut_name" "$fixture_dir" 2>/dev/null || true
+  run_gate_env "$GATE" "advance" --check-workflow "$fixture_dir/workflow.yml"
+  if [ "$GATE_RC" = "$expected_rc" ]; then
+    ok
+    echo "  PASS: workflow audit ${mut_name} (rc=$expected_rc)"
+  else
+    bad "workflow ${mut_name} expected rc=$expected_rc, got rc=$GATE_RC guard=$(guard_of <<< "$GATE_OUT")"
+  fi
+}
+
+WF_BREACH_RC1=(
+  "workflow_worker_report_input_missing"
+  "workflow_worker_report_input_optional"
+  "workflow_submission_cli_arg_missing"
+  "workflow_submission_cli_arg_hardcoded"
+  "workflow_review_cli_arg_missing"
+  "workflow_run_name_missing"
+  "workflow_run_name_missing_phase"
+  "workflow_run_name_missing_pr"
+  "workflow_run_name_missing_head"
+  "workflow_run_name_missing_report"
+  "workflow_submission_job_wrong_name"
+  "workflow_submission_job_duplicate"
+  "workflow_generic_manual_job_restored"
+  "workflow_submission_condition_too_broad"
+  "workflow_checkout_expected_head_missing"
+  "workflow_inputs_block_missing"
+)
+for m in "${WF_BREACH_RC1[@]}"; do
+  run_workflow_mutation "$m" 1
+done
+run_workflow_mutation "workflow_yaml_unparseable" 2
+run_workflow_mutation "workflow_jobs_block_missing" 2
+
+TOTAL_FIX3="${#FIX3_RECEIPT_MUTATIONS[@]}"
+echo ""
+echo "  (FIX3 workflow audit: ${#WF_BREACH_RC1[@]} rc=1 checks + 2 rc=2 checks)"
+fi
+# ================================================
 # TEST 3: Source mutations cause GREEN fixture failures
 # ================================================
 echo ""
@@ -483,6 +679,7 @@ SOURCE_MUTATIONS=(
   "m23_invert_completed_after_review|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
   "m24_skip_run_attempt_check|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
   "m25_bypass_submission_receipt|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "receipt_dynamic_identity_reads_name_not_display_title|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
 )
 
 for entry in "${SOURCE_MUTATIONS[@]}"; do

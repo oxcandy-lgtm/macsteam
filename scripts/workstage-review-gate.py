@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-  Workstream Review Gate — U1R18-R7-FIX2
+  Workstream Review Gate — U1R18-R7-FIX3
 
   Enforces sequential workstream advancement on a single PR.
   Verifies that each commit has a preceding controller review before
-  the next workstream can start.  FIX2 adds trusted submission receipt
+  the next workstream can start.  FIX2 added trusted submission receipt
   binding: the submission phase outputs its own GITHUB_RUN_ID as the
-  trusted receipt, which is then validated via GitHub API in review
-  and future-child-advance phases.
+  trusted receipt, which is then validated via GitHub API in review and
+  future-child-advance phases.  FIX3 wires the hosted submission lane:
+  the workflow_dispatch entrypoint requires the exact worker report
+  comment ID, publishes a canonical workflow-level run-name
+  (display_title), and the submission phase fails closed when it is not
+  running inside the hosted GitHub Actions context.  Dynamic run
+  identity is verified against display_title (not run.name).
 
 Usage (live mode):
   python3 scripts/workstage-review-gate.py \\
@@ -17,6 +22,9 @@ Usage (fixture/offline mode):
   python3 scripts/workstage-review-gate.py \\
     --phase submission --pr-number 2 --expected-head <SHA> \\
     --fixtures scripts/workstage-review-gate-fixtures/green/submission
+
+Usage (workflow semantic audit):
+  python3 scripts/workstage-review-gate.py --check-workflow <workflow.yml>
 
 Exit codes:
   0 = phase contract satisfied
@@ -32,6 +40,13 @@ import subprocess
 import sys
 from datetime import datetime
 
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:  # pragma: no cover
+    yaml = None
+    HAS_YAML = False
+
 EXIT_OK = 0
 EXIT_POLICY = 1
 EXIT_INFRA = 2
@@ -43,8 +58,14 @@ WORKER_SCHEMA_PATH = "Contracts/workstream-report.schema.json"
 CONTROLLER_SCHEMA_PATH = "Contracts/controller-review.schema.json"
 POLICY_PATH_DEFAULT = ".github/workstage-review-gate-policy.json"
 
+FIX3_WORKSTREAM = "U1R18-R7-FIX3"
 FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
+
+WORKFLOW_PATH_DEFAULT = ".github/workflows/workstage-review-gate.yml"
+WORKFLOW_NAME_DEFAULT = "Workstream Review Gate"
+
+HOSTED_RUN_NAME_TEMPLATE = "MacSteam Gate / phase=submission / PR={pr} / HEAD={head} / REPORT={report}"
 
 SUPPORTED_SCHEMA_KEYWORDS = {
     "$schema", "$id", "title", "description", "type",
@@ -638,13 +659,16 @@ class Gate:
             if self.phase == "advance":
                 pass
             elif self.phase == "submission":
+                self._validate_hosted_submission_context()
                 self._validate_worker_report_submission()
                 self._validate_ci_run()
                 self._validate_advance_run()
             elif self.phase == "review":
+                self._validate_review_report_id_input()
                 self._validate_worker_report_replay()
                 self._validate_ci_run()
                 self._validate_controller_review()
+                self._validate_review_report_id_binding()
                 self._validate_submission_receipt()
             else:
                 raise GateError(EXIT_INFRA, "unknown_phase",
@@ -1209,6 +1233,46 @@ class Gate:
             raise GateError(EXIT_POLICY, "parent_review_after_child",
                             "Parent review submitted after child commit")
 
+    # === Hosted submission context (FIX3 fail-closed) ===
+
+    def _validate_hosted_submission_context(self):
+        """FIX3 §6: fail closed unless running in the hosted submission lane.
+
+        A locally-executed gate script must NEVER emit a hosted submission
+        receipt.  Missing, empty, zero, negative, non-integer run IDs, a
+        run attempt other than 1, a non-workflow_dispatch event, a
+        repository mismatch, or a missing hosted context all exit 2 with a
+        REJECTED state.
+        """
+        if os.environ.get("GITHUB_ACTIONS", "") != "true":
+            raise GateError(EXIT_INFRA, "hosted_submission_context_missing",
+                            "Submission gate is not running inside GitHub Actions")
+        if os.environ.get("GITHUB_EVENT_NAME", "") != "workflow_dispatch":
+            raise GateError(EXIT_INFRA, "hosted_submission_event_invalid",
+                            f"Submission gate event is not workflow_dispatch: "
+                            f"{os.environ.get('GITHUB_EVENT_NAME')}")
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        if repo != self.repo:
+            raise GateError(EXIT_INFRA, "hosted_submission_repository_mismatch",
+                            f"Submission gate repository mismatch: {repo} != {self.repo}")
+        run_id = os.environ.get("GITHUB_RUN_ID", "")
+        if not re.fullmatch(r"[1-9][0-9]*", run_id):
+            raise GateError(EXIT_INFRA, "hosted_submission_run_id_invalid",
+                            f"Submission GITHUB_RUN_ID invalid: {run_id!r}")
+        if os.environ.get("GITHUB_RUN_ATTEMPT", "") != "1":
+            raise GateError(EXIT_INFRA, "hosted_submission_attempt_invalid",
+                            f"Submission GITHUB_RUN_ATTEMPT != 1: "
+                            f"{os.environ.get('GITHUB_RUN_ATTEMPT')!r}")
+        if os.environ.get("GITHUB_WORKFLOW", "") != WORKFLOW_NAME_DEFAULT:
+            raise GateError(EXIT_INFRA, "hosted_submission_context_missing",
+                            "Submission gate workflow name is not Workstream Review Gate")
+        if not re.fullmatch(r"[a-f0-9]{40}", self.expected_head):
+            raise GateError(EXIT_INFRA, "hosted_submission_context_missing",
+                            "Submission expected_head is not a 40-char SHA")
+        if self.worker_report_comment_id is None or self.worker_report_comment_id < 1:
+            raise GateError(EXIT_INFRA, "hosted_submission_context_missing",
+                            "Submission gate missing a positive worker report comment ID")
+
     # === Worker report validation ===
 
     def _validate_worker_report_fields(self, report, comment):
@@ -1233,9 +1297,11 @@ class Gate:
                             "Report commit_count != 1")
 
         workstream = report.get("workstream", "")
-        if workstream != FIX2_WORKSTREAM:
+        expected_ws = self.policy.get("repair_authorization", {}).get(
+            "required_workstream", FIX3_WORKSTREAM)
+        if workstream != expected_ws:
             raise GateError(EXIT_POLICY, "report_workstream_mismatch",
-                            f"Report workstream != {FIX2_WORKSTREAM} (got {workstream})")
+                            f"Report workstream != {expected_ws} (got {workstream})")
 
         if not report.get("stop"):
             raise GateError(EXIT_POLICY, "report_stop_false",
@@ -1507,10 +1573,16 @@ class Gate:
             raise GateError(EXIT_POLICY, "advance_run_wrong_head",
                             "Advance run head_sha != expected head")
 
-        workflow_name = advance_run.get("name", "")
-        if workflow_name != "Workstream Review Gate":
+        # The gate workflow declares a `run-name`, so the GitHub API reports the
+        # run's `name` as the interpolated run-name, not the workflow's `name:`.
+        # The deterministic static identity of a gate-workflow run is its
+        # canonical path.
+        run_path = advance_run.get("path", "") or advance_run.get("workflow_path", "") or ""
+        run_path_norm = run_path.split("@", 1)[0]
+        if run_path_norm != WORKFLOW_PATH_DEFAULT:
             raise GateError(EXIT_POLICY, "advance_run_wrong_workflow",
-                            f"Advance run workflow name is '{workflow_name}', expected 'Workstream Review Gate'")
+                            f"Advance run workflow path is '{run_path_norm}', "
+                            f"expected '{WORKFLOW_PATH_DEFAULT}'")
 
         if advance_run.get("status") != "completed":
             raise GateError(EXIT_POLICY, "advance_run_incomplete",
@@ -1684,6 +1756,38 @@ class Gate:
 
     # === Submission receipt validation (FIX2) ===
 
+    def _validate_review_report_id_input(self):
+        """FIX3 §5.6: the review dispatch must carry the exact worker report
+        comment ID as a CLI input (never left empty or unused)."""
+        if self.worker_report_comment_id is None:
+            raise GateError(EXIT_INFRA, "worker_report_comment_id_required",
+                            "Worker report comment ID is required for review phase")
+        if self.worker_report_comment_id < 1:
+            raise GateError(EXIT_POLICY, "worker_report_comment_id_invalid",
+                            "Worker report comment ID must be a positive integer")
+
+    def _validate_review_report_id_binding(self):
+        """FIX3 §5.6: dispatch input ID == canonical current-head Worker report
+        ID == controller review JSON worker_report_comment_id. The value must be
+        used, never merely accepted."""
+        if self.worker_report_comment is None:
+            raise GateError(EXIT_POLICY, "review_report_id_missing",
+                            "Review phase has no canonical worker report comment")
+        canonical_id = self.worker_report_comment.get("id")
+        if canonical_id is None or not isinstance(canonical_id, int) or canonical_id < 1:
+            raise GateError(EXIT_POLICY, "review_report_id_missing",
+                            "Review phase canonical worker report comment ID invalid")
+        if self.worker_report_comment_id != canonical_id:
+            raise GateError(EXIT_POLICY, "review_report_id_mismatch",
+                            f"Dispatch report comment ID {self.worker_report_comment_id} "
+                            f"!= canonical report ID {canonical_id}")
+        data = getattr(self, '_controller_review_data', None)
+        controller_id = data.get("worker_report_comment_id") if isinstance(data, dict) else None
+        if controller_id != self.worker_report_comment_id:
+            raise GateError(EXIT_POLICY, "review_report_id_mismatch",
+                            f"Controller review report comment ID {controller_id} "
+                            f"!= dispatch report comment ID {self.worker_report_comment_id}")
+
     def _validate_submission_receipt(self):
         """FIX2 review phase: validate submission workflow run receipt via GitHub API."""
         data = getattr(self, '_controller_review_data', None)
@@ -1728,8 +1832,19 @@ class Gate:
             raise GateError(EXIT_INFRA, "object_unparseable",
                             "Submission run data is not an object")
 
-        # §8.1 Workflow run contract
+        # §8.1 Static workflow identity.
+        # The gate workflow declares a `run-name`, so the GitHub API reports the
+        # run's `name` as the interpolated run-name rather than the workflow's
+        # `name:`. The deterministic static identity of a gate-workflow run is its
+        # canonical path (guarded by receipt_wrong_workflow_path). The dynamic
+        # identity is validated separately from the exact `display_title`.
         repo_full = self.repo
+        run_path = run.get("path", "") or run.get("workflow_path", "") or ""
+        run_path_norm = run_path.split("@", 1)[0]
+        if run_path_norm != WORKFLOW_PATH_DEFAULT:
+            raise GateError(EXIT_POLICY, "receipt_wrong_workflow_path",
+                            f"Submission run workflow path is '{run_path_norm}', "
+                            f"expected '{WORKFLOW_PATH_DEFAULT}'")
         if run.get("repository", {}).get("full_name") != repo_full:
             raise GateError(EXIT_POLICY, "submission_run_wrong_repository",
                             "Submission run repository mismatch")
@@ -1744,22 +1859,16 @@ class Gate:
             raise GateError(EXIT_POLICY, "submission_run_wrong_event",
                             "Submission run event != workflow_dispatch")
 
-        # Run-name encoding validation
-        # GitHub API v3 does not return run-name; use display_title or
-        # reconstruct from workflow_run.name (the canonical run-name)
-        run_name = run.get("name", "") or ""
-        if "submission" not in run_name.lower():
-            raise GateError(EXIT_POLICY, "submission_run_wrong_phase",
-                            "Submission run name does not encode phase=submission")
-        if f"HEAD={target_head}" not in run_name:
-            raise GateError(EXIT_POLICY, "submission_run_wrong_head_in_name",
-                            "Submission run name does not encode exact HEAD")
-        if f"PR={self.pr_number}" not in run_name:
-            raise GateError(EXIT_POLICY, "submission_run_wrong_pr",
-                            "Submission run name does not encode PR number")
-        if f"REPORT={worker_report_comment_id}" not in run_name:
-            raise GateError(EXIT_POLICY, "submission_run_wrong_report_id",
-                            "Submission run name does not encode worker report comment ID")
+        # §8.2 Dynamic run identity — display_title only.
+        # GitHub API v3 exposes the workflow-level run-name as display_title;
+        # run.name is the static workflow name and must never be used as the
+        # dynamic receipt identity.
+        expected_title = HOSTED_RUN_NAME_TEMPLATE.format(
+            pr=self.pr_number, head=target_head, report=worker_report_comment_id)
+        display_title = run.get("display_title", "")
+        if display_title != expected_title:
+            self._raise_display_title_mismatch(display_title, expected_title,
+                                               target_head, worker_report_comment_id)
 
         if str(run.get("id")) != str(submission_run_id):
             raise GateError(EXIT_POLICY, "submission_run_id_mismatch",
@@ -1777,13 +1886,14 @@ class Gate:
             raise GateError(EXIT_POLICY, "submission_run_attempt_gt_one",
                             f"Submission run attempt > 1 ({run_attempt})")
 
-        # §8.3 Job contract
+        # §8.3 Job identity — exactly one completed/success Submission Gate
         jobs = self.client.get_workflow_jobs(submission_run_id)
         if not isinstance(jobs, list):
-            raise GateError(EXIT_INFRA, "object_unparseable",
+            raise GateError(EXIT_INFRA, "workflow_jobs_malformed",
                             "Submission run jobs data is not a list")
 
-        gate_job_count = 0
+        gate_jobs = []
+        job_names = set()
         for j in jobs:
             if not isinstance(j, dict):
                 raise GateError(EXIT_INFRA, "pagination_page_type_invalid",
@@ -1793,27 +1903,37 @@ class Gate:
                 raise GateError(EXIT_INFRA, "submission_job_id_non_integer",
                                 "A submission job has a non-integer id")
             jname = j.get("name", "")
+            job_names.add(jname)
             if jname == "Submission Gate":
-                gate_job_count += 1
-                if j.get("status") != "completed":
-                    raise GateError(EXIT_POLICY, "submission_gate_job_incomplete",
-                                    "Submission gate job not completed")
-                if j.get("conclusion") != "success":
-                    raise GateError(EXIT_POLICY, "submission_gate_job_failed",
-                                    "Submission gate job conclusion != success")
-                if j.get("conclusion") in ("skipped", None):
-                    raise GateError(EXIT_POLICY, "submission_gate_job_skipped",
-                                    "Submission gate job was skipped")
-                if j.get("conclusion") == "cancelled":
-                    raise GateError(EXIT_POLICY, "submission_gate_job_cancelled",
-                                    "Submission gate job was cancelled")
+                gate_jobs.append(j)
 
-        if gate_job_count == 0:
-            raise GateError(EXIT_POLICY, "submission_gate_job_missing",
+        if len(gate_jobs) == 0:
+            if job_names & {"Manual Gate", "Review Gate", "Advance Gate"}:
+                raise GateError(EXIT_POLICY, "receipt_submission_job_wrong_name",
+                                "Submission run has a gate job with a non-canonical name")
+            raise GateError(EXIT_POLICY, "receipt_submission_job_missing",
                             "Submission gate job not found")
-        if gate_job_count > 1:
-            raise GateError(EXIT_POLICY, "submission_gate_job_duplicate",
+        if len(gate_jobs) > 1:
+            raise GateError(EXIT_POLICY, "receipt_submission_job_duplicate",
                             "Multiple submission gate jobs found")
+
+        gate_job = gate_jobs[0]
+        if gate_job.get("status") != "completed":
+            raise GateError(EXIT_POLICY, "submission_gate_job_incomplete",
+                            "Submission gate job not completed")
+        conclusion = gate_job.get("conclusion")
+        if conclusion in ("skipped", None):
+            raise GateError(EXIT_POLICY, "submission_gate_job_skipped",
+                            "Submission gate job was skipped")
+        if conclusion == "cancelled":
+            raise GateError(EXIT_POLICY, "submission_gate_job_cancelled",
+                            "Submission gate job was cancelled")
+        if conclusion != "success":
+            raise GateError(EXIT_POLICY, "submission_gate_job_failed",
+                            "Submission gate job conclusion != success")
+        if gate_job.get("run_id", submission_run_id) != submission_run_id:
+            raise GateError(EXIT_POLICY, "submission_run_id_mismatch",
+                            "Submission gate job run_id mismatch")
 
         # §8.2 Chronology
         if worker_report_comment:
@@ -1837,6 +1957,36 @@ class Gate:
 
         self._submission_run_id_validated = submission_run_id
 
+    def _raise_display_title_mismatch(self, display_title, expected_title,
+                                      target_head, worker_report_comment_id):
+        """Raise the most specific display_title guard for a mismatch."""
+        if not display_title:
+            raise GateError(EXIT_POLICY, "receipt_display_title_missing",
+                            "Submission run has no display_title")
+        prefix = "MacSteam Gate / "
+        if not display_title.startswith(prefix):
+            raise GateError(EXIT_POLICY, "receipt_display_title_wrong_phase",
+                            f"Submission display_title format mismatch: {display_title!r}")
+        fields = {}
+        for part in display_title[len(prefix):].split(" / "):
+            if "=" in part:
+                key, value = part.split("=", 1)
+                fields[key.strip()] = value.strip()
+        if fields.get("phase") != "submission":
+            raise GateError(EXIT_POLICY, "receipt_display_title_wrong_phase",
+                            f"Submission display_title phase mismatch: {display_title!r}")
+        if fields.get("PR") != str(self.pr_number):
+            raise GateError(EXIT_POLICY, "receipt_display_title_wrong_pr",
+                            f"Submission display_title PR mismatch: {display_title!r}")
+        if fields.get("HEAD") != target_head:
+            raise GateError(EXIT_POLICY, "receipt_display_title_wrong_head",
+                            f"Submission display_title HEAD mismatch: {display_title!r}")
+        if fields.get("REPORT") != str(worker_report_comment_id):
+            raise GateError(EXIT_POLICY, "receipt_display_title_wrong_report",
+                            f"Submission display_title REPORT mismatch: {display_title!r}")
+        raise GateError(EXIT_POLICY, "receipt_display_title_mismatch",
+                        f"Submission display_title mismatch: {display_title!r}")
+
     # === Output ===
 
     def _output_success(self):
@@ -1848,18 +1998,23 @@ class Gate:
                 "next_workstream_admitted": False,
             }
         elif self.phase == "submission":
-            run_id = os.environ.get("GITHUB_RUN_ID")
-            if run_id:
-                submission_run_id = int(run_id)
-            else:
-                submission_run_id = 0
+            run_id = os.environ.get("GITHUB_RUN_ID", "")
+            attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+            if not re.fullmatch(r"[1-9][0-9]*", run_id):
+                raise GateError(EXIT_INFRA, "hosted_submission_run_id_invalid",
+                                "Submission success requires a positive GITHUB_RUN_ID")
+            if attempt != "1":
+                raise GateError(EXIT_INFRA, "hosted_submission_attempt_invalid",
+                                "Submission success requires GITHUB_RUN_ATTEMPT == 1")
+            submission_run_id = int(run_id)
+            submission_run_attempt = int(attempt)
             result = {
                 "state": "WAITING_FOR_CONTROLLER_REVIEW",
                 "phase": "submission",
                 "head_sha": self.expected_head,
                 "worker_report_comment_id": self.worker_report_comment.get("id"),
                 "submission_run_id": submission_run_id,
-                "submission_run_attempt": 1,
+                "submission_run_attempt": submission_run_attempt,
                 "worker_report_valid": True,
                 "controller_review_present": False,
                 "next_workstream_admitted": False,
@@ -1902,12 +2057,215 @@ class Gate:
         print(json.dumps(result))
 
 
+# === Workflow semantic audit (FIX3 §12) ===
+
+def _wf_get_triggers(doc):
+    """`on:` is parsed as YAML boolean True by PyYAML; accept both spellings."""
+    if isinstance(doc, dict):
+        for key in (True, "on", "On", "ON"):
+            if key in doc:
+                return doc[key]
+    return {}
+
+
+def _audit_workflow_job_steps(job, expected_head_input, phase):
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise GateError(EXIT_POLICY, "workflow_job_steps_missing",
+                        f"{phase} job has no steps block")
+    checkout_ref = None
+    persist_credentials = None
+    command = None
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        uses = step.get("uses", "")
+        if isinstance(uses, str) and "actions/checkout" in uses:
+            with_dict = step.get("with", {})
+            if isinstance(with_dict, dict):
+                checkout_ref = with_dict.get("ref")
+                persist_credentials = with_dict.get("persist-credentials")
+        if isinstance(step.get("run"), str):
+            command = step.get("run", "")
+    if persist_credentials is not False:
+        raise GateError(EXIT_POLICY, "workflow_persist_credentials_true",
+                        f"{phase} checkout does not set persist-credentials: false")
+    if expected_head_input:
+        if checkout_ref != "${{ inputs.expected_head }}":
+            raise GateError(EXIT_POLICY, "workflow_checkout_expected_head_missing",
+                            f"{phase} checkout does not bind inputs.expected_head")
+    if command is None:
+        raise GateError(EXIT_POLICY, "workflow_job_command_missing",
+                        f"{phase} job has no run command")
+    if phase == "advance":
+        if "--worker-report-comment-id" in command:
+            raise GateError(EXIT_POLICY, "workflow_advance_cli_arg_added",
+                            "Advance Gate must not pass --worker-report-comment-id")
+        return
+    arg_missing = ("workflow_submission_cli_arg_missing" if phase == "submission"
+                   else "workflow_review_cli_arg_missing")
+    arg_hardcoded = ("workflow_submission_cli_arg_hardcoded" if phase == "submission"
+                     else "workflow_review_cli_arg_hardcoded")
+    if "--worker-report-comment-id" not in command:
+        raise GateError(EXIT_POLICY, arg_missing,
+                        f"{phase} command does not pass --worker-report-comment-id")
+    if "inputs.worker_report_comment_id" not in command:
+        raise GateError(EXIT_POLICY, arg_hardcoded,
+                        f"{phase} command does not reference the exact input")
+
+
+def _audit_workflow_yaml(workflow_path, expected_name, expected_path, expected_branch):
+    """Structural audit of the gate workflow file (§12). Raises GateError on any
+    breach. Missing/unparseable protected blocks exit 2; semantic mismatch exits 1."""
+    if not os.path.exists(workflow_path):
+        raise GateError(EXIT_INFRA, "workflow_yaml_missing",
+                        f"Workflow file not found: {workflow_path}")
+    if not HAS_YAML:
+        raise GateError(EXIT_INFRA, "workflow_yaml_unparseable",
+                        "PyYAML is not available to parse the workflow file")
+    with open(workflow_path) as fh:
+        try:
+            doc = yaml.safe_load(fh)
+        except yaml.YAMLError as exc:
+            raise GateError(EXIT_INFRA, "workflow_yaml_unparseable",
+                            f"Workflow YAML is not parseable: {exc}")
+    if not isinstance(doc, dict):
+        raise GateError(EXIT_INFRA, "workflow_yaml_unparseable",
+                        "Workflow YAML root is not a mapping")
+
+    if doc.get("name", "") != expected_name:
+        raise GateError(EXIT_POLICY, "workflow_wrong_name",
+                        f"Workflow name not {expected_name}")
+
+    run_name = doc.get("run-name")
+    if not isinstance(run_name, str):
+        raise GateError(EXIT_POLICY, "workflow_run_name_missing",
+                        "workflow-level run-name is missing")
+    for token, label in (("inputs.phase", "workflow_run_name_missing_phase"),
+                         ("inputs.pr_number", "workflow_run_name_missing_pr"),
+                         ("inputs.expected_head", "workflow_run_name_missing_head"),
+                         ("inputs.worker_report_comment_id", "workflow_run_name_missing_report")):
+        if token not in run_name:
+            raise GateError(EXIT_POLICY, label,
+                            f"run-name does not bind {token}")
+
+    triggers = _wf_get_triggers(doc)
+    wd = triggers.get("workflow_dispatch", {}) if isinstance(triggers, dict) else {}
+    wd_inputs = wd.get("inputs", {}) if isinstance(wd, dict) else {}
+    if not isinstance(wd_inputs, dict):
+        raise GateError(EXIT_INFRA, "workflow_inputs_block_missing",
+                        "workflow_dispatch inputs block is missing")
+    if "worker_report_comment_id" not in wd_inputs:
+        raise GateError(EXIT_POLICY, "workflow_worker_report_input_missing",
+                        "worker_report_comment_id input is missing")
+    wrc = wd_inputs["worker_report_comment_id"]
+    if isinstance(wrc, dict):
+        if wrc.get("required") is not True:
+            raise GateError(EXIT_POLICY, "workflow_worker_report_input_optional",
+                            "worker_report_comment_id input is not required")
+        if "default" in wrc:
+            raise GateError(EXIT_POLICY, "workflow_worker_report_input_optional",
+                            "worker_report_comment_id input has a default value")
+    phase_cfg = wd_inputs.get("phase", {})
+    phase_opts = phase_cfg.get("options", []) if isinstance(phase_cfg, dict) else []
+    if "advance" in phase_opts:
+        raise GateError(EXIT_POLICY, "workflow_advance_input_restored",
+                        "manual advance phase input restored")
+
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict) or not jobs:
+        raise GateError(EXIT_INFRA, "workflow_jobs_block_missing",
+                        "workflow jobs block is missing")
+
+    submission_ids = []
+    review_ids = []
+    advance_ids = []
+    manual_ids = []
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict):
+            raise GateError(EXIT_POLICY, "workflow_job_malformed",
+                            f"job {job_id} is not a mapping")
+        jname = job.get("name", "")
+        if job_id == "manual" or jname in ("Manual Gate", "manual"):
+            manual_ids.append(job_id)
+        if jname == "Submission Gate":
+            submission_ids.append(job_id)
+        if jname == "Review Gate":
+            review_ids.append(job_id)
+        if jname == "Advance Gate":
+            advance_ids.append(job_id)
+
+    if manual_ids:
+        raise GateError(EXIT_POLICY, "workflow_generic_manual_job_restored",
+                        "generic Manual Gate job restored")
+
+    if len(submission_ids) == 0:
+        raise GateError(EXIT_POLICY, "workflow_submission_job_wrong_name",
+                        "submission job not named Submission Gate")
+    if len(submission_ids) > 1:
+        raise GateError(EXIT_POLICY, "workflow_submission_job_duplicate",
+                        "multiple Submission Gate jobs")
+    sub_job = jobs[submission_ids[0]]
+    sub_cond = sub_job.get("if", "")
+    if not ("workflow_dispatch" in sub_cond and "inputs.phase" in sub_cond
+            and ("'submission'" in sub_cond or '"submission"' in sub_cond)):
+        raise GateError(EXIT_POLICY, "workflow_submission_condition_too_broad",
+                        "Submission Gate condition is too broad")
+
+    if len(review_ids) == 0:
+        raise GateError(EXIT_POLICY, "workflow_review_job_exact",
+                        "review job not named Review Gate")
+    if len(review_ids) > 1:
+        raise GateError(EXIT_POLICY, "workflow_review_job_duplicate",
+                        "multiple Review Gate jobs")
+
+    if len(advance_ids) == 0 or len(advance_ids) > 1:
+        raise GateError(EXIT_POLICY, "workflow_advance_job_missing",
+                        "Advance Gate job must exist exactly once")
+    if "pull_request" not in jobs[advance_ids[0]].get("if", ""):
+        raise GateError(EXIT_POLICY, "workflow_advance_condition_not_pr",
+                        "Advance Gate condition is not pull_request-only")
+
+    if isinstance(triggers, dict) and "pull_request_target" in triggers:
+        raise GateError(EXIT_POLICY, "workflow_pull_request_target_used",
+                        "pull_request_target is used")
+
+    perms = doc.get("permissions", {})
+    if isinstance(perms, dict):
+        for perm_key, perm_val in perms.items():
+            if perm_val not in ("read", None, "write"):
+                raise GateError(EXIT_POLICY, "workflow_permissions_invalid",
+                                f"permission {perm_key}: {perm_val}")
+    if isinstance(perms, str) and perms.strip().lower() == "write-all":
+        raise GateError(EXIT_POLICY, "workflow_permissions_not_read_only",
+                        "permissions are write-all")
+
+    _audit_workflow_job_steps(jobs[submission_ids[0]], expected_head_input=True, phase="submission")
+    _audit_workflow_job_steps(jobs[review_ids[0]], expected_head_input=True, phase="review")
+    _audit_workflow_job_steps(jobs[advance_ids[0]], expected_head_input=False, phase="advance")
+
+
+def _run_workflow_audit(workflow_path):
+    try:
+        _audit_workflow_yaml(workflow_path, WORKFLOW_NAME_DEFAULT,
+                             WORKFLOW_PATH_DEFAULT, None)
+        print(json.dumps({"state": "WORKFLOW_AUDIT_OK",
+                          "workflow": workflow_path}))
+        return EXIT_OK
+    except GateError as exc:
+        print(json.dumps({"state": "REJECTED",
+                          "workflow": workflow_path,
+                          "guard_label": exc.label,
+                          "message": exc.message}))
+        return exc.exit_code
+
+
 def main():
     parser = argparse.ArgumentParser(description="Workstream Review Gate")
-    parser.add_argument("--phase", required=True,
+    parser.add_argument("--phase", required=False,
                         choices=["advance", "submission", "review"])
-    parser.add_argument("--pr-number", type=int, required=True)
-    parser.add_argument("--expected-head", required=True)
+    parser.add_argument("--pr-number", type=int, default=2)
+    parser.add_argument("--expected-head", required=False)
     parser.add_argument("--repo", default="oxcandy-lgtm/macsteam")
     parser.add_argument("--fixtures", default=None,
                         help="Fixture directory for offline testing")
@@ -1917,8 +2275,13 @@ def main():
                         help="Comment ID of the worker report (submission phase)")
     parser.add_argument("--submission-run-id", type=int, default=None,
                         help="Expected submission run ID (review phase)")
+    parser.add_argument("--check-workflow", default=None,
+                        help="Run the workflow semantic audit on the given YAML path")
 
     args = parser.parse_args()
+
+    if args.check_workflow:
+        sys.exit(_run_workflow_audit(args.check_workflow))
 
     gate = Gate(
         phase=args.phase,
