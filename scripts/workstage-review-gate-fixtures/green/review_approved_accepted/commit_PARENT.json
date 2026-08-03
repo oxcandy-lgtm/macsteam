@@ -1,0 +1,19 @@
+{
+  "sha": "6656ec33d15289ce122f4ba9d1e2db71f260d8b7",
+  "parents": [
+    {
+      "sha": "cafe1234cafe1234cafe1234cafe1234cafe1234"
+    }
+  ],
+  "commit": {
+    "committer": {
+      "date": "2026-08-03T01:00:00Z",
+      "name": "Worker"
+    },
+    "author": {
+      "date": "2026-08-03T01:00:00Z",
+      "name": "Worker"
+    },
+    "message": "fix: commit message"
+  }
+}

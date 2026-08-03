@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://macsteam.example.com/schemas/workshift-report.schema.json",
+  "$id": "https://macsteam.example.com/schemas/workstream-report.schema.json",
   "title": "MacSteam Workstream Report",
   "description": "Schema for the worker report JSON block embedded in a top-level PR Conversation issue comment, emitted by the worker after completing a workstream",
   "schema_version": 1,
@@ -14,6 +14,8 @@
     "commit_count",
     "core_ci_run_id",
     "core_ci_jobs",
+    "gate_advance_run_id",
+    "gate_submission_run_id",
     "stop",
     "next_workstream_started",
     "ready_performed",
@@ -50,12 +52,15 @@
     "core_ci_jobs": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "minLength": 1
       },
-      "uniqueItems": true
+      "uniqueItems": true,
+      "minItems": 1
     },
     "gate_advance_run_id": {
-      "type": ["integer", "null"]
+      "type": "integer",
+      "minimum": 1
     },
     "gate_submission_run_id": {
       "type": ["integer", "null"]

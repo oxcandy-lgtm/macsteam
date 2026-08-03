@@ -29,10 +29,12 @@
       "pattern": "^[a-f0-9]{40}$"
     },
     "decision": {
-      "type": "string"
+      "type": "string",
+      "enum": ["accepted", "rejected"]
     },
     "classification": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "review_complete": {
       "type": "boolean"

@@ -1,0 +1,32 @@
+[
+  {
+    "filename": ".github/workflows/ci.yml"
+  },
+  {
+    "filename": ".github/workflows/workstage-review-gate.yml"
+  },
+  {
+    "filename": ".github/workstage-review-gate-policy.json"
+  },
+  {
+    "filename": "Contracts/controller-review.schema.json"
+  },
+  {
+    "filename": "Contracts/workstream-report.schema.json"
+  },
+  {
+    "filename": "docs/WORKSTREAM_REVIEW_GATE.md"
+  },
+  {
+    "filename": "scripts/workstage-review-gate.py"
+  },
+  {
+    "filename": "scripts/test-workstage-review-gate.sh"
+  },
+  {
+    "filename": "scripts/workstage-review-gate-fixtures/green/advance_bootstrap/pr.json"
+  },
+  {
+    "filename": "scripts/workstage-review-gate-fixtures/green/advance_repair/pr.json"
+  }
+]

@@ -1,0 +1,19 @@
+{
+  "sha": "fe1234567890abcdef1234567890abcdef123456",
+  "parents": [
+    {
+      "sha": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d"
+    }
+  ],
+  "commit": {
+    "committer": {
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Worker"
+    },
+    "author": {
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Worker"
+    },
+    "message": "ci: close workstream review authority gate (U1R18-R7-FIX1)\n\nWorkstream: U1R18-R7-FIX1"
+  }
+}

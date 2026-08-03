@@ -6,10 +6,20 @@
   "base_branch": "feat/public-oss-bootstrap",
   "bootstrap": {
     "head_sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db",
+    "only_child_head": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d",
     "worker_report_comment_id": 5161887210,
     "controller_review_id": 4840817794,
     "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
   },
+  "repair_authorization": {
+    "parent_sha": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d",
+    "review_id": 4841397951,
+    "classification": "RED_U1R18_R7_SELF_REVIEW_AND_SEQUENTIAL_GATE_FAIL_OPEN",
+    "required_commit_message": "ci: close workstream review authority gate (U1R18-R7-FIX1)",
+    "required_workstream": "U1R18-R7-FIX1",
+    "single_direct_child_only": true
+  },
+  "quarantined_review_ids": [4841357081],
   "core_ci": {
     "required_jobs": [
       "Swift Build",
