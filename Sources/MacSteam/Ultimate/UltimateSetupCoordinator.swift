@@ -297,26 +297,10 @@ final class UltimateSetupCoordinator {
         }
 
         self.runtimeRegistry = RuntimeRegistry(commercialPolicy: .disabled)
-        // Hardcoded CloverPit recipe (RecipeLoader not available in this module)
-        self.recipe = GameRecipe(
-            schemaVersion: 2,
-            id: "cloverpit",
-            displayName: "CloverPit",
-            store: .init(type: .steam, appId: "3314790"),
-            runtime: .init(
-                requiredCapabilities: ["windows-process", "steam-client", "isolated-prefix"],
-                preferredRuntime: .importedWine,
-                fallbackRuntimes: [.systemWine]  // NOTE: no .crossover — see CommercialRuntimePolicy
-            ),
-            graphics: .init(preferred: .wined3d, fallback: []),
-            prefix: .init(id: "cloverpit", windowsVersion: .win10, isolation: .perGame),
-            storeInstallation: .init(installerMode: .userSelectedFile,
-                installerProduct: "steam-client", redistribution: .forbidden),
-            launch: .init(storeArguments: ["-applaunch", "3314790"]),
-            detection: .init(manifestName: "appmanifest_3314790.acf",
-                executableCandidates: ["Clover" + "Pit.exe"]),
-            savePolicy: .init(mode: .discoverOnly, backupBeforeDestructiveRepair: true)
-        )
+        // Canonical CloverPit recipe authority (U1R18-R8): the runtime recipe is
+        // the single source of truth; the bundled cloverpit.json is its
+        // validated serialized mirror.
+        self.recipe = CloverPitRecipeAuthority.canonical
 
         self.sessionSupervisor = sessionSupervisor
         self.lifecycleInstaller = installerSupervisor

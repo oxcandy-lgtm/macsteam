@@ -73,7 +73,7 @@ MacSteam is:
 | **SwiftUI UI** | LauncherView, DiagnosticsView, LibraryView, Settings. Uses Command pattern to talk to GameManager; never calls runtimes directly. |
 | **GameManager** | Orchestrates game launch: loads recipe, resolves runtime, creates prefix, detects Steam install, builds launch command. |
 | **RuntimeRegistry** | Holds all registered runtime adapters and selects the best match for a game's required capabilities. |
-| **Adapters** | Each adapter wraps a specific runtime backend: ManagedWine (downloaded and managed by MacSteam), ImportedWine (user-provided .app), SystemWine (from PATH), CrossOver (detected CrossOver.app). |
+| **Adapters** | Each adapter wraps a specific runtime backend: ManagedWine (future — downloaded and managed by MacSteam), ImportedWine (user-provided .app, canonical U1 path), SystemWine (from PATH, excluded by default in U1 Steam selection), CrossOver (commercial, disabled by default, explicit opt-in only, lowest priority). |
 | **PrefixManager** | Manages Wine prefix lifecycle: creation, structure, metadata, snapshots, safe destruction. |
 | **ProcessRunner** | The only component that creates OS processes. Enforces ExecutionBoundary: no shell, no sudo, no string-command concatenation, no arbitrary URL downloads. |
 
@@ -81,16 +81,16 @@ MacSteam is:
 
 ## 3. Runtime Priority Chain
 
-When a game recipe specifies runtime requirements, MacSteam evaluates adapters in this priority order:
+When a game recipe specifies runtime requirements, MacSteam evaluates adapters consistently with the canonical recipe authority. For the U1 CloverPit recipe:
 
-1. **Managed Wine** — A Wine build downloaded and managed by MacSteam (future capability; U1 uses user-provided runtimes only).
-2. **Imported Wine** — A user-provided `wine64` binary (e.g., from a bottled build) selected via the UI.
-3. **System Wine** — Wine installed via Homebrew, MacPorts, or directly on PATH.
-4. **CrossOver** — The CrossOver.app bundle, if detected on the system.
+1. **Imported Wine** — A user-provided `wine64` binary (e.g., from a bottled build) selected via the UI. **Current canonical U1 path.**
+2. **System Wine** — Wine installed via Homebrew, MacPorts, or on PATH. Discovered capability may exist, but the U1 Steam selection **excludes it by default**.
+3. **Managed Wine** — A Wine build downloaded/managed by MacSteam. **Future only.**
+4. **CrossOver** — The CrossOver.app bundle. **Commercial / disabled by default / explicit opt-in only / lowest priority.** CrossOver absence never blocks the canonical flow.
 
-The first adapter whose capabilities match the recipe's `requiredCapabilities` is selected.
+**U1 canonical recipe runtime authority:** `CloverPitRecipeAuthority.canonical`.
 
-**U1 constraint:** Only user-detected runtimes (Imported, System, CrossOver) are supported. Managed Wine download/installation is deferred.
+**Bundled JSON:** `Sources/MacSteam/Resources/Recipes/cloverpit.json` is a CI-enforced serialized mirror of the canonical authority. Runtime selection reads the Swift authority; the JSON is validated to match it exactly on every build/test run.
 
 ---
 

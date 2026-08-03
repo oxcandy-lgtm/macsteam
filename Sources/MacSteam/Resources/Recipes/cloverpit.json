@@ -12,11 +12,9 @@
       "steam-client",
       "isolated-prefix"
     ],
-    "preferredRuntime": "managed-wine",
+    "preferredRuntime": "imported-wine",
     "fallbackRuntimes": [
-      "imported-wine",
-      "system-wine",
-      "crossover"
+      "system-wine"
     ]
   },
   "graphics": {

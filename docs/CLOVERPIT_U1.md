@@ -32,7 +32,12 @@ Step 1: Runtime → Step 2: Prefix → Step 3: Steam → Step 4: CloverPit
 
 ### Step 1 — Runtime Selection
 
-- MacSteam scans for available runtimes (Imported Wine, System Wine, CrossOver).
+- Canonic runtime preference: **Imported Wine**.
+- Recipe fallback declaration: **System Wine**.
+- Effective U1 selection: **Imported Wine**.
+- System Wine is not the U1 canonical path: a discovered capability may exist, but the U1 Steam selection excludes it by default.
+- Managed Wine: **future / unavailable**.
+- CrossOver is **not** a canonical recipe dependency.
 - The selected runtime must advertise the `steam-client` capability.
 - If no suitable runtime is found, the user is prompted to import one.
 
@@ -48,12 +53,9 @@ Step 1: Runtime → Step 2: Prefix → Step 3: Steam → Step 4: CloverPit
 
 ### Step 3 — Steam Installation
 
-- The user's existing Steam installation is detected.
-- Steam is launched inside the prefix via:
-  ```
-  wine <prefix> steam.exe -applaunch 3314790
-  ```
-- MacSteam does **not** install Steam on behalf of the user.
+- The user obtains a Steam installer `.exe` independently.
+- MacsTeam does **not** bundle or download the Steam installer.
+- The user selects the installer file; MacsTeam verifies it (regular file, `.exe`, non-empty, SHA-256 evidence) and runs the selected installer inside the canonical prefix with the selected runtime.
 - MacSteam does **not** access Steam credentials.
 
 ### Step 4 — CloverPit Launch
@@ -68,10 +70,14 @@ Step 1: Runtime → Step 2: Prefix → Step 3: Steam → Step 4: CloverPit
 
 | Requirement | Detail |
 |-------------|--------|
+| Canonical runtime preference | Imported Wine |
+| Recipe fallback declaration | System Wine |
+| Effective U1 selection | Imported Wine |
+| System Wine | Discovered capability may exist, but the U1 Steam selection excludes it by default |
+| Managed Wine | Future / unavailable |
+| CrossOver | Not a canonical recipe dependency |
 | Primary capability | `steam-client` |
-| Minimum runtime | Wine with working Steam client support |
-| Supported adapters | ImportedWine, SystemWine, CrossOver |
-| Managed Wine | Not available in U1 |
+| Graphics | WineD3D |
 
 ---
 
@@ -129,13 +135,19 @@ wine64 \
     "appId": "3314790"
   },
   "runtime": {
-    "requiredCapabilities": ["steam-client"],
+    "requiredCapabilities": [
+      "windows-process",
+      "steam-client",
+      "isolated-prefix"
+    ],
     "preferredRuntime": "imported-wine",
-    "fallbackRuntimes": ["system-wine", "crossover"]
+    "fallbackRuntimes": [
+      "system-wine"
+    ]
   },
   "graphics": {
-    "preferred": "d3d-metal",
-    "fallback": ["d3d-vulkan", "vulkan-metal"]
+    "preferred": "wined3d",
+    "fallback": []
   },
   "prefix": {
     "id": "cloverpit",
@@ -144,22 +156,29 @@ wine64 \
   },
   "storeInstallation": {
     "installerMode": "user-selected-file",
-    "installerProduct": "steam",
+    "installerProduct": "steam-client",
     "redistribution": "forbidden"
   },
   "launch": {
-    "storeArguments": ["-applaunch", "3314790"]
+    "storeArguments": [
+      "-applaunch",
+      "3314790"
+    ]
   },
   "detection": {
     "manifestName": "appmanifest_3314790.acf",
-    "executableCandidates": ["CloverPit.exe"]
+    "executableCandidates": [
+      "CloverPit.exe"
+    ]
   },
   "savePolicy": {
     "mode": "discover-only",
-    "backupBeforeDestructiveRepair": false
+    "backupBeforeDestructiveRepair": true
   }
 }
 ```
+
+The recipe JSON above is the bundle-fresh serialized mirror of the canonical runtime authority (`CloverPitRecipeAuthority.canonical`), enforced by CI.
 
 ---
 
@@ -167,8 +186,7 @@ wine64 \
 
 | Limitation | Detail |
 |------------|--------|
-| **Managed Wine** | Not available; only user-provided runtimes |
-| **Destructive repair** | Disabled; prefix destruction is dry-run only |
-| **Save snapshots** | Discovery mode only (no automated backup) |
-| **Graphics adapters** | DXVK/MoltenVK not managed in U1 |
+| **Managed Wine** | Future / unavailable; only user-provided runtimes |
+| **Save policy** | Discovery mode only (`discover-only`), with `backup-before-destructive-repair: true` |
+| **Graphics adapters** | WineD3D preferred; DXVK/MoltenVK not managed in U1 |
 | **Multiple runtimes** | Basic detection only; no automatic download |

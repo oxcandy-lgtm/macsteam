@@ -11,7 +11,7 @@ MacSteam integrates with Steam to launch Windows games purchased on the Steam pl
 
 ## 2. Steam Installer: User-Selected File Only
 
-MacSteam **never** bundles or downloads the Steam installer. The user must obtain Steam independently.
+MacSteam **never** bundles or downloads the Steam installer. The user must obtain the Steam installer `.exe` independently.
 
 ### How Steam is provided to MacSteam
 
@@ -19,20 +19,24 @@ Only one method is supported in U1:
 
 | Method | Description | Supported? |
 |--------|-------------|------------|
-| **User-selected file** | User navigates to Steam.exe in their existing Steam installation | ✅ Yes |
+| **User-selected file** | User navigates to the Steam installer `.exe` (e.g., SteamSetup.exe) | ✅ Yes |
 | Automatic detection | MacSteam scans standard locations for Steam | ✅ Yes (when present) |
 | Bundled installer | SteamSetup.exe included in MacSteam | ❌ Never |
 | Download from Valve | MacSteam downloads Steam on user's behalf | ❌ Never |
 
 ### Verification checks
 
-When the user selects a Steam executable, MacSteam verifies:
+When the user selects a Steam installer `.exe`, MacSteam verifies:
 
-1. The file exists at the provided path.
-2. The path is within a recognized Steam installation directory (contains `steamapps/`).
-3. The file is executable.
-4. The file is not a symlink to an unexpected location (SymlinkValidator).
+1. The selected path is a **regular file** (not a directory or special file).
+2. The file is a `.exe` executable.
+3. The file is **non-empty**.
+4. The file's **SHA-256** is recorded as evidence for the run.
 5. The path does not contain traversal components (PathBoundary).
+
+`InstallerSupervisor` runs the selected installer inside the canonical prefix with the selected runtime and supervises it.
+
+MacSteam does **not** bundle, download, or redistribute the Steam installer, and does **not** install Steam on the user's behalf beyond executing the user-selected installer inside the prefix.
 
 ---
 
@@ -80,8 +84,8 @@ SSA acceptance is a personal legal act and must always be performed by the human
 1. WINEPREFIX is set to the game's prefix directory.
 2. Working directory is set to the Steam installation directory.
 3. ProcessRunner creates:
-   executable = <prefix>/drive_c/.../Steam/steam.exe
-   arguments  = ["-applaunch", "<appid>"]
+   executable = <wine runtime executable>
+   arguments  = ["<steam.exe path>", "-applaunch", "<appid>", ...]
    environment = {
        "WINEPREFIX": "<prefix-path>",
        ... (allow-listed env vars only)
@@ -116,8 +120,10 @@ MacSteam scans for Steam at these paths:
 
 ### Game installation detection
 
+MacSteam detects a game as installed by the presence of the `.acf` manifest:
+
 ```swift
-// appmanifest_*.acf parsing
+// appmanifest_*.acf presence check (planned: value parsing)
 func detectGame(appId: String) -> Bool {
     let manifestPath = steamPath
         .appending("steamapps")
@@ -126,11 +132,7 @@ func detectGame(appId: String) -> Bool {
 }
 ```
 
-The `.acf` file is parsed to extract:
-
-- `"installdir"` — game installation directory name
-- `"StateFlags"` — installation state flags
-- `"buildid"` — build identifier
+Planned (not yet asserted as implemented): parsing of `.acf` values such as `"installdir"`, `"StateFlags"`, and `"buildid"`.
 
 MacSteam reads `.acf` files only for detection purposes — it **never** modifies them.
 
