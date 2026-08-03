@@ -1,0 +1,12 @@
+[
+  {
+    "id": 4840817795,
+    "user": {
+      "login": "controller"
+    },
+    "commit_id": "6656ec33d15289ce122f4ba9d1e2db71f260d8b7",
+    "state": "APPROVED",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"6656ec33d15289ce122f4ba9d1e2db71f260d8b7\",\n  \"decision\": \"accepted\",\n  \"classification\": \"GREEN_U1R18_R6_CONTROLLER_REVIEW_ACCEPTED\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n",
+    "submitted_at": "2026-08-03T02:00:00Z"
+  }
+]

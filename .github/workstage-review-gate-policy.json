@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "repository": "oxcandy-lgtm/macsteam",
+  "pr_number": 2,
+  "branch": "feat/ultimate-cloverpit-u1",
+  "base_branch": "feat/public-oss-bootstrap",
+  "bootstrap": {
+    "head_sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db",
+    "worker_report_comment_id": 5161887210,
+    "controller_review_id": 4840817794,
+    "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
+  },
+  "core_ci": {
+    "required_jobs": [
+      "Swift Build",
+      "Public Audit",
+      "Recipe Validation",
+      "License Validation",
+      "Gitignore Validation"
+    ]
+  },
+  "max_api_items": 1000
+}

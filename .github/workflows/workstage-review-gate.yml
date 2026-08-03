@@ -1,0 +1,77 @@
+name: Workstream Review Gate
+
+on:
+  pull_request:
+    branches:
+      - feat/public-oss-bootstrap
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+    inputs:
+      phase:
+        required: true
+        type: choice
+        options:
+          - advance
+          - submission
+          - review
+      pr_number:
+        required: true
+      expected_head:
+        required: true
+        description: "Exact 40-character HEAD SHA to validate"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: read
+
+jobs:
+  advance:
+    name: Advance Gate
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Set up gh CLI token
+        run: echo "GH_TOKEN=${GITHUB_TOKEN}" >> "$GITHUB_ENV"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run workstage advance gate
+        run: |
+          python3 scripts/workstage-review-gate.py \
+            --phase advance \
+            --pr-number ${{ github.event.pull_request.number }} \
+            --expected-head ${{ github.event.pull_request.head.sha }} \
+            --repo ${{ github.repository }} \
+            --policy .github/workstage-review-gate-policy.json
+
+  manual:
+    name: "Manual Gate (phase: ${{ inputs.phase }})"
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Set up gh CLI token
+        run: echo "GH_TOKEN=${GITHUB_TOKEN}" >> "$GITHUB_ENV"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run workstage ${{ inputs.phase }} gate
+        run: |
+          python3 scripts/workstage-review-gate.py \
+            --phase ${{ inputs.phase }} \
+            --pr-number ${{ inputs.pr_number }} \
+            --expected-head ${{ inputs.expected_head }} \
+            --repo ${{ github.repository }} \
+            --policy .github/workstage-review-gate-policy.json

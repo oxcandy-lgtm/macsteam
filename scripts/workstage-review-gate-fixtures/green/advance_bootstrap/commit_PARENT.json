@@ -1,0 +1,17 @@
+{
+  "sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db",
+  "parents": [
+    {
+      "sha": "0000000000000000000000000000000000000000"
+    }
+  ],
+  "commit": {
+    "committer": {
+      "date": "2026-08-03T02:30:00Z"
+    },
+    "author": {
+      "date": "2026-08-03T02:30:00Z"
+    },
+    "message": "fix: preserve window monitor on duplicate launch rejection (U1R18-FIX1)"
+  }
+}

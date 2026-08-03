@@ -1,0 +1,17 @@
+{
+  "sha": "cafe1234cafe1234cafe1234cafe1234cafe1234",
+  "parents": [
+    {
+      "sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db"
+    }
+  ],
+  "commit": {
+    "committer": {
+      "date": "2026-08-03T03:00:00Z"
+    },
+    "author": {
+      "date": "2026-08-03T03:00:00Z"
+    },
+    "message": "ci: enforce workstream review wait gate"
+  }
+}

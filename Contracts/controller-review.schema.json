@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://macsteam.example.com/schemas/controller-review.schema.json",
+  "title": "MacSteam Controller Review",
+  "description": "Schema for the controller review JSON block embedded in a GitHub pull request review body, emitted by the controller to authorize advancement past a workstream",
+  "schema_version": 1,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "head_sha",
+    "decision",
+    "classification",
+    "review_complete",
+    "nx_required_for_next_workstream",
+    "ready_authorized",
+    "merge_authorized",
+    "release_authorized"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "controller_review"
+    },
+    "head_sha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "decision": {
+      "type": "string"
+    },
+    "classification": {
+      "type": "string"
+    },
+    "review_complete": {
+      "type": "boolean"
+    },
+    "nx_required_for_next_workstream": {
+      "type": "boolean"
+    },
+    "ready_authorized": {
+      "type": "boolean"
+    },
+    "merge_authorized": {
+      "type": "boolean"
+    },
+    "release_authorized": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

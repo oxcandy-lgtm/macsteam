@@ -1,0 +1,34 @@
+{
+  "jobs": [
+    {
+      "name": "Swift Build",
+      "conclusion": "success",
+      "status": "completed",
+      "run_id": 30780331595
+    },
+    {
+      "name": "Public Audit",
+      "conclusion": "success",
+      "status": "completed",
+      "run_id": 30780331595
+    },
+    {
+      "name": "Recipe Validation",
+      "conclusion": "success",
+      "status": "completed",
+      "run_id": 30780331595
+    },
+    {
+      "name": "License Validation",
+      "conclusion": "success",
+      "status": "completed",
+      "run_id": 30780331595
+    },
+    {
+      "name": "Gitignore Validation",
+      "conclusion": "success",
+      "status": "completed",
+      "run_id": 30780331595
+    }
+  ]
+}

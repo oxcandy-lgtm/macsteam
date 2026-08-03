@@ -72,6 +72,8 @@ jobs:
         run: bash scripts/diagnostic-security-audit.sh
       - name: Test U1R18 audit fixtures
         run: bash scripts/test-r3-window-authority-audit.sh
+      - name: Test workstage review gate fixtures
+        run: bash scripts/test-workstage-review-gate.sh
 
   license-validation:
     name: License Validation
