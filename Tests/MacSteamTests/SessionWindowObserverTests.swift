@@ -238,6 +238,16 @@ struct WindowReducerTests {
         #expect(state.phase == .unknown)
     }
 
+    @Test("visible plus one miss stays visible")
+    func visiblePlusOneMissStaysVisible() {
+        let now = ContinuousClock.now
+        var state = WindowReducerState(phase: .visible)
+        state.positiveStreak = WindowReducer.threshold
+        state = WindowReducer.reduce(state, .ownedMiss, now: now)
+        #expect(state.phase == .visible)
+        #expect(state.negativeStreak == 1)
+    }
+
     @Test("disappearance debounce: two misses reach hidden")
     func disappearanceDebounce() {
         let now = ContinuousClock.now
@@ -393,10 +403,17 @@ struct WindowReducerTests {
 // MARK: - Observer lifecycle
 
 struct SessionWindowObserverLifecycleTests {
+    let nilOwnership: WindowOwnershipSnapshot = { nil }
+
     @Test("stop cancellation invalidates the monitor") @MainActor
     func stopCancellation() {
         let observer = SessionWindowObserver(provider: MockWindowProvider())
-        observer.startMonitoring(sessionID: UUID(), target: .steam, applyState: { _ in })
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: nilOwnership,
+            applyState: { _ in }
+        )
         #expect(observer.isMonitoring)
         observer.invalidate()
         #expect(!observer.isMonitoring)
@@ -410,11 +427,21 @@ struct SessionWindowObserverLifecycleTests {
 
         var appliedFirst: [GameSessionState] = []
         let firstSession = UUID()
-        observer.startMonitoring(sessionID: firstSession, target: .steam, applyState: { appliedFirst.append($0) })
+        observer.startMonitoring(
+            sessionID: firstSession,
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { appliedFirst.append($0) }
+        )
         let firstGeneration = observer.generation
 
         let secondSession = UUID()
-        observer.startMonitoring(sessionID: secondSession, target: .steam, applyState: { _ in })
+        observer.startMonitoring(
+            sessionID: secondSession,
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { _ in }
+        )
 
         #expect(observer.isMonitoring)
         #expect(observer.activeSessionID == secondSession)
@@ -433,10 +460,20 @@ struct SessionWindowObserverLifecycleTests {
 
         var applied: [GameSessionState] = []
         let firstSession = UUID()
-        observer.startMonitoring(sessionID: firstSession, target: .steam, applyState: { applied.append($0) })
+        observer.startMonitoring(
+            sessionID: firstSession,
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
         let staleGeneration = observer.generation
 
-        observer.startMonitoring(sessionID: UUID(), target: .steam, applyState: { applied.append($0) })
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
 
         let staleLease = MonitorLease(sessionID: firstSession, generation: staleGeneration)
         await observer.tickOnce(lease: staleLease)
@@ -449,41 +486,29 @@ struct SessionWindowObserverLifecycleTests {
     @Test("failed launch cleanup leaves no active monitor") @MainActor
     func failedLaunchCleanup() {
         let observer = SessionWindowObserver(provider: MockWindowProvider())
-        observer.startMonitoring(sessionID: UUID(), target: .steam, applyState: { _ in })
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: nilOwnership,
+            applyState: { _ in }
+        )
         #expect(observer.isMonitoring)
         observer.invalidate()
         #expect(!observer.isMonitoring)
         #expect(observer.activeSessionID == nil)
     }
 
-    @Test("recovery monitor start begins observation") @MainActor
-    func recoveryMonitorStart() async {
-        let provider = MockWindowProvider()
-        provider.windows = [makeWindow(owner: "CloverPit")]
-        let observer = SessionWindowObserver(provider: provider)
-
-        var applied: [GameSessionState] = []
-        let sessionID = UUID()
-        observer.startMonitoring(sessionID: sessionID, target: .cloverPit, applyState: { applied.append($0) })
-
-        #expect(observer.isMonitoring)
-        #expect(observer.activeSessionID == sessionID)
-
-        await observer.tickOnce(lease: observer.currentLease)
-        await observer.tickOnce(lease: observer.currentLease)
-        #expect(applied.contains(.runningVisible))
-    }
-
     @Test("async loop drives state from provider observations") @MainActor
     func asyncLoopDrivesState() async {
         let provider = MockWindowProvider()
-        provider.windows = [makeWindow(owner: "Steam")]
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
         let observer = SessionWindowObserver(provider: provider)
 
         var applied: [GameSessionState] = []
         observer.startMonitoring(
             sessionID: UUID(),
             target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
             pollInterval: .milliseconds(10),
             applyState: { applied.append($0) }
         )
@@ -504,7 +529,12 @@ struct SessionWindowObserverLifecycleTests {
         let observer = SessionWindowObserver(provider: provider)
 
         var applied: [GameSessionState] = []
-        observer.startMonitoring(sessionID: UUID(), target: .steam, applyState: { applied.append($0) })
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: nilOwnership,
+            applyState: { applied.append($0) }
+        )
 
         await observer.tickOnce(lease: observer.currentLease)
         await observer.tickOnce(lease: observer.currentLease)
@@ -521,6 +551,7 @@ struct SessionWindowObserverLifecycleTests {
         observer.startMonitoring(
             sessionID: UUID(),
             target: .unsupported,
+            ownershipSnapshot: nilOwnership,
             applyState: { applied.append($0) }
         )
 
@@ -529,83 +560,146 @@ struct SessionWindowObserverLifecycleTests {
         #expect(applied.allSatisfy { $0 == .runningUnknown })
     }
 
-    // MARK: - Session-scoped observation (ownership query)
+    // MARK: - Ownership + target conjunction
 
-    @Test("window owned outside the session tree is ignored") @MainActor
-    func foreignOwnedWindowIgnored() async {
-        let ownPID: Int32 = Int32(getpid())
-        let provider = MockWindowProvider()
-        let foreignPID: Int32 = 1
-        provider.windows = [makeWindow(owner: "Steam", pid: foreignPID)]
-        let observer = SessionWindowObserver(provider: provider)
-
-        var applied: [GameSessionState] = []
-        observer.startMonitoring(
-            sessionID: UUID(),
-            target: .steam,
-            ownershipSnapshot: { [ownPID] in [ownPID] },
-            applyState: { applied.append($0) }
-        )
-
-        await observer.tickOnce(lease: observer.currentLease)
-        await observer.tickOnce(lease: observer.currentLease)
-        #expect(applied.allSatisfy { $0 == .runningUnknown })
-    }
-
-    @Test("window owned by the session root PID is accepted") @MainActor
-    func sessionRootOwnedWindowAccepted() async {
-        let ownPID: Int32 = Int32(getpid())
-        let provider = MockWindowProvider()
-        provider.windows = [makeWindow(owner: "Steam", pid: ownPID)]
-        let observer = SessionWindowObserver(provider: provider)
-
-        var applied: [GameSessionState] = []
-        observer.startMonitoring(
-            sessionID: UUID(),
-            target: .steam,
-            ownershipSnapshot: { [ownPID] in [ownPID] },
-            applyState: { applied.append($0) }
-        )
-
-        await observer.tickOnce(lease: observer.currentLease)
-        await observer.tickOnce(lease: observer.currentLease)
-        #expect(applied.contains(.runningVisible))
-    }
-
-    @Test("window owned by a real descendant of the session root is accepted") @MainActor
-    func sessionDescendantOwnedWindowAccepted() async throws {
-        let ownPID: Int32 = Int32(getpid())
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        child.arguments = ["2"]
-        try child.run()
-        let childPID = child.processIdentifier
-        defer {
-            if child.isRunning { child.terminate() }
-            child.waitUntilExit()
-        }
-
-        let provider = MockWindowProvider()
-        provider.windows = [makeWindow(owner: "Steam", pid: childPID)]
-        let observer = SessionWindowObserver(provider: provider)
-
-        var applied: [GameSessionState] = []
-        observer.startMonitoring(
-            sessionID: UUID(),
-            target: .steam,
-            ownershipSnapshot: { [ownPID, childPID] in [ownPID, childPID] },
-            applyState: { applied.append($0) }
-        )
-
-        await observer.tickOnce(lease: observer.currentLease)
-        await observer.tickOnce(lease: observer.currentLease)
-        #expect(applied.contains(.runningVisible))
-    }
-
-    @Test("ownership returns nil → ownershipIncomplete preserved fail-closed") @MainActor
-    func ownershipNilFailClosed() async {
+    @Test("owned Steam window + Steam target reaches visible") @MainActor
+    func ownedSteamWindowWithSteamTargetReachesVisible() async {
         let provider = MockWindowProvider()
         provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+    }
+
+    @Test("owned CloverPit window + CloverPit target reaches visible") @MainActor
+    func ownedCloverPitWindowWithCloverPitTargetReachesVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "CloverPit", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .cloverPit,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+    }
+
+    @Test("owned Steam window + CloverPit target never visible (cross-target)") @MainActor
+    func ownedSteamWindowWithCloverPitTargetNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .cloverPit,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    @Test("owned CloverPit window + Steam target never visible (cross-target)") @MainActor
+    func ownedCloverPitWindowWithSteamTargetNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "CloverPit", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    @Test("owned generic Wine window + Steam target never visible") @MainActor
+    func ownedGenericWineWindowNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Wine", title: "Wine", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    @Test("owned Wine window with Steam title + Steam target reaches visible") @MainActor
+    func ownedWineWindowWithSteamTitleReachesVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "wine", title: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+    }
+
+    @Test("owned CrashPlan window (Steam title) + CloverPit target never visible") @MainActor
+    func ownedCrashWindowWithWrongTargetNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Wine", title: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .cloverPit,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    // MARK: - Ownership (P0-A / §5)
+
+    @Test("missing ownership closure is rejected at compile time") @MainActor
+    func ownershipClosureRequired() async {
+        let provider = MockWindowProvider()
         let observer = SessionWindowObserver(provider: provider)
 
         var applied: [GameSessionState] = []
@@ -621,21 +715,21 @@ struct SessionWindowObserverLifecycleTests {
         #expect(applied.allSatisfy { $0 == .runningUnknown })
     }
 
-    @Test("foreign candidate when ownership present is foreignCandidatesOnly") @MainActor
-    func foreignCandidatesOnlyWhenOwnershipPresent() async {
-        let ownPID: Int32 = Int32(getpid())
+    // MARK: - Foreign / complete negative proof
+
+    @Test("window owned outside the session tree is ignored") @MainActor
+    func foreignOwnedWindowIgnored() async {
+        let ownPID: Int32 = 100
         let provider = MockWindowProvider()
-        provider.windows = [
-            makeWindow(owner: "Steam", pid: 1),
-            makeWindow(owner: "Steam", pid: 2),
-            ]
+        let foreignPID: Int32 = 1
+        provider.windows = [makeWindow(owner: "Steam", pid: foreignPID)]
         let observer = SessionWindowObserver(provider: provider)
 
         var applied: [GameSessionState] = []
         observer.startMonitoring(
             sessionID: UUID(),
             target: .steam,
-            ownershipSnapshot: { [ownPID] in [ownPID] },
+            ownershipSnapshot: { Set([ownPID]) },
             applyState: { applied.append($0) }
         )
 
@@ -644,11 +738,143 @@ struct SessionWindowObserverLifecycleTests {
         #expect(applied.allSatisfy { $0 == .runningUnknown })
     }
 
-    @Test("visible degrades to unknown when ownership goes nil after being visible") @MainActor
-    func leaseDegradationOnOwnershipFailure() async {
-        let ownPID: Int32 = Int32(getpid())
+    @Test("foreign target-matching candidates only") @MainActor
+    func foreignTargetCandidatesOnly() async {
+        let ownPID: Int32 = 100
         let provider = MockWindowProvider()
-        provider.windows = [makeWindow(owner: "Steam", pid: ownPID)]
+        provider.windows = [makeWindow(owner: "Steam", pid: 1)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([ownPID]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    // MARK: - Complete negative proof
+
+    @Test("visible plus one complete miss stays visible") @MainActor
+    func visiblePlusOneMissStaysVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+
+        provider.windows = []
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(observer.currentLease != nil)
+        #expect(applied.contains(.runningVisible))
+    }
+
+    @Test("visible plus two complete misses reaches hidden") @MainActor
+    func visiblePlusTwoMissesReachesHidden() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningVisible))
+
+        provider.windows = []
+        await observer.tickOnce(lease: observer.currentLease)
+        await observer.tickOnce(lease: observer.currentLease)
+        #expect(applied.contains(.runningHidden))
+    }
+
+    @Test("unknown plus repeated miss stays unknown") @MainActor
+    func unknownPlusRepeatedMissStaysUnknown() async {
+        let provider = MockWindowProvider()
+        provider.windows = []
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        for _ in 0..<5 {
+            await observer.tickOnce(lease: observer.currentLease)
+        }
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    // MARK: - Provider / ownership failure
+
+    @Test("provider failure: visible is never generated") @MainActor
+    func providerFailureNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.shouldThrow = true
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { applied.append($0) }
+        )
+
+        for _ in 0..<5 {
+            await observer.tickOnce(lease: observer.currentLease)
+        }
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    @Test("ownership failure: visible is never generated") @MainActor
+    func ownershipFailureNeverVisible() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        let observer = SessionWindowObserver(provider: provider)
+
+        var applied: [GameSessionState] = []
+        observer.startMonitoring(
+            sessionID: UUID(),
+            target: .steam,
+            ownershipSnapshot: { nil },
+            applyState: { applied.append($0) }
+        )
+
+        for _ in 0..<5 {
+            await observer.tickOnce(lease: observer.currentLease)
+        }
+        #expect(applied.allSatisfy { $0 == .runningUnknown })
+    }
+
+    @Test("visible degrades to unknown after lease expiry when ownership goes nil") @MainActor
+    func leaseDegradationOnOwnershipFailure() async {
+        let provider = MockWindowProvider()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
         let observer = SessionWindowObserver(provider: provider)
 
         var ownershipEnabled = true
@@ -656,22 +882,18 @@ struct SessionWindowObserverLifecycleTests {
         observer.startMonitoring(
             sessionID: UUID(),
             target: .steam,
-            ownershipSnapshot: { [ownPID] in
-                ownershipEnabled ? [ownPID] : nil
+            ownershipSnapshot: { [ownPID = Int32(100)] in
+                ownershipEnabled ? Set([ownPID]) : nil
             },
             pollInterval: .milliseconds(10),
             applyState: { applied.append($0) }
         )
 
-        // Two positive ticks → visible
         await observer.tickOnce(lease: observer.currentLease)
         await observer.tickOnce(lease: observer.currentLease)
         #expect(applied.contains(.runningVisible))
 
-        // Ownership now fails (nil) → fail-closed preserves visible, but
-        // lastProvenObservation is not refreshed.
         ownershipEnabled = false
-        // Drive past the lease duration
         let deadline = ContinuousClock.now + .seconds(2)
         while ContinuousClock.now < deadline {
             await observer.tickOnce(lease: observer.currentLease)
@@ -681,21 +903,72 @@ struct SessionWindowObserverLifecycleTests {
         #expect(applied.contains(.runningUnknown))
     }
 
-    @Test("unscoped fallback: keyword match without ownership closure") @MainActor
-    func unscopedKeywordFallback() async {
+    // MARK: - Lifecycle continuity
+
+    @Test("duplicate launch does not invalidate existing monitor") @MainActor
+    func duplicateLaunchDoesNotInvalidateExistingMonitor() async {
         let provider = MockWindowProvider()
-        provider.windows = [makeWindow(owner: "Steam", pid: 999)]
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
         let observer = SessionWindowObserver(provider: provider)
 
         var applied: [GameSessionState] = []
+        let firstSession = UUID()
         observer.startMonitoring(
-            sessionID: UUID(),
+            sessionID: firstSession,
             target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
             applyState: { applied.append($0) }
         )
+        let firstGeneration = observer.generation
 
+        let secondSession = UUID()
+        observer.startMonitoring(
+            sessionID: secondSession,
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { _ in }
+        )
+
+        // Stale monitor from first session cannot apply state.
+        let staleLease = MonitorLease(sessionID: firstSession, generation: firstGeneration)
+        await observer.tickOnce(lease: staleLease)
+        #expect(applied.isEmpty)
+
+        // Current monitor is active.
+        #expect(observer.activeSessionID == secondSession)
+        #expect(observer.generation != firstGeneration)
+    }
+
+    @Test("new session cannot receive previous session state") @MainActor
+    func newSessionCannotReceivePreviousSessionState() async {
+        let provider = MockWindowProvider()
+        let observer = SessionWindowObserver(provider: provider)
+
+        var firstApplied: [GameSessionState] = []
+        let firstSession = UUID()
+        provider.windows = [makeWindow(owner: "Steam", pid: 100)]
+        observer.startMonitoring(
+            sessionID: firstSession,
+            target: .steam,
+            ownershipSnapshot: { Set([Int32(100)]) },
+            applyState: { firstApplied.append($0) }
+        )
         await observer.tickOnce(lease: observer.currentLease)
         await observer.tickOnce(lease: observer.currentLease)
-        #expect(applied.contains(.runningVisible))
+        #expect(firstApplied.contains(.runningVisible))
+
+        var secondApplied: [GameSessionState] = []
+        let secondSession = UUID()
+        observer.startMonitoring(
+            sessionID: secondSession,
+            target: .steam,
+            ownershipSnapshot: { nil },
+            applyState: { secondApplied.append($0) }
+        )
+
+        // Stale ticks from first session must not reach second session's callback.
+        let staleLease = MonitorLease(sessionID: firstSession, generation: observer.generation - 1)
+        await observer.tickOnce(lease: staleLease)
+        #expect(secondApplied.isEmpty)
     }
 }

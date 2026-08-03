@@ -509,28 +509,18 @@ if result == 0, len > 0 {
 
     /// Ownership-bound PID snapshot for window scoping.
     ///
-    /// Runs a single-capture census against the session ledger and, on a
-    /// `.proven` result, returns the full set of PIDs proven to belong to the
-    /// supervised session (root + descendants + observed orphans). Returns
-    /// `nil` on any non-proven outcome — the caller must fail closed.
+    /// Runs a normal coherent census against the session ledger and, on a
+    /// `.proven` result, returns the full set of PIDs proven to belong to
+    /// the supervised session (root + descendants + observed orphans).
+    /// Returns `nil` on any non-proven outcome — the caller must fail closed.
     ///
-    /// This is a read-only projection of the existing `census(ledger:)`
-    /// authority. A single coherent table capture is used (the double-capture
-    /// stability retry in `census(ledger:)` is bypassed), because process
-    /// state transitions (running ↔ sleeping) between captures do not affect
-    /// ownership proof — identity is validated against the launch-captured
-    /// ledger via `reconcile`, which catches PID reuse and drift regardless
-    /// of when the single snapshot is taken. The ledger is updated in place.
-    static func ownedProcessIDs(ledger: inout ProcessCensusLedger) -> Set<Int32>? {
-        var captured: [Int32: NativeProcessRow]?
-        let result = census(
-            ledger: &ledger,
-            captureTable: {
-                if captured == nil { captured = nativeTableSnapshot() }
-                return captured!
-            },
-            canonicalResolver: { row, known in resolveCanonical(row, known: known) }
-        )
+    /// Reuses the production `census(ledger:)` authority (two independent
+    /// captures, coherence gate, bounded retry). Introduces no new process-
+    /// tree enumeration. The ledger is updated in place.
+    static func ownedProcessIDs(
+        ledger: inout ProcessCensusLedger
+    ) -> Set<Int32>? {
+        let result = census(ledger: &ledger)
         guard result.state == .proven else { return nil }
         return Set(ledger.observed.map(\.pid))
     }

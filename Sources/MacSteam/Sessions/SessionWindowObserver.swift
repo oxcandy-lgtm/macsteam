@@ -141,17 +141,19 @@ struct WindowReducerState: Sendable, Equatable {
     }
 }
 
-/// Outcome of a single observation tick.
+/// A single observation requires BOTH `WindowInfoProviding.snapshot()` success
+/// AND the R4 ownership query success.
 ///
-/// A single observation requires BOTH `WindowInfoProviding.snapshot()`
-/// success AND the R4 ownership query success. Ownership failure
-/// (`.ownershipIncomplete`) is fail-closed: the previous phase is preserved.
-/// Provider failure (`.windowSnapshotFailed`) is likewise fail-closed.
-///
-/// `.ownedMiss` means no owned window was found and no foreign candidate
-/// existed. `.foreignCandidatesOnly` means foreign on-screen windows were
-/// seen but none belonged to the session — a behavioral distinction for
-/// diagnostics but treated as a miss for state transitions.
+/// - `.ownedPositive` — a target-matching window exists whose owner PID is in
+///   the R4-proven ownership set.
+/// - `.ownedMiss` — window snapshot and ownership both succeeded, but no
+///   target-matching on-screen window exists.
+/// - `.foreignCandidatesOnly` — target-matching on-screen windows exist but
+///   none are owned by the session (foreign target candidates seen).
+/// - `.ownershipIncomplete` — window snapshot succeeded but the R4 ownership
+///   query returned `nil` (fail-closed: state preserved).
+/// - `.windowSnapshotFailed` — the window snapshot provider threw (fail-closed).
+/// - `.unsupported` — the target keyword is nil (no identity to match).
 enum WindowObservation: Sendable, Equatable {
     case ownedPositive
     case ownedMiss
@@ -165,7 +167,7 @@ enum WindowReducer {
     static let threshold = 2
 
     /// Bounded duration after which a `.visible` phase degrades to
-    /// `.unknown` if no proven observation has been seen.
+    /// `.unknown` if no proven positive observation has been seen.
     static let leaseDuration: Duration = .seconds(1)
 
     /// Reduce a single observation into the current state.
@@ -173,9 +175,8 @@ enum WindowReducer {
     /// - `.ownedPositive` — reset negative streak, advance positive streak,
     ///   refresh the lease. Reaches `.visible` after `threshold` strikes.
     /// - `.ownedMiss` / `.foreignCandidatesOnly` — reset positive streak,
-    ///   advance negative streak, clear the lease. Reaches `.hidden` from
-    ///   `.visible` only after `threshold` strikes (unknown + miss never
-    ///   reaches hidden).
+    ///   advance negative streak. Reaches `.hidden` from `.visible` only
+    ///   after `threshold` strikes; `unknown + miss` never reaches hidden.
     /// - `.ownershipIncomplete` / `.windowSnapshotFailed` / `.unsupported`
     ///   — fail closed: state and streaks are preserved exactly.
     static func reduce(
@@ -202,18 +203,13 @@ enum WindowReducer {
             if next.negativeStreak >= threshold, next.phase == .visible {
                 next.phase = .hidden
             }
-            // Do NOT clear lastProvenObservation: the lease measures staleness
-            // since the last POSITIVE observation. Missing or fail-closed
-            // observations do not reset the lease — only a new positive
-            // observation refreshes it.
         }
         return next
     }
 
     /// Apply the bounded lease: a proven `visible` phase degrades to
-    /// `unknown` when no proven observation has arrived within
-    /// `leaseDuration`. A phase that is already `unknown` or `hidden` is
-    /// not affected by lease expiry.
+    /// `unknown` when no positive observation has arrived within
+    /// `leaseDuration`. `unknown` and `hidden` are unaffected.
     static func applyLease(
         _ state: WindowReducerState,
         now: ContinuousClock.Instant
@@ -254,11 +250,15 @@ struct WindowServerProvider: WindowInfoProviding {
     }
 }
 
+/// R4 ownership query type. Non-optional: every observation requires it.
+/// Returns `nil` → `.ownershipIncomplete` (fail-closed).
+typealias WindowOwnershipSnapshot = @MainActor () async -> Set<Int32>?
+
 /// A token that uniquely identifies a monitor lifecycle instance.
 ///
 /// Stamps observations with a session ID + generation so that a stale
-/// monitor (from a superseded session or an invalidated lifecycle)
-/// cannot apply state to the wrong session or survive a rollback.
+/// monitor (from a superseded session or an invalidated lifecycle) cannot
+/// apply state to the wrong session or survive a rollback.
 struct MonitorLease: Hashable, Sendable {
     let sessionID: UUID
     let generation: UInt64
@@ -269,21 +269,23 @@ struct MonitorLease: Hashable, Sendable {
 ///
 /// **U1R18-R3:** Every observation is ownership-bound. A window is reported
 /// visible only when BOTH:
-/// 1. `WindowInfoProviding.snapshot()` succeeds and a valid on-screen window is found, AND
-/// 2. the ownership closure returns a non-nil set containing that window's owner PID.
+/// 1. `WindowInfoProviding.snapshot()` succeeds, AND
+/// 2. the R4 ownership closure returns a non-nil set, AND
+/// 3. a target-identity-matching window owns a PID in that set.
 ///
 /// The ownership closure is supplied by `GameSessionSupervisor` and delegates
-/// to the R4 authority (`HostProcessLineage.ownedProcessIDs`). No parallel
-/// process-tree authority exists.
+/// to `GameSessionSupervisor.ownedProcessSnapshot()` →
+/// `HostProcessLineage.ownedProcessIDs(ledger:)`. No parallel process-tree
+/// authority exists. Unscoped / keyword-only / geometry-only fallbacks are
+/// explicitly prohibited.
 @MainActor
 final class SessionWindowObserver {
     private let provider: any WindowInfoProviding
 
-    /// Ownership query: returns the set of PIDs proven to belong to the
+    /// R4 ownership query: returns the set of PIDs proven to belong to the
     /// supervised session, or `nil` when ownership cannot be proven
-    /// (fail-closed). When `nil`, the observer falls back to keyword-only
-    /// matching for unscoped detection.
-    private var ownershipSnapshot: (@MainActor () async -> Set<Int32>?)?
+    /// (fail-closed). Non-optional — every observation requires it.
+    private var ownershipSnapshot: WindowOwnershipSnapshot
 
     private var monitorTask: Task<Void, Never>?
     private var reducerState = WindowReducerState()
@@ -294,6 +296,7 @@ final class SessionWindowObserver {
 
     init(provider: any WindowInfoProviding = WindowServerProvider()) {
         self.provider = provider
+        self.ownershipSnapshot = { nil }
     }
 
     var isMonitoring: Bool {
@@ -312,15 +315,15 @@ final class SessionWindowObserver {
     ///
     /// - Parameters:
     ///   - sessionID: identity of the session this monitor serves.
-    ///   - target: window target keyword (used only for unscoped fallback).
-    ///   - ownershipSnapshot: R4 ownership closure; `nil` falls back to
-    ///     keyword-only matching.
+    ///   - target: window target keyword (Steam / CloverPit).
+    ///   - ownershipSnapshot: **required** R4 ownership closure; returns the
+    ///     set of proven-owned PIDs, or `nil` for fail-closed.
     ///   - pollInterval: time between observation ticks.
     ///   - applyState: callback invoked with the derived `GameSessionState`.
     func startMonitoring(
         sessionID: UUID,
         target: WindowTarget,
-        ownershipSnapshot: (@MainActor () async -> Set<Int32>?)? = nil,
+        ownershipSnapshot: @escaping WindowOwnershipSnapshot,
         pollInterval: Duration = .milliseconds(300),
         applyState: @escaping @MainActor (GameSessionState) -> Void
     ) {
@@ -359,7 +362,7 @@ final class SessionWindowObserver {
         reducerState = WindowReducer.applyLease(reducerState, now: now)
 
         guard activeSessionID == lease.sessionID, generation == lease.generation,
-              !Task.isCancelled else { return }
+            !Task.isCancelled else { return }
         applyState?(reducerState.phase.gameSessionState)
     }
 
@@ -372,23 +375,25 @@ final class SessionWindowObserver {
     func invalidate() {
         generation &+= 1
         activeSessionID = nil
-        ownershipSnapshot = nil
+        ownershipSnapshot = { nil }
         applyState = nil
         monitorTask?.cancel()
         monitorTask = nil
     }
 
     /// Perform a single observation, requiring BOTH the window snapshot
-    /// and the ownership query to succeed.
+    /// AND the R4 ownership query to succeed.
     ///
-    /// - Ownership present → session-scoped: a candidate is valid only if
-    ///   its owner PID is in the ownership set.
-    /// - Ownership absent (closure is `nil`) → unscoped keyword matching.
-    /// - Ownership returns `nil` → `.ownershipIncomplete` (fail-closed).
-    /// - Provider throws → `.windowSnapshotFailed` (fail-closed).
+    /// - `ownedPositive`: a target-matching window whose owner PID is in the
+    ///   ownership set.
+    /// - `foreignCandidatesOnly`: target-matching windows exist but none are owned.
+    /// - `ownedMiss`: no target-matching windows at all.
+    /// - `ownershipIncomplete`: ownership closure returned `nil` (fail-closed).
+    /// - `windowSnapshotFailed`: provider threw (fail-closed).
+    /// - `unsupported`: target keyword is nil.
     private func observe(
         target: WindowTarget,
-        ownershipSnapshot: (@MainActor () async -> Set<Int32>?)?
+        ownershipSnapshot: WindowOwnershipSnapshot
     ) async -> WindowObservation {
         guard target != .unsupported else { return .unsupported }
 
@@ -399,19 +404,22 @@ final class SessionWindowObserver {
             return .windowSnapshotFailed
         }
 
-        if let ownershipSnapshot {
-            guard let owned = await ownershipSnapshot() else {
-                return .ownershipIncomplete
-            }
-            let validWindows = windows.filter { WindowMatcher.isValidGeometry($0) }
-            let hasOwned = validWindows.contains { owned.contains($0.ownerPID) }
-            if hasOwned {
-                return .ownedPositive
-            }
-            return validWindows.isEmpty ? .ownedMiss : .foreignCandidatesOnly
-        } else {
-            let hit = windows.contains { WindowMatcher.isValidGeometry($0) }
-            return hit ? .ownedPositive : .ownedMiss
+        guard let owned = await ownershipSnapshot() else {
+            return .ownershipIncomplete
         }
+
+        let targetCandidates = windows.filter {
+            WindowMatcher.isValidCandidate($0, target: target)
+        }
+
+        if targetCandidates.contains(where: { owned.contains($0.ownerPID) }) {
+            return .ownedPositive
+        }
+
+        if !targetCandidates.isEmpty {
+            return .foreignCandidatesOnly
+        }
+
+        return .ownedMiss
     }
 }

@@ -648,6 +648,20 @@ check "HostProcessLineage has ownedProcessIDs(ledger:) extension" $?
 ! grep -qE '\bpgrep\b|\bpkill\b|\bkillall\b|\bps -' "$OBS"
 check "No shell ps/pgrep/pkill/killall in observer" $?
 
+# R3.G14. ownedProcessIDs delegates to the normal coherent census(ledger:),
+#        not a cached-table replay that bypasses the coherence gate.
+grep -q 'let result = census(ledger: &ledger)' "$LIN"
+check "ownedProcessIDs delegates to coherent census, not cached-table replay" $?
+
+# R3.G15. ownedProcessIDs fails closed: non-proven census returns nil.
+grep -q 'guard result.state == .proven else { return nil }' "$LIN"
+check "ownedProcessIDs fails closed on non-proven census (returns nil)" $?
+
+# R3.G16. Recovery must not fabricate ownership: ownedProcessSnapshot returns nil
+#        when no ledger exists (no receipt-PID bypass).
+grep -q 'guard var ledger = censusLedger else { return nil }' "$GSS"
+check "Recovery has no ledger → ownership nil (no receipt-PID bypass)" $?
+
 echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"

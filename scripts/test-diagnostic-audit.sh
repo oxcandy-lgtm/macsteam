@@ -596,6 +596,24 @@ run_mutation "r3-ownership-bypass" \
     "sed -i '' 's/guard let owned = await ownershipSnapshot()/let owned = Set(found)/' Sources/MacSteam/Sessions/SessionWindowObserver.swift" \
     "fail"
 
+# R3.M8: cached-table replay bypasses the coherence gate in ownedProcessIDs
+#        (§7 regression: replaces census(ledger:) with a fabricated proven result).
+run_mutation "r3-cached-table-replay" \
+    "sed -i '' 's/let result = census(ledger: &ledger)/let result = .proven/' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# R3.M9: snapshotUnstable fail-closed removed from ownedProcessIDs — non-proven
+#        census returns an empty set instead of nil (§7 coherence gate bypass).
+run_mutation "r3-snapshotuninstable-failclosed-removed" \
+    "sed -i '' 's/guard result.state == .proven else { return nil }/guard result.state == .proven { return Set() }/' Sources/MacSteam/Sessions/HostProcessLineage.swift" \
+    "fail"
+
+# R3.M10: recovery fabricates ownership from a receipt PID instead of failing
+#         closed (§6 regression: ownedProcessSnapshot returns Set([0]) with no ledger).
+run_mutation "r3-recovery-receipt-pid-bypass" \
+    "sed -i '' 's/guard var ledger = censusLedger else { return nil }/guard var ledger = censusLedger else { return Set([0]) }/' Sources/MacSteam/Sessions/GameSessionSupervisor.swift" \
+    "fail"
+
 echo ""
 echo "=== Summary ==="
 echo "Pass: $PASS  Fail: $FAIL"
