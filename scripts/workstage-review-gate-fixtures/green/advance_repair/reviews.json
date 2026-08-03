@@ -1,12 +1,13 @@
 [
   {
-    "id": 4841397951,
+    "id": 4843792148,
     "user": {
-      "login": "sai"
+      "login": "sai-controller"
     },
-    "commit_id": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d",
-    "state": "COMMENTED",
-    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"f3ae89d2caa07930ffda7a84059ecdfb18942e3d\",\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R7_SELF_REVIEW_AND_SEQUENTIAL_GATE_FAIL_OPEN\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n\nR7 repair authorization granted for U1R18-R7-FIX1. This RED review is authorized for one-time repair by a direct child commit with message: ci: close workstream review authority gate (U1R18-R7-FIX1)\nWorkstream: U1R18-R7-FIX1\n",
-    "submitted_at": "2026-08-03T02:50:00Z"
+    "commit_id": "4b7cbe162d0dbf4e660972b2eda3f369588884e3",
+    "state": "APPROVED",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"4b7cbe162d0dbf4e660972b2eda3f369588884e3\",\n  \"worker_report_comment_id\": 5161887211,\n  \"submission_run_id\": 30790400003,\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R7_FIX1_CANONICAL_SUBMISSION_RECEIPT_NOT_BOUND\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n\n\nR7 repair authorization granted for U1R18-R7-FIX2. This RED review authorizes a single direct child commit.\n",
+    "submitted_at": "2026-08-03T02:50:00Z",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4843792148"
   }
 ]

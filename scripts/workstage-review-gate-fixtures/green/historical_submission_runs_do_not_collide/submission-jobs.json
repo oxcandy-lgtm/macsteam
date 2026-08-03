@@ -1,0 +1,29 @@
+{
+  "total_count": 3,
+  "jobs": [
+    {
+      "id": 3079040002329,
+      "name": "Submission Gate",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 30790400004,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/30790400004"
+    },
+    {
+      "id": 3079040002229,
+      "name": "Submission Gate",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 30790400003,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/30790400003"
+    },
+    {
+      "id": 3079040002429,
+      "name": "Submission Gate",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 30790400005,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/30790400005"
+    }
+  ]
+}

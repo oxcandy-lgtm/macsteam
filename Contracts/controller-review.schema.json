@@ -9,6 +9,8 @@
     "schema_version",
     "kind",
     "head_sha",
+    "worker_report_comment_id",
+    "submission_run_id",
     "decision",
     "classification",
     "review_complete",
@@ -27,6 +29,14 @@
     "head_sha": {
       "type": "string",
       "pattern": "^[a-f0-9]{40}$"
+    },
+    "worker_report_comment_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "submission_run_id": {
+      "type": "integer",
+      "minimum": 1
     },
     "decision": {
       "type": "string",

@@ -69,9 +69,12 @@ Runs manually via `workflow_dispatch` after the worker posts their report.
 
 Additionally verifies:
 - A valid worker report exists as a top-level issue comment (not in a review)
+- The report is fetched by exact comment ID (`--worker-report-comment-id`)
+- Exactly one current-HEAD worker report exists (no duplicates/replies/inline)
 - Report JSON matches the schema (full validation, not partial)
 - Report `head_sha`, `parent_sha`, `commit_count` are correct
 - `stop == true`, `next_workstream_started == false`, no ready/merge/release
+- `gate_submission_run_id == null` (contract `const: null`)
 - Worker report was posted after the HEAD commit
 - Declared core CI run exists for the exact HEAD, is `completed`/`success`
 - Workflow name is exactly `CI`
@@ -99,6 +102,8 @@ Additionally verifies:
 - Not in quarantined review IDs
 - Submitted after the worker report
 - No newer rejected/CHANGES_REQUESTED/DISMISSED review overrides the accepted review
+- The accepted review carries `worker_report_comment_id` and `submission_run_id`
+  (both int ≥ 1), and the referenced submission run receipt validates (§8)
 
 Outputs `REVIEW_COMPLETE_NX_REQUIRED`.
 
@@ -114,22 +119,60 @@ by exact commit ID match, exact state, and exact classification in the body
 rather than by marker. `classification.startswith("GREEN_")` alone never grants
 approval — the exact classification string must appear in the review body.
 
-## Repair authorization — R7-FIX1
+## Repair authorization — R7-FIX2
 
-The repair authorization is a one-time exception for the `U1R18-R7-FIX1`
-workstream. The parent commit `f3ae89d...` was RED (self-review + fail-open).
-This repair authorization allows exactly one direct child commit that:
+The repair authorization is a one-time exception for the `U1R18-R7-FIX2`
+workstream. The parent commit `4b7cbe1...` was RED (canonical submission receipt
+not bound). This repair authorization allows exactly one direct child commit that:
 
-- Has parent == `f3ae89d...`
+- Has parent == `4b7cbe1...`
 - Is not a merge commit
-- Has commit message exactly matching `ci: close workstream review authority gate (U1R18-R7-FIX1)`
-- Has `Workstream: U1R18-R7-FIX1` trailer
+- Has commit message exactly matching `ci: bind trusted submission receipt (U1R18-R7-FIX2)`
+- Has `Workstream: U1R18-R7-FIX2` trailer
 - Changes only files in the allowed path set (§3)
 - Has production source delta 0 (no `Sources/**` or `Tests/**` changes)
 
 The repair authorization is linked to the exact controller RED review with ID
-`4841397951`, anchored to `f3ae89d...`, whose body contains the exact
-classification `RED_U1R18_R7_SELF_REVIEW_AND_SEQUENTIAL_GATE_FAIL_OPEN`.
+`4843792148`, anchored to `4b7cbe1...`, whose body contains the exact
+classification `RED_U1R18_R7_FIX1_CANONICAL_SUBMISSION_RECEIPT_NOT_BOUND`.
+
+## Submission run receipt (§8)
+
+The trusted submission run is the binding artifact that connects a worker report
+to a controller review. The worker never creates reviews; in the submission phase
+the gate always runs with `--worker-report-comment-id`, binding the report the
+worker just posted.
+
+- The worker report is queried by its comment ID (`issues/comments/{id}`).
+- `gate_submission_run_id` must be `null` in the pre-submission worker report
+  (contract `const: null`); it is derived only from `GITHUB_RUN_ID`.
+- When a controller review is accepted, its body must carry
+  `worker_report_comment_id` (int ≥ 1) and `submission_run_id` (int ≥ 1)
+  (contract `controller-review.schema.json`, `additionalProperties: false`).
+
+The submission run receipt is validated against the workflow-run contract:
+
+- `event == workflow_dispatch`, `status == completed`, `conclusion == success`
+- `run_attempt == 1`
+- Run name encodes `phase=submission`, exact `PR`, exact `HEAD`, and `REPORT=<comment id>`
+- Exactly one `Submission Gate` job, `completed`/`success`
+- Chronology: commit < report_created_at < submission_run_started <
+  submission_run_completed_at ≤ controller_review_submitted_at
+
+## Future-child advance (§9)
+
+When a later workstream's child advances and its **parent** controller review
+carries `submission_run_id ≥ 1`, the gate revalidates that parent submission run
+receipt before admitting the child. This prevents a chain from proceeding on an
+unverified or replayed submission receipt.
+
+## Worker/controller separation
+
+The worker NEVER creates reviews and never authors controller reviews. Only the
+controller credential (with `pull_requests: write`) may post a controller
+review. The controller review must reference the worker report by comment ID and
+the submission run by ID, so every controller action is provably bound to a
+gate-run submission receipt.
 
 ## Latest-decision authority
 

@@ -1,19 +1,21 @@
 {
-  "sha": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d",
+  "sha": "4b7cbe162d0dbf4e660972b2eda3f369588884e3",
   "parents": [
     {
-      "sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db"
+      "sha": "8888888888888888888888888888888888888888"
     }
   ],
   "commit": {
+    "message": "test commit\n",
     "committer": {
-      "date": "2026-08-03T02:45:00Z",
-      "name": "Worker"
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
     },
     "author": {
-      "date": "2026-08-03T02:45:00Z",
-      "name": "Worker"
-    },
-    "message": "fix: commit message"
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    }
   }
 }

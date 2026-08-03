@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Test harness for workstage-review-gate — U1R18-R7-FIX1
-# Tests GREEN fixtures pass, mutations cause failures, source mutations are caught
+# Test harness for workstage-review-gate — U1R18-R7-FIX2
+# Tests: 20 GREEN fixtures pass, fixture mutations cause failures,
+#        source mutations are caught, worktree is clean.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIXTURE_DIR="${SCRIPT_DIR}/workstage-review-gate-fixtures"
@@ -32,18 +33,20 @@ get_policy_arg() {
 run_green_pass() {
   local fixture_dir="$1"
   local phase="$2"
+  local extra_args="$3"
   local expected_head
   expected_head=$(python3 -c "import json; print(json.load(open('${fixture_dir}/pr.json'))['head']['sha'])")
   local policy_arg
   policy_arg=$(get_policy_arg "$fixture_dir")
-  
+
   python3 "$GATE" \
     --phase "$phase" \
     --pr-number 2 \
     --expected-head "$expected_head" \
     --repo "oxcandy-lgtm/macsteam" \
     --fixtures "$fixture_dir" \
-    --policy "$policy_arg" > /dev/null 2>&1
+    --policy "$policy_arg" \
+    $extra_args > /dev/null 2>&1
 }
 
 # --- Run a fixture with a fixture mutation, expect failure ---
@@ -51,12 +54,13 @@ run_fixture_mutation() {
   local mut_name="$1"
   local phase="$2"
   local base_fixture="$3"
+  local extra_args="$4"
   local fixture_dir="${TEMP_BASE}/fm_${mut_name}"
-  
+
   rm -rf "$fixture_dir"
   mkdir -p "$fixture_dir"
   cp -r "${base_fixture}/." "$fixture_dir/"
-  
+
   # Compute expected_head BEFORE mutation (some mutations remove pr.json)
   local expected_head
   if [ -f "${fixture_dir}/pr.json" ]; then
@@ -64,14 +68,14 @@ run_fixture_mutation() {
   else
     expected_head=$(python3 -c "import json; print(json.load(open('${base_fixture}/pr.json'))['head']['sha'])")
   fi
-  
+
   # For policy-related mutations, ensure a policy.json exists first
   if [ "$mut_name" = "policy_missing" ]; then
     cp "$DEFAULT_POLICY" "${fixture_dir}/policy.json"
   fi
-  
+
   python3 "${FIXTURE_DIR}/apply-mutation.py" "$mut_name" "$fixture_dir" 2>/dev/null || true
-  
+
   # For policy_missing, always use the fixture path so the missing file is detected
   local policy_arg
   if [ "$mut_name" = "policy_missing" ]; then
@@ -79,14 +83,15 @@ run_fixture_mutation() {
   else
     policy_arg=$(get_policy_arg "$fixture_dir")
   fi
-  
+
   python3 "$GATE" \
     --phase "$phase" \
     --pr-number 2 \
     --expected-head "$expected_head" \
     --repo "oxcandy-lgtm/macsteam" \
     --fixtures "$fixture_dir" \
-    --policy "$policy_arg" > /dev/null 2>&1
+    --policy "$policy_arg" \
+    $extra_args > /dev/null 2>&1
 }
 
 # --- Run a fixture with a source mutation, expect failure ---
@@ -94,26 +99,28 @@ run_source_mutation() {
   local mut_name="$1"
   local fixture_name="$2"
   local phase="$3"
+  local extra_args="$4"
   local fixture_dir="${TEMP_BASE}/sm_${mut_name}_${fixture_name}"
-  
+
   rm -rf "$fixture_dir"
   mkdir -p "$fixture_dir"
   cp -r "${FIXTURE_DIR}/green/${fixture_name}/." "$fixture_dir/"
-  
+
   local mut_gate="${TEMP_BASE}/gate_${mut_name}.py"
   cp "$GATE" "$mut_gate"
   python3 "${FIXTURE_DIR}/apply-source-mutation.py" "$mut_name" "$mut_gate" 2>/dev/null
-  
+
   local expected_head
   expected_head=$(python3 -c "import json; print(json.load(open('${fixture_dir}/pr.json'))['head']['sha'])")
-  
+
   python3 "$mut_gate" \
     --phase "$phase" \
     --pr-number 2 \
     --expected-head "$expected_head" \
     --repo "oxcandy-lgtm/macsteam" \
     --fixtures "$fixture_dir" \
-    --policy "$DEFAULT_POLICY" > /dev/null 2>&1
+    --policy "$DEFAULT_POLICY" \
+    $extra_args > /dev/null 2>&1
 }
 
 # ================================================
@@ -122,26 +129,36 @@ run_source_mutation() {
 echo "=== GREEN Fixtures (baseline) ==="
 
 GREEN_FIXTURES=(
-  "advance_bootstrap:advance"
-  "advance_repair:advance"
-  "advance_normal_commented:advance"
-  "advance_normal_approved:advance"
-  "submission_historical_reports:submission"
-  "submission_historical_reviews:submission"
-  "review_commented_accepted:review"
-  "review_approved_accepted:review"
-  "multi_page_comments:submission"
-  "multi_page_reviews:advance"
-  "multi_page_runs_jobs:submission"
-  "latest_accept_after_reject:review"
+  "advance_bootstrap|advance|"
+  "advance_repair|advance|"
+  "advance_normal_commented|advance|"
+  "advance_normal_approved|advance|"
+  "latest_accept_after_reject|review|"
+  "multi_page_comments|submission|--worker-report-comment-id 5161887211"
+  "multi_page_reviews|advance|"
+  "multi_page_runs_jobs|submission|--worker-report-comment-id 5161887211"
+  "review_approved_accepted|review|--worker-report-comment-id 5161887211"
+  "review_commented_accepted|review|--worker-report-comment-id 5161887211"
+  "review_commented_accepted_with_receipt|review|--worker-report-comment-id 5161887211"
+  "review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "submission_exact_comment_id|submission|--worker-report-comment-id 5161887211"
+  "submission_historical_reports|submission|--worker-report-comment-id 5161887211"
+  "submission_historical_reviews|submission|--worker-report-comment-id 5161887211"
+  "submission_pre_report_null|submission|--worker-report-comment-id 5161887211"
+  "submission_trusted_github_run_id|submission|--worker-report-comment-id 5161887211"
+  "future_child_advance_revalidates_parent_receipt|advance|"
+  "historical_reports_plus_one_current|submission|--worker-report-comment-id 5161887211"
+  "historical_submission_runs_do_not_collide|review|--worker-report-comment-id 5161887211"
 )
 
 for entry in "${GREEN_FIXTURES[@]}"; do
-  fixture="${entry%%:*}"
-  phase="${entry##*:}"
+  fixture="${entry%%|*}"
+  rest="${entry#*|}"
+  phase="${rest%%|*}"
+  extra="${rest#*|}"
   fixture_dir="${FIXTURE_DIR}/green/${fixture}"
-  
-  if run_green_pass "$fixture_dir" "$phase"; then
+
+  if run_green_pass "$fixture_dir" "$phase" "$extra"; then
     ok
     echo "  PASS: green/${fixture} (${phase})"
   else
@@ -150,118 +167,286 @@ for entry in "${GREEN_FIXTURES[@]}"; do
 done
 
 # ================================================
-# TEST 2: Fixture mutations cause failures
+# TEST 2: Fixture mutations — advance phase (parent/controller) — should fail
 # ================================================
 echo ""
-echo "=== Fixture Mutations (should fail) ==="
+echo "=== Fixture Mutations: Advance Phase (parent/controller) ==="
 
-# Format: mut_name|phase|base_fixture
-FIXTURE_MUTATIONS=(
-  "quarantined_self_review_rejected|advance|advance_normal_approved"
-  "parent_review_missing|advance|advance_normal_approved"
-  "parent_review_issue_comment_only|advance|advance_normal_approved"
-  "parent_review_wrong_head|advance|advance_normal_approved"
-  "parent_review_after_child|advance|advance_normal_approved"
-  "parent_review_commented_without_marker|advance|advance_normal_approved"
-  "parent_review_approved_with_bad_json|advance|advance_normal_approved"
-  "latest_rejected_overrides_old_green|advance|advance_normal_approved"
-  "selected_changes_requested|advance|advance_normal_approved"
-  "selected_dismissed|advance|advance_normal_approved"
-  "controller_json_head_mismatch|advance|advance_normal_approved"
-  "controller_nx_required_false|advance|advance_normal_approved"
-  "controller_ready_true|advance|advance_normal_approved"
-  "controller_merge_true|advance|advance_normal_approved"
-  "controller_release_true|advance|advance_normal_approved"
-  "controller_review_complete_false|advance|advance_normal_approved"
-  "controller_classification_not_green|advance|advance_normal_approved"
-  "controller_marker_duplicated_in_body|advance|advance_normal_approved"
-  "controller_json_blocks_duplicated|advance|advance_normal_approved"
-  "bootstrap_policy_green_without_body_evidence|advance|advance_bootstrap"
-  "bootstrap_wrong_review_id|advance|advance_bootstrap"
-  "bootstrap_wrong_commit|advance|advance_bootstrap"
-  "bootstrap_wrong_classification|advance|advance_bootstrap"
-  "bootstrap_wrong_child|advance|advance_bootstrap"
-  "bootstrap_reused_after_r7|advance|advance_bootstrap"
-  "repair_wrong_review_id|advance|advance_repair"
-  "repair_wrong_parent|advance|advance_repair"
-  "repair_wrong_classification|advance|advance_repair"
-  "repair_wrong_commit_message|advance|advance_repair"
-  "repair_wrong_workstream_trailer|advance|advance_repair"
-  "repair_forbidden_path|advance|advance_repair"
-  "repair_production_source_changed|advance|advance_repair"
-  "repair_merge_commit|advance|advance_repair"
-  "repair_reused_after_fix1|advance|advance_repair"
-  "repair_quarantined_review_used|advance|advance_repair"
-  "report_missing|submission|submission_historical_reports"
-  "report_malformed_current_head|submission|submission_historical_reports"
-  "report_marker_duplicated|submission|submission_historical_reports"
-  "report_json_block_duplicated|submission|submission_historical_reports"
-  "report_inline|submission|submission_historical_reports"
-  "report_reply|submission|submission_historical_reports"
-  "report_head_mismatch|submission|submission_historical_reports"
-  "report_parent_mismatch|submission|submission_historical_reports"
-  "report_commit_count_invalid|submission|submission_historical_reports"
-  "report_workstream_mismatch|submission|submission_historical_reports"
-  "report_stop_false|submission|submission_historical_reports"
-  "report_next_workstream_true|submission|submission_historical_reports"
-  "report_ready_true|submission|submission_historical_reports"
-  "report_merge_true|submission|submission_historical_reports"
-  "report_release_true|submission|submission_historical_reports"
-  "report_before_commit|submission|submission_historical_reports"
-  "report_bool_used_as_integer|submission|submission_historical_reports"
-  "report_duplicate_ci_jobs|submission|submission_historical_reports"
-  "report_invalid_array_item|submission|submission_historical_reports"
-  "report_extra_property|submission|submission_historical_reports"
-  "duplicate_current_head_reports|submission|submission_historical_reports"
-  "historical_reports_do_not_conflict|submission|submission_historical_reports"
-  "ci_run_missing|submission|submission_historical_reports"
-  "ci_run_wrong_head|submission|submission_historical_reports"
-  "ci_run_wrong_workflow|submission|submission_historical_reports"
-  "ci_run_incomplete|submission|submission_historical_reports"
-  "ci_run_failed|submission|submission_historical_reports"
-  "ci_job_missing|submission|submission_historical_reports"
-  "ci_job_failed|submission|submission_historical_reports"
-  "ci_job_duplicate|submission|submission_historical_reports"
-  "policy_missing|advance|advance_normal_approved"
-  "policy_malformed|advance|advance_normal_approved"
-  "fixture_missing|advance|advance_normal_approved"
-  "fixture_json_malformed|advance|advance_normal_approved"
-  "pagination_parse_failure|submission|submission_historical_reports"
-  "pagination_page_type_invalid|submission|submission_historical_reports"
-  "pagination_duplicate_id|submission|submission_historical_reports"
-  "timestamp_malformed|advance|advance_normal_approved"
-  "commit_parent_missing|advance|advance_normal_approved"
-  "mergeable_unknown_after_retry|advance|advance_normal_approved"
-  "merge_commit_rejected|advance|advance_normal_approved"
-  "repository_mismatch|advance|advance_normal_approved"
-  "pr_number_mismatch|advance|advance_normal_approved"
-  "head_branch_mismatch|advance|advance_normal_approved"
-  "base_branch_mismatch|advance|advance_normal_approved"
-  "pr_closed|advance|advance_normal_approved"
-  "pr_not_draft|advance|advance_normal_approved"
-  "pr_merged|advance|advance_normal_approved"
-  "pr_not_mergeable|advance|advance_normal_approved"
-  "expected_head_invalid|advance|advance_normal_approved"
-  "api_404_pr|advance|advance_normal_approved"
-  "api_404_commit|advance|advance_normal_approved"
-  "api_404_comments|submission|submission_historical_reports"
-  "api_404_reviews|advance|advance_normal_approved"
-  "api_404_runs|submission|submission_historical_reports"
-  "api_404_jobs|submission|submission_historical_reports"
+ADVANCE_MUTATIONS=(
+  "quarantined_self_review_rejected"
+  "parent_review_missing"
+  "parent_review_issue_comment_only"
+  "parent_review_wrong_head"
+  "parent_review_after_child"
+  "parent_review_commented_without_marker"
+  "parent_review_approved_with_bad_json"
+  "latest_rejected_overrides_old_green"
+  "selected_changes_requested"
+  "selected_dismissed"
+  "controller_json_head_mismatch"
+  "controller_nx_required_false"
+  "controller_ready_true"
+  "controller_merge_true"
+  "controller_release_true"
+  "controller_review_complete_false"
+  "controller_classification_not_green"
+  "controller_marker_duplicated_in_body"
+  "controller_json_blocks_duplicated"
+  "bootstrap_policy_green_without_body_evidence"
+  "bootstrap_wrong_review_id"
+  "bootstrap_wrong_commit"
+  "bootstrap_wrong_classification"
+  "bootstrap_wrong_child"
+  "bootstrap_reused_after_r7"
+  "repair_wrong_review_id"
+  "repair_wrong_parent"
+  "repair_wrong_classification"
+  "repair_wrong_commit_message"
+  "repair_wrong_workstream_trailer"
+  "repair_forbidden_path"
+  "repair_production_source_changed"
+  "repair_merge_commit"
+  "repair_reused_after_fix1"
+  "repair_quarantined_review_used"
 )
 
-for entry in "${FIXTURE_MUTATIONS[@]}"; do
-  mut_name="${entry%%|*}"
-  rest="${entry#*|}"
-  phase="${rest%%|*}"
-  fixture="${rest##*|}"
-  base_fixture_dir="${FIXTURE_DIR}/green/${fixture}"
-  
-  if ! run_fixture_mutation "$mut_name" "$phase" "$base_fixture_dir"; then
-    ok
-    echo "  PASS: ${mut_name} (${fixture}:${phase})"
+for mut_name in "${ADVANCE_MUTATIONS[@]}"; do
+  if [ "$mut_name" = "quarantined_self_review_rejected" ]; then
+    base_fixture="advance_normal_approved"
+  elif [[ "$mut_name" == bootstrap_* ]]; then
+    base_fixture="advance_bootstrap"
+  elif [[ "$mut_name" == repair_* ]]; then
+    base_fixture="advance_repair"
   else
-    bad "${mut_name} (${fixture}:${phase}) should fail"
+    base_fixture="advance_normal_approved"
+  fi
+
+  base_dir="${FIXTURE_DIR}/green/${base_fixture}"
+  if ! run_fixture_mutation "$mut_name" "advance" "$base_dir" ""; then
+    ok
+    echo "  PASS: ${mut_name} (advance)"
+  else
+    bad "${mut_name} (advance) should fail"
+  fi
+done
+
+# ================================================
+# TEST 2b: Fixture mutations — submission phase (worker report) — should fail
+# ================================================
+echo ""
+echo "=== Fixture Mutations: Submission Phase (worker report) ==="
+
+SUBMISSION_REPORT_MUTATIONS=(
+  "report_missing"
+  "report_malformed_current_head"
+  "report_marker_duplicated"
+  "report_json_block_duplicated"
+  "report_inline"
+  "report_reply"
+  "report_head_mismatch"
+  "report_parent_mismatch"
+  "report_commit_count_invalid"
+  "report_workstream_mismatch"
+  "report_stop_false"
+  "report_next_workstream_true"
+  "report_ready_true"
+  "report_merge_true"
+  "report_release_true"
+  "report_before_commit"
+  "report_bool_used_as_integer"
+  "report_duplicate_ci_jobs"
+  "report_invalid_array_item"
+  "report_extra_property"
+  "duplicate_current_head_reports"
+  "historical_reports_do_not_conflict"
+  "report_submission_run_numeric"
+  "report_submission_run_string"
+  "report_submission_run_missing"
+  "report_submission_run_id_non_null"
+  "report_gate_submission_run_id_numeric"
+  "report_gate_submission_run_id_string"
+  "report_gate_submission_run_id_missing"
+  "ci_run_missing"
+  "ci_run_wrong_head"
+  "ci_run_wrong_workflow"
+  "ci_run_incomplete"
+  "ci_run_failed"
+  "ci_job_missing"
+  "ci_job_failed"
+  "ci_job_duplicate"
+  "pagination_parse_failure"
+  "pagination_page_type_invalid"
+  "pagination_duplicate_id"
+  "api_404_comments"
+  "api_404_runs"
+  "api_404_jobs"
+  "fixture_missing_comments"
+  "fixture_missing_runs"
+  "fixture_missing_jobs"
+)
+
+for mut_name in "${SUBMISSION_REPORT_MUTATIONS[@]}"; do
+  if ! run_fixture_mutation "$mut_name" "submission" "${FIXTURE_DIR}/green/submission_historical_reports" "--worker-report-comment-id 5161887211"; then
+    ok
+    echo "  PASS: ${mut_name} (submission)"
+  else
+    bad "${mut_name} (submission) should fail"
+  fi
+done
+
+# ================================================
+# TEST 2c: Fixture mutations — submission phase (run receipt) — should fail
+# ================================================
+echo ""
+echo "=== Fixture Mutations: Submission Run Receipt ==="
+
+SUBMISSION_RECEIPT_MUTATIONS=(
+  "submission_run_wrong_head"
+  "submission_run_wrong_branch"
+  "submission_run_wrong_event"
+  "submission_run_wrong_phase_in_name"
+  "submission_run_wrong_pr_in_name"
+  "submission_run_wrong_report_id_in_name"
+  "submission_run_wrong_head_in_name"
+  "submission_run_attempt_gt_one"
+  "submission_run_incomplete"
+  "submission_run_failed"
+  "submission_run_wrong_id"
+  "submission_run_id_mismatch"
+  "report_created_after_submission_run"
+  "submission_completed_after_review"
+)
+
+for mut_name in "${SUBMISSION_RECEIPT_MUTATIONS[@]}"; do
+  if ! run_fixture_mutation "$mut_name" "review" "${FIXTURE_DIR}/green/review_exact_submission_receipt" "--worker-report-comment-id 5161887211"; then
+    ok
+    echo "  PASS: ${mut_name} (review/submission-receipt)"
+  else
+    bad "${mut_name} (review/submission-receipt) should fail"
+  fi
+done
+
+# ================================================
+# TEST 2d: Fixture mutations — submission gate job — should fail
+# ================================================
+echo ""
+echo "=== Fixture Mutations: Submission Gate Job ==="
+
+SUBMISSION_JOB_MUTATIONS=(
+  "submission_gate_job_missing"
+  "submission_gate_job_failed"
+  "submission_gate_job_skipped"
+  "submission_gate_job_cancelled"
+  "submission_gate_job_duplicate"
+)
+
+for mut_name in "${SUBMISSION_JOB_MUTATIONS[@]}"; do
+  if ! run_fixture_mutation "$mut_name" "review" "${FIXTURE_DIR}/green/review_exact_submission_receipt" "--worker-report-comment-id 5161887211"; then
+    ok
+    echo "  PASS: ${mut_name} (review/submission-job)"
+  else
+    bad "${mut_name} (review/submission-job) should fail"
+  fi
+done
+
+# ================================================
+# TEST 2e: Fixture mutations — submission run infra — should fail (exit 2)
+# ================================================
+echo ""
+echo "=== Fixture Mutations: Submission Run Infrastructure ==="
+
+SUBMISSION_INFRA_MUTATIONS=(
+  "api_404_submission_runs"
+  "api_404_submission_jobs"
+  "submission_runs_json_malformed"
+  "submission_jobs_json_malformed"
+  "submission_runs_page_type_invalid"
+  "submission_runs_duplicate_id"
+  "submission_job_id_non_integer"
+  "fixture_missing_submission_runs"
+  "fixture_missing_submission_jobs"
+  "fixture_missing_submission_comment"
+)
+
+for mut_name in "${SUBMISSION_INFRA_MUTATIONS[@]}"; do
+  if ! run_fixture_mutation "$mut_name" "submission" "${FIXTURE_DIR}/green/submission_exact_comment_id" "--worker-report-comment-id 5161887211"; then
+    ok
+    echo "  PASS: ${mut_name} (submission)"
+  else
+    bad "${mut_name} (submission) should fail"
+  fi
+done
+
+# ================================================
+# TEST 2f: Fixture mutations — controller review receipt — should fail
+# ================================================
+echo ""
+echo "=== Fixture Mutations: Controller Review Receipt ==="
+
+CONTROLLER_RECEIPT_MUTATIONS=(
+  "controller_worker_report_comment_id_missing"
+  "controller_submission_run_id_missing"
+  "controller_worker_report_comment_id_zero"
+  "controller_submission_run_id_zero"
+  "controller_worker_report_comment_id_string"
+  "controller_submission_run_id_string"
+  "controller_receipt_wrong_comment_id"
+  "controller_receipt_wrong_submission_run_id"
+)
+
+for mut_name in "${CONTROLLER_RECEIPT_MUTATIONS[@]}"; do
+  if ! run_fixture_mutation "$mut_name" "review" "${FIXTURE_DIR}/green/review_commented_accepted_with_receipt" "--worker-report-comment-id 5161887211"; then
+    ok
+    echo "  PASS: ${mut_name} (review)"
+  else
+    bad "${mut_name} (review) should fail"
+  fi
+done
+
+# ================================================
+# TEST 2g: Fixture mutations — remaining infra/PR — should fail
+# ================================================
+echo ""
+echo "=== Fixture Mutations: PR / Policy / Infra ==="
+
+PR_POLICY_MUTATIONS=(
+  "repository_mismatch"
+  "pr_number_mismatch"
+  "head_branch_mismatch"
+  "base_branch_mismatch"
+  "pr_closed"
+  "pr_not_draft"
+  "pr_merged"
+  "pr_not_mergeable"
+  "expected_head_invalid"
+  "policy_missing"
+  "policy_malformed"
+  "timestamp_malformed"
+  "commit_parent_missing"
+  "mergeable_unknown_after_retry"
+  "merge_commit_rejected"
+  "api_404_pr"
+  "api_404_commit"
+  "api_404_reviews"
+  "fixture_missing_reviews"
+  "fixture_missing_pr"
+  "fixture_missing_commit"
+  "fixture_json_malformed"
+)
+
+for mut_name in "${PR_POLICY_MUTATIONS[@]}"; do
+  base_fixture="advance_normal_approved"
+  if [[ "$mut_name" == repository_mismatch ]]; then
+    base_fixture="advance_normal_approved"
+  elif [[ "$mut_name" == expected_head_invalid ]]; then
+    base_fixture="advance_normal_approved"
+  fi
+  base_dir="${FIXTURE_DIR}/green/${base_fixture}"
+  if ! run_fixture_mutation "$mut_name" "advance" "$base_dir" ""; then
+    ok
+    echo "  PASS: ${mut_name} (advance)"
+  else
+    bad "${mut_name} (advance) should fail"
   fi
 done
 
@@ -271,32 +456,38 @@ done
 echo ""
 echo "=== Source Mutations (should catch failures) ==="
 
-# Format: mut_name|fixture_name|phase
+# Format: mut_name|fixture_name|phase|extra_args
 SOURCE_MUTATIONS=(
-  "m1_first_review_not_latest|latest_accept_after_reject|review"
-  "m2_invert_before_report|review_commented_accepted|review"
-  "m3_green_to_red_classification|review_approved_accepted|review"
-  "m4_wrong_workstream|submission_historical_reports|submission"
-  "m5_invert_before_commit|submission_historical_reports|submission"
-  "m6_bootstrap_state_commented|advance_bootstrap|advance"
-  "m7_approved_only_no_commented|advance_normal_commented|advance"
-  "m8_invert_head_sha_check|advance_normal_approved|advance"
-  "m9_invert_commit_count|submission_historical_reports|submission"
-  "m10_invert_decision_check|advance_normal_approved|advance"
-  "m11_invert_required_jobs|submission_historical_reports|submission"
-  "m12_invert_draft_check|advance_normal_approved|advance"
-  "m13_wrong_mergeable|advance_normal_approved|advance"
-  "m14_remove_bootstrap_routing|advance_bootstrap|advance"
-  "m15_invert_stop_check|submission_historical_reports|submission"
+  "m1_first_review_not_latest|latest_accept_after_reject|review|"
+  "m2_invert_before_report|review_commented_accepted|review|"
+  "m3_green_to_red_classification|review_approved_accepted|review|"
+  "m4_wrong_workstream|submission_historical_reports|submission|--worker-report-comment-id 5161887211"
+  "m5_invert_before_commit|submission_historical_reports|submission|--worker-report-comment-id 5161887211"
+  "m6_bootstrap_state_commented|advance_bootstrap|advance|"
+  "m7_approved_only_no_commented|advance_normal_commented|advance|"
+  "m8_invert_head_sha_check|advance_normal_approved|advance|"
+  "m9_invert_commit_count|submission_historical_reports|submission|--worker-report-comment-id 5161887211"
+  "m10_invert_decision_check|advance_normal_approved|advance|"
+  "m11_invert_required_jobs|submission_historical_reports|submission|--worker-report-comment-id 5161887211"
+  "m12_invert_draft_check|advance_normal_approved|advance|"
+  "m13_wrong_mergeable|advance_normal_approved|advance|"
+  "m14_remove_bootstrap_routing|advance_bootstrap|advance|"
+  "m15_invert_stop_check|submission_historical_reports|submission|--worker-report-comment-id 5161887211"
+  "m16_allow_non_null_submission_run_id|submission_historical_reports|submission|--worker-report-comment-id 5161887211"
+  "m17_invert_comment_id_required|submission_historical_reports|submission|--worker-report-comment-id 5161887211"
+  "m18_invert_submission_status_check|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "m19_invert_submission_conclusion_check|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "m20_invert_gate_job_status|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "m21_invert_gate_job_conclusion|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "m22_skip_chronology_check|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "m23_invert_completed_after_review|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "m24_skip_run_attempt_check|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "m25_bypass_submission_receipt|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
 )
 
 for entry in "${SOURCE_MUTATIONS[@]}"; do
-  mut_name="${entry%%|*}"
-  rest="${entry#*|}"
-  fixture_name="${rest%%|*}"
-  phase="${rest##*|}"
-  
-  if ! run_source_mutation "$mut_name" "$fixture_name" "$phase"; then
+  IFS='|' read -r mut_name fixture_name phase extra <<< "$entry"
+  if ! run_source_mutation "$mut_name" "$fixture_name" "$phase" "$extra"; then
     ok
     echo "  PASS: ${mut_name} caught by ${fixture_name}:${phase}"
   else

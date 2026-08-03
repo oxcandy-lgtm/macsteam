@@ -2,18 +2,20 @@
   "sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db",
   "parents": [
     {
-      "sha": "cafe1234cafe1234cafe1234cafe1234cafe1234"
+      "sha": "8888888888888888888888888888888888888888"
     }
   ],
   "commit": {
+    "message": "test commit\n",
     "committer": {
-      "date": "2026-08-03T01:00:00Z",
-      "name": "Worker"
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
     },
     "author": {
-      "date": "2026-08-03T01:00:00Z",
-      "name": "Worker"
-    },
-    "message": "U1R18: Add R3 semantic mutation scanner"
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    }
   }
 }

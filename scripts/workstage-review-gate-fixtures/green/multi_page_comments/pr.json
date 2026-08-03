@@ -1,27 +1,22 @@
 {
-  "id": 123456789,
   "number": 2,
-  "title": "MacsTeam Ultimate U1R18-R7-FIX1 NX Dispatch",
-  "state": "OPEN",
+  "head": {
+    "ref": "feat/ultimate-cloverpit-u1",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "repo": {
+      "full_name": "oxcandy-lgtm/macsteam"
+    }
+  },
+  "base": {
+    "ref": "feat/public-oss-bootstrap",
+    "repo": {
+      "full_name": "oxcandy-lgtm/macsteam"
+    }
+  },
+  "state": "open",
   "draft": true,
   "merged": false,
   "mergeable": "MERGEABLE",
-  "head": {
-    "sha": "0123456789abcdef0123456789abcdef01234567",
-    "ref": "feat/ultimate-cloverpit-u1",
-    "repo": {
-      "full_name": "oxcandy-lgtm/macsteam",
-      "name": "macsteam"
-    },
-    "label": "oxcandy-lgtm:feat/ultimate-cloverpit-u1"
-  },
-  "base": {
-    "sha": "6656ec33d15289ce122f4ba9d1e2db71f260d8b7",
-    "ref": "feat/public-oss-bootstrap",
-    "repo": {
-      "full_name": "oxcandy-lgtm/macsteam",
-      "name": "macsteam"
-    },
-    "label": "oxcandy-lgtm:feat/public-oss-bootstrap"
-  }
+  "title": "MacsTeam Ultimate U1R18-R7-FIX2 NX Dispatch",
+  "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2"
 }

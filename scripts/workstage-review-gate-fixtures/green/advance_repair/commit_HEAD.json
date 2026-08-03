@@ -1,19 +1,21 @@
 {
-  "sha": "fe1234567890abcdef1234567890abcdef123456",
+  "sha": "b7c4f9a8c2d6e103547a9b8c0d2e3f4a5b6c7d8e",
   "parents": [
     {
-      "sha": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d"
+      "sha": "4b7cbe162d0dbf4e660972b2eda3f369588884e3"
     }
   ],
   "commit": {
+    "message": "ci: bind trusted submission receipt (U1R18-R7-FIX2)\n\nWorkstream: U1R18-R7-FIX2",
     "committer": {
       "date": "2026-08-03T03:00:00Z",
-      "name": "Worker"
+      "name": "Test",
+      "email": "test@example.com"
     },
     "author": {
       "date": "2026-08-03T03:00:00Z",
-      "name": "Worker"
-    },
-    "message": "ci: close workstream review authority gate (U1R18-R7-FIX1)\n\nWorkstream: U1R18-R7-FIX1"
+      "name": "Test",
+      "email": "test@example.com"
+    }
   }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mutation applier for workstage-review-gate fixture testing — U1R18-R7-FIX1.
+Mutation applier for workstage-review-gate fixture testing — U1R18-R7-FIX2.
 
 Usage:
   python3 apply-mutation.py <MUTATION_NAME> <temp_dir>
@@ -13,9 +13,10 @@ Mutation categories:
   parent/     — parent review and controller review validation
   bootstrap/  — bootstrap exception validation
   repair/     — repair authorization validation
-  report/     — worker report validation
+  report/     — worker report validation (FIX2: null gate_submission_run_id)
   ci/         — CI run and job validation
-  pr/         — PR state and policy binding
+  submission/ — submission run receipt validation (FIX2)
+  controller/ — controller review receipt validation (FIX2)
   infra/      — infrastructure failures (missing/malformed files)
 """
 
@@ -27,10 +28,12 @@ import sys
 # === SHA constants (must match generate-green.py) ===
 BOOTSTRAP_HEAD = "dad91d9ea3a6338b795f1472d0e4f729a1e419db"
 R7_HEAD = "f3ae89d2caa07930ffda7a84059ecdfb18942e3d"
-FIX1_HEAD = "fe1234567890abcdef1234567890abcdef123456"
+FIX1_HEAD = "4b7cbe162d0dbf4e660972b2eda3f369588884e3"
+FIX2_HEAD = "b7c4f9a8c2d6e103547a9b8c0d2e3f4a5b6c7d8e"
 NORMAL_PARENT = "6656ec33d15289ce122f4ba9d1e2db71f260d8b7"
 NORMAL_HEAD = "0123456789abcdef0123456789abcdef01234567"
 HISTORICAL_HEAD = "9999999999999999999999999999999999999999"
+HISTORICAL_PARENT = "8888888888888888888888888888888888888888"
 WRONG_SHA = "cafe1234cafe1234cafe1234cafe1234cafe1234"
 
 # === Timestamps ===
@@ -42,18 +45,23 @@ BEFORE_COMMIT_TS = "2026-08-03T02:00:00Z"
 
 # === IDs ===
 BOOTSTRAP_REVIEW_ID = 4840817794
-REPAIR_REVIEW_ID = 4841397951
+REPAIR_REVIEW_ID = 4843792148
 QUARANTINED_REVIEW_ID = 4841357081
 NORMAL_REVIEW_ID = 4840817795
 
 CI_RUN_ID = 30790400001
 GATE_ADVANCE_RUN_ID = 30790400002
+SUBMISSION_RUN_ID = 30790400003
 
 REQUIRED_JOBS = ["Swift Build", "Public Audit", "Recipe Validation", "License Validation", "Gitignore Validation"]
+FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
-REPAIR_COMMIT_MSG = "ci: close workstream review authority gate (U1R18-R7-FIX1)"
-REPAIR_CLASSIFICATION = "RED_U1R18_R7_SELF_REVIEW_AND_SEQUENTIAL_GATE_FAIL_OPEN"
+REPAIR_COMMIT_MSG = "ci: bind trusted submission receipt (U1R18-R7-FIX2)"
+REPAIR_COMMIT_MSG_FIX1 = "ci: close workstream review authority gate (U1R18-R7-FIX1)"
+REPAIR_CLASSIFICATION = "RED_U1R18_R7_FIX1_CANONICAL_SUBMISSION_RECEIPT_NOT_BOUND"
 BOOTSTRAP_CLASSIFICATION = "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
+
+WORKER_REPORT_COMMENT_ID = 5161887211
 
 CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
@@ -79,6 +87,11 @@ def load_policy():
         return json.load(f)
 
 
+def get_pr_head(d):
+    pr = load_json(d, "pr.json")
+    return pr["head"]["sha"]
+
+
 def save_policy(temp_dir, policy):
     save_json(temp_dir, "policy.json", policy)
 
@@ -86,11 +99,15 @@ def save_policy(temp_dir, policy):
 def get_controller_review_body(commit_id, classification="GREEN_U1R18_R6_CONTROLLER_REVIEW_ACCEPTED",
                                 decision="accepted", review_id=NORMAL_REVIEW_ID,
                                 nx_required=True, ready=False, merge=False, release=False,
-                                review_complete=True):
+                                review_complete=True,
+                                wr_comment_id=WORKER_REPORT_COMMENT_ID,
+                                sub_run_id=SUBMISSION_RUN_ID):
     json_body = {
         "schema_version": 1,
         "kind": "controller_review",
         "head_sha": commit_id,
+        "worker_report_comment_id": wr_comment_id,
+        "submission_run_id": sub_run_id,
         "decision": decision,
         "classification": classification,
         "review_complete": review_complete,
@@ -106,14 +123,14 @@ def get_worker_report_body(head_sha, parent_sha, **overrides):
     report = {
         "schema_version": 1,
         "kind": "worker_report",
-        "workstream": FIX1_WORKSTREAM,
+        "workstream": FIX2_WORKSTREAM,
         "head_sha": head_sha,
         "parent_sha": parent_sha,
         "commit_count": 1,
         "core_ci_run_id": CI_RUN_ID,
         "core_ci_jobs": REQUIRED_JOBS,
         "gate_advance_run_id": GATE_ADVANCE_RUN_ID,
-        "gate_submission_run_id": 0,
+        "gate_submission_run_id": None,
         "stop": True,
         "next_workstream_started": False,
         "ready_performed": False,
@@ -510,12 +527,15 @@ def m_report_reply(d):
 
 def m_duplicate_current_head_reports(d):
     comments = load_json(d, "comments.json")
+    head = get_pr_head(d)
     for c in comments:
         if WORKER_MARKER in (c.get("body", "")):
-            new_comment = dict(c)
-            new_comment["id"] = 5161887299
-            comments.append(new_comment)
-            break
+            json_data, _, _ = parse_json_block_local(c["body"], WORKER_MARKER)
+            if json_data and json_data.get("head_sha") == head:
+                new_comment = dict(c)
+                new_comment["id"] = 5161887299
+                comments.append(new_comment)
+                break
     save_json(d, "comments.json", comments)
 
 
@@ -759,7 +779,8 @@ def m_ci_job_duplicate(d):
     jobs = load_json(d, "jobs.json")
     if isinstance(jobs, dict):
         jobs = jobs.get("jobs", [])
-    jobs.append({"name": "Swift Build", "conclusion": "success", "status": "completed"})
+    jobs.append({"name": "Swift Build", "conclusion": "success", "status": "completed",
+                 "run_id": CI_RUN_ID})
     save_json(d, "jobs.json", {"jobs": jobs})
 
 
@@ -955,6 +976,451 @@ def m_api_404_jobs(d):
         os.remove(path)
 
 
+def m_api_404_submission_runs(d):
+    """submission-runs.json missing (API 404 for submission runs endpoint)."""
+    path = os.path.join(d, "submission-runs.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def m_api_404_submission_jobs(d):
+    """submission-jobs.json missing (API 404 for submission jobs endpoint)."""
+    path = os.path.join(d, "submission-jobs.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+# === FIX2: Submission run receipt mutations ===
+
+def m_submission_run_wrong_head(d):
+    """Submission run head_sha != expected head (targets the HEAD run)."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    head = get_pr_head(d)
+    for run in runs_list:
+        if run.get("head_sha") == head:
+            run["head_sha"] = WRONG_SHA
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_wrong_branch(d):
+    """Submission run head_branch != expected branch."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        if "submission" in run.get("name", "").lower():
+            run["head_branch"] = "wrong-branch"
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_wrong_event(d):
+    """Submission run event != workflow_dispatch."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        if "submission" in run.get("name", "").lower():
+            run["event"] = "push"
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_wrong_phase_in_name(d):
+    """Submission run name does not encode phase=submission."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        name = run.get("name", "")
+        if "submission" in name.lower():
+            run["name"] = name.replace("submission", "wrong_phase")
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_wrong_pr_in_name(d):
+    """Submission run name does not encode correct PR number."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        name = run.get("name", "")
+        if "PR=2" in name:
+            run["name"] = name.replace("PR=2", "PR=99")
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_wrong_report_id_in_name(d):
+    """Submission run name does not encode correct worker report comment ID."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        name = run.get("name", "")
+        if f"REPORT={WORKER_REPORT_COMMENT_ID}" in name:
+            run["name"] = name.replace(f"REPORT={WORKER_REPORT_COMMENT_ID}", "REPORT=9999999999")
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_wrong_head_in_name(d):
+    """Submission run name does not encode correct HEAD SHA (targets HEAD run)."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    head = get_pr_head(d)
+    for run in runs_list:
+        name = run.get("name", "")
+        if f"HEAD={head}" in name:
+            run["name"] = name.replace(f"HEAD={head}", f"HEAD={WRONG_SHA}")
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_attempt_gt_one(d):
+    """Submission run run_attempt > 1."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        if "submission" in run.get("name", "").lower():
+            run["run_attempt"] = 2
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_incomplete(d):
+    """Submission run status != completed."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        if "submission" in run.get("name", "").lower():
+            run["status"] = "in_progress"
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_run_failed(d):
+    """Submission run conclusion != success."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        if "submission" in run.get("name", "").lower():
+            run["conclusion"] = "failure"
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_gate_job_missing(d):
+    """Submission Gate job missing from submission run jobs."""
+    jobs = load_json(d, "submission-jobs.json")
+    jobs_list = jobs.get("jobs", []) if isinstance(jobs, dict) else jobs
+    jobs_list = [j for j in jobs_list if j.get("name") != "Submission Gate"]
+    save_json(d, "submission-jobs.json", {"jobs": jobs_list})
+
+
+def m_submission_gate_job_failed(d):
+    """Submission Gate job conclusion != success."""
+    jobs = load_json(d, "submission-jobs.json")
+    jobs_list = jobs.get("jobs", []) if isinstance(jobs, dict) else jobs
+    for j in jobs_list:
+        if j.get("name") == "Submission Gate":
+            j["conclusion"] = "failure"
+    save_json(d, "submission-jobs.json", {"jobs": jobs_list})
+
+
+def m_submission_gate_job_skipped(d):
+    """Submission Gate job was skipped."""
+    jobs = load_json(d, "submission-jobs.json")
+    jobs_list = jobs.get("jobs", []) if isinstance(jobs, dict) else jobs
+    for j in jobs_list:
+        if j.get("name") == "Submission Gate":
+            j["conclusion"] = "skipped"
+    save_json(d, "submission-jobs.json", {"jobs": jobs_list})
+
+
+def m_submission_gate_job_cancelled(d):
+    """Submission Gate job was cancelled."""
+    jobs = load_json(d, "submission-jobs.json")
+    jobs_list = jobs.get("jobs", []) if isinstance(jobs, dict) else jobs
+    for j in jobs_list:
+        if j.get("name") == "Submission Gate":
+            j["conclusion"] = "cancelled"
+    save_json(d, "submission-jobs.json", {"jobs": jobs_list})
+
+
+def m_submission_gate_job_duplicate(d):
+    """Multiple Submission Gate jobs in submission run."""
+    jobs = load_json(d, "submission-jobs.json")
+    jobs_list = jobs.get("jobs", []) if isinstance(jobs, dict) else jobs
+    for j in jobs_list:
+        if j.get("name") == "Submission Gate":
+            jobs_list.append(dict(j))
+            break
+    save_json(d, "submission-jobs.json", {"jobs": jobs_list})
+
+
+def m_report_created_after_submission_run(d):
+    """Worker report comment created at > submission run started at."""
+    submission_started = "2026-08-03T02:30:00Z"
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        if "submission" in run.get("name", "").lower():
+            run["started_at"] = submission_started
+            run["created_at"] = submission_started
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+    # Also make the worker report comment created_after the submission run start
+    comments = load_json(d, "comments.json")
+    if isinstance(comments, list):
+        for c in comments:
+            if WORKER_MARKER in (c.get("body", "")):
+                c["created_at"] = "2026-08-03T02:40:00Z"
+                c["updated_at"] = "2026-08-03T02:40:00Z"
+    save_json(d, "comments.json", comments)
+
+
+def m_submission_completed_after_review(d):
+    """Submission run completed_at > controller review submitted_at."""
+    review_ts = "2026-08-03T03:00:00Z"
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        if "submission" in run.get("name", "").lower():
+            run["completed_at"] = "2026-08-03T05:00:00Z"
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+    # Also set controller review submitted_at before the submission completed
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if CONTROLLER_MARKER in (r.get("body", "")):
+            r["submitted_at"] = review_ts
+    save_json(d, "reviews.json", reviews)
+
+
+def m_submission_run_wrong_id(d):
+    """Controller review references a non-existent submission run ID."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                json_data["submission_run_id"] = 8888888888
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_report_submission_run_numeric(d):
+    """Worker report gate_submission_run_id is a number (not null)."""
+    comments = load_json(d, "comments.json")
+    for c in comments:
+        if WORKER_MARKER in (c.get("body", "")):
+            json_data, _, _ = parse_json_block_local(c["body"], WORKER_MARKER)
+            if json_data:
+                json_data["gate_submission_run_id"] = 12345
+                c["body"] = rebuild_worker_body(json_data)
+    save_json(d, "comments.json", comments)
+
+
+def m_report_submission_run_string(d):
+    """Worker report gate_submission_run_id is a string (not null)."""
+    comments = load_json(d, "comments.json")
+    for c in comments:
+        if WORKER_MARKER in (c.get("body", "")):
+            json_data, _, _ = parse_json_block_local(c["body"], WORKER_MARKER)
+            if json_data:
+                json_data["gate_submission_run_id"] = "30790400003"
+                c["body"] = rebuild_worker_body(json_data)
+    save_json(d, "comments.json", comments)
+
+
+def m_report_submission_run_missing(d):
+    """Worker report missing gate_submission_run_id field."""
+    comments = load_json(d, "comments.json")
+    for c in comments:
+        if WORKER_MARKER in (c.get("body", "")):
+            json_data, _, _ = parse_json_block_local(c["body"], WORKER_MARKER)
+            if json_data:
+                del json_data["gate_submission_run_id"]
+                c["body"] = rebuild_worker_body(json_data)
+    save_json(d, "comments.json", comments)
+
+
+def m_controller_worker_report_comment_id_missing(d):
+    """Controller review missing worker_report_comment_id."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                del json_data["worker_report_comment_id"]
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_controller_submission_run_id_missing(d):
+    """Controller review missing submission_run_id."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                del json_data["submission_run_id"]
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_controller_worker_report_comment_id_zero(d):
+    """Controller review worker_report_comment_id = 0."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                json_data["worker_report_comment_id"] = 0
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_controller_submission_run_id_zero(d):
+    """Controller review submission_run_id = 0."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                json_data["submission_run_id"] = 0
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_controller_worker_report_comment_id_string(d):
+    """Controller review worker_report_comment_id is a string."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                json_data["worker_report_comment_id"] = "5161887211"
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_controller_submission_run_id_string(d):
+    """Controller review submission_run_id is a string."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                json_data["submission_run_id"] = "30790400003"
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_controller_receipt_wrong_comment_id(d):
+    """Controller review references wrong worker_report_comment_id."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                json_data["worker_report_comment_id"] = 9999999999
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_controller_receipt_wrong_submission_run_id(d):
+    """Controller review references wrong submission_run_id."""
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        body = r.get("body", "")
+        if CONTROLLER_MARKER in body:
+            json_data, _, _ = parse_json_block_local(body, CONTROLLER_MARKER)
+            if json_data:
+                json_data["submission_run_id"] = 8888888888
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_report_gate_submission_run_id_non_null(d):
+    """Worker report gate_submission_run_id is non-null (should be null pre-submission)."""
+    comments = load_json(d, "comments.json")
+    for c in comments:
+        if WORKER_MARKER in (c.get("body", "")):
+            json_data, _, _ = parse_json_block_local(c["body"], WORKER_MARKER)
+            if json_data:
+                json_data["gate_submission_run_id"] = SUBMISSION_RUN_ID
+                c["body"] = rebuild_worker_body(json_data)
+    save_json(d, "comments.json", comments)
+
+
+def m_submission_run_id_mismatch(d):
+    """Submission run ID in API response doesn't match referenced ID."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    for run in runs_list:
+        if "submission" in run.get("name", "").lower():
+            run["id"] = 7777777777
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_runs_json_malformed(d):
+    """Submission runs JSON is malformed."""
+    path = os.path.join(d, "submission-runs.json")
+    if os.path.exists(path):
+        with open(path, "w") as f:
+            f.write("{broken")
+
+
+def m_submission_jobs_json_malformed(d):
+    """Submission jobs JSON is malformed."""
+    path = os.path.join(d, "submission-jobs.json")
+    if os.path.exists(path):
+        with open(path, "w") as f:
+            f.write("{broken")
+
+
+def m_submission_runs_page_type_invalid(d):
+    """Submission runs API returns non-list page type."""
+    save_json(d, "submission-runs.json", {"not_a_list": True})
+
+
+def m_submission_runs_duplicate_id(d):
+    """Duplicate submission run ID in submission-runs.json."""
+    runs = load_json(d, "submission-runs.json")
+    runs_list = runs.get("workflow_runs", []) if isinstance(runs, dict) else runs
+    if len(runs_list) > 0:
+        runs_list.append(dict(runs_list[0]))
+    save_json(d, "submission-runs.json", {"workflow_runs": runs_list})
+
+
+def m_submission_job_id_non_integer(d):
+    """Submission job has non-integer id field."""
+    jobs = load_json(d, "submission-jobs.json")
+    jobs_list = jobs.get("jobs", []) if isinstance(jobs, dict) else jobs
+    for j in jobs_list:
+        j["id"] = "not_an_integer"
+    save_json(d, "submission-jobs.json", {"jobs": jobs_list})
+
+
+def m_fixture_missing_submission_runs(d):
+    """submission-runs.json missing."""
+    path = os.path.join(d, "submission-runs.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def m_fixture_missing_submission_jobs(d):
+    """submission-jobs.json missing."""
+    path = os.path.join(d, "submission-jobs.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def m_fixture_missing_submission_comment(d):
+    """comment.json (single comment lookup) missing."""
+    path = os.path.join(d, "comment.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
 # === Helper functions ===
 
 def parse_json_block_local(body, marker):
@@ -1070,14 +1536,80 @@ MUTATIONS = {
     "api_404_reviews": m_api_404_reviews,
     "api_404_runs": m_api_404_runs,
     "api_404_jobs": m_api_404_jobs,
-    "fixture_missing": m_fixture_missing_reviews,
-    "fixture_json_malformed": m_fixture_json_malformed,
     "pagination_parse_failure": m_pagination_parse_failure,
     "pagination_page_type_invalid": m_pagination_page_type_invalid,
     "pagination_duplicate_id": m_pagination_duplicate_id,
+    "fixture_json_malformed": m_fixture_json_malformed,
+    "fixture_missing_pr": m_fixture_missing_pr,
+    "fixture_missing_commit": m_fixture_missing_commit,
+    "fixture_missing_reviews": m_fixture_missing_reviews,
+    "fixture_missing_comments": m_fixture_missing_comments,
+    "fixture_missing_runs": m_fixture_missing_runs,
+    "fixture_missing_jobs": m_fixture_missing_jobs,
+    "report_gate_submission_run_id_numeric": m_report_submission_run_numeric,
+    "report_gate_submission_run_id_string": m_report_submission_run_string,
+    "report_gate_submission_run_id_missing": m_report_submission_run_missing,
+
+
+# === FIX2: Submission run receipt mutations ===
+    "api_404_submission_runs": m_api_404_submission_runs,
+    "api_404_submission_jobs": m_api_404_submission_jobs,
+    "submission_run_wrong_head": m_submission_run_wrong_head,
+    "submission_run_wrong_branch": m_submission_run_wrong_branch,
+    "submission_run_wrong_event": m_submission_run_wrong_event,
+    "submission_run_wrong_phase_in_name": m_submission_run_wrong_phase_in_name,
+    "submission_run_wrong_pr_in_name": m_submission_run_wrong_pr_in_name,
+    "submission_run_wrong_report_id_in_name": m_submission_run_wrong_report_id_in_name,
+    "submission_run_wrong_head_in_name": m_submission_run_wrong_head_in_name,
+    "submission_run_attempt_gt_one": m_submission_run_attempt_gt_one,
+    "submission_run_incomplete": m_submission_run_incomplete,
+    "submission_run_failed": m_submission_run_failed,
+    "submission_gate_job_missing": m_submission_gate_job_missing,
+    "submission_gate_job_failed": m_submission_gate_job_failed,
+    "submission_gate_job_skipped": m_submission_gate_job_skipped,
+    "submission_gate_job_cancelled": m_submission_gate_job_cancelled,
+    "submission_gate_job_duplicate": m_submission_gate_job_duplicate,
+    "report_created_after_submission_run": m_report_created_after_submission_run,
+    "submission_completed_after_review": m_submission_completed_after_review,
+    "submission_run_wrong_id": m_submission_run_wrong_id,
+    "report_submission_run_numeric": m_report_submission_run_numeric,
+    "report_submission_run_string": m_report_submission_run_string,
+    "report_submission_run_missing": m_report_submission_run_missing,
+    "controller_worker_report_comment_id_missing": m_controller_worker_report_comment_id_missing,
+    "controller_submission_run_id_missing": m_controller_submission_run_id_missing,
+    "controller_worker_report_comment_id_zero": m_controller_worker_report_comment_id_zero,
+    "controller_submission_run_id_zero": m_controller_submission_run_id_zero,
+    "controller_worker_report_comment_id_string": m_controller_worker_report_comment_id_string,
+    "controller_submission_run_id_string": m_controller_submission_run_id_string,
+    "controller_receipt_wrong_comment_id": m_controller_receipt_wrong_comment_id,
+    "controller_receipt_wrong_submission_run_id": m_controller_receipt_wrong_submission_run_id,
+    "report_submission_run_id_non_null": m_report_gate_submission_run_id_non_null,
+    "submission_run_id_mismatch": m_submission_run_id_mismatch,
+    "submission_runs_json_malformed": m_submission_runs_json_malformed,
+    "submission_jobs_json_malformed": m_submission_jobs_json_malformed,
+    "submission_runs_page_type_invalid": m_submission_runs_page_type_invalid,
+    "submission_runs_duplicate_id": m_submission_runs_duplicate_id,
+    "submission_job_id_non_integer": m_submission_job_id_non_integer,
+    "fixture_missing_submission_runs": m_fixture_missing_submission_runs,
+    "fixture_missing_submission_jobs": m_fixture_missing_submission_jobs,
+    "fixture_missing_submission_comment": m_fixture_missing_submission_comment,
     "timestamp_malformed": m_timestamp_malformed,
     "commit_parent_missing": m_commit_parent_missing,
     "mergeable_unknown_after_retry": m_mergeable_unknown,
+    "merge_commit_rejected": m_merge_commit_rejected,
+    "repository_mismatch": m_repository_mismatch,
+    "pr_number_mismatch": m_pr_number_mismatch,
+    "head_branch_mismatch": m_head_branch_mismatch,
+    "base_branch_mismatch": m_base_branch_mismatch,
+    "pr_closed": m_pr_closed,
+    "pr_not_draft": m_pr_not_draft,
+    "pr_merged": m_pr_merged,
+    "pr_not_mergeable": m_pr_not_mergeable,
+    "expected_head_invalid": m_expected_head_invalid,
+    "api_404_pr": m_api_404_pr,
+    "api_404_commit": m_api_404_commit,
+    "api_404_comments": m_api_404_comments,
+    "api_404_reviews": m_api_404_reviews,
 }
 
 

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Workstream Review Gate — U1R18-R7-FIX1
+  Workstream Review Gate — U1R18-R7-FIX2
 
-Enforces sequential workstream advancement on a single PR.
-Verifies that each commit has a preceding controller review before
-the next workstream can start.
+  Enforces sequential workstream advancement on a single PR.
+  Verifies that each commit has a preceding controller review before
+  the next workstream can start.  FIX2 adds trusted submission receipt
+  binding: the submission phase outputs its own GITHUB_RUN_ID as the
+  trusted receipt, which is then validated via GitHub API in review
+  and future-child-advance phases.
 
 Usage (live mode):
   python3 scripts/workstage-review-gate.py \\
@@ -39,6 +42,9 @@ CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 WORKER_SCHEMA_PATH = "Contracts/workstream-report.schema.json"
 CONTROLLER_SCHEMA_PATH = "Contracts/controller-review.schema.json"
 POLICY_PATH_DEFAULT = ".github/workstage-review-gate-policy.json"
+
+FIX2_WORKSTREAM = "U1R18-R7-FIX2"
+FIX1_WORKSTREAM = "U1R18-R7-FIX1"
 
 SUPPORTED_SCHEMA_KEYWORDS = {
     "$schema", "$id", "title", "description", "type",
@@ -284,6 +290,11 @@ class GitHubClient:
         commit = self._gh_object(f"commits/{sha}")
         return commit.get("files", [])
 
+    def get_comment_by_id(self, comment_id):
+        if self.fixtures_dir:
+            return self._load("comment.json")
+        return self._gh_object(f"issues/comments/{comment_id}")
+
     def get_comments(self, pr_number):
         if self.fixtures_dir:
             return self._load("comments.json")
@@ -322,18 +333,64 @@ class GitHubClient:
 
     def get_workflow_jobs(self, run_id):
         if self.fixtures_dir:
+            sub_runs_path = os.path.join(self.fixtures_dir, "submission-runs.json")
+            is_submission_run = False
+            if os.path.exists(sub_runs_path):
+                data = self._load("submission-runs.json")
+                runs = data.get("workflow_runs", []) if isinstance(data, dict) else data
+                for r in runs:
+                    if r.get("id") == run_id:
+                        is_submission_run = True
+                        break
+            if is_submission_run:
+                sub_jobs_path = os.path.join(self.fixtures_dir, "submission-jobs.json")
+                if os.path.exists(sub_jobs_path):
+                    data = self._load("submission-jobs.json")
+                    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+                    return self._filter_jobs_by_run(jobs, run_id)
             data = self._load("jobs.json")
-            return data.get("jobs", []) if isinstance(data, dict) else data
+            jobs = data.get("jobs", []) if isinstance(data, dict) else data
+            return self._filter_jobs_by_run(jobs, run_id)
         pages = self._gh_paginated_pages(f"actions/runs/{run_id}/jobs")
         return [job for page in pages for job in page.get("jobs", [])]
 
+    @staticmethod
+    def _filter_jobs_by_run(jobs, run_id):
+        """Filter fixture jobs to those belonging to the requested run.
+
+        The real GitHub API returns only the jobs for a single run, so the
+        fixture dispatch must apply the same scoping when a shared jobs file
+        contains jobs for multiple runs (e.g. parent + head submission runs).
+        """
+        if not isinstance(jobs, list):
+            return jobs
+        scoped = [j for j in jobs if isinstance(j, dict) and j.get("run_id") == run_id]
+        if scoped:
+            return scoped
+        if any(isinstance(j, dict) and "run_id" in j for j in jobs):
+            return []
+        return jobs
+
     def get_workflow_run_by_id(self, run_id):
         if self.fixtures_dir:
+            sub_runs_path = os.path.join(self.fixtures_dir, "submission-runs.json")
+            if os.path.exists(sub_runs_path):
+                data = self._load("submission-runs.json")
+                runs = data.get("workflow_runs", []) if isinstance(data, dict) else data
+                matches = [r for r in runs if isinstance(r, dict) and r.get("id") == run_id]
+                if len(matches) > 1:
+                    raise GateError(EXIT_INFRA, "submission_runs_duplicate_id",
+                                    f"Duplicate submission run ID in fixtures: {run_id}")
+                if matches:
+                    return matches[0]
             data = self._load("runs.json")
             runs = data.get("workflow_runs", []) if isinstance(data, dict) else data
-            for run in runs:
-                if run.get("id") == run_id:
-                    return run
+            matches = [r for r in runs if isinstance(r, dict) and r.get("id") == run_id]
+            if len(matches) > 1:
+                raise GateError(EXIT_INFRA, "submission_runs_duplicate_id",
+                                f"Duplicate run ID in fixtures: {run_id}")
+            if matches:
+                return matches[0]
             return None
         return self._gh_object(f"actions/runs/{run_id}")
 
@@ -394,68 +451,6 @@ class GitHubClient:
                             data["message"])
 
         return data
-
-    def _gh_paginated(self, endpoint):
-        """Paginated list API call. Returns flattened list. 404 → exit 2."""
-        result = subprocess.run(
-            ["gh", "api", f"repos/{self.repo}/{endpoint}",
-             "--paginate", "--slurp"],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "404" in stderr or "not found" in stderr.lower():
-                raise GateError(EXIT_INFRA, "api_404_" + endpoint.split("/")[0],
-                                f"GitHub API 404: {endpoint}")
-            if "timeout" in stderr.lower() or result.returncode == 124:
-                raise GateError(EXIT_INFRA, "timeout",
-                                "GitHub API request timed out")
-            if "rate limit" in stderr.lower():
-                raise GateError(EXIT_INFRA, "rate_limit",
-                                "GitHub API rate limited")
-            raise GateError(EXIT_INFRA, "api_request_failure", stderr)
-
-        try:
-            pages = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            raise GateError(EXIT_INFRA, "pagination_parse_failure",
-                            "Failed to parse paginated GitHub API response")
-
-        if not isinstance(pages, list):
-            raise GateError(EXIT_INFRA, "pagination_page_type_invalid",
-                            "Paginated API response is not a list of pages")
-
-        if len(pages) > self.MAX_PAGES:
-            raise GateError(EXIT_INFRA, "pagination_page_cap_reached",
-                            f"Too many pages: {len(pages)} > {self.MAX_PAGES}")
-
-        flattened = []
-        seen_ids = set()
-
-        for page in pages:
-            if not isinstance(page, list):
-                raise GateError(EXIT_INFRA, "pagination_page_type_invalid",
-                                "A page in the paginated response is not a list")
-
-            for item in page:
-                if not isinstance(item, dict):
-                    raise GateError(EXIT_INFRA, "pagination_page_type_invalid",
-                                    "A page item is not an object")
-
-                if "id" in item:
-                    item_id = item["id"]
-                    if item_id in seen_ids:
-                        raise GateError(EXIT_INFRA, "pagination_duplicate_id",
-                                        f"Duplicate ID in paginated results: {item_id}")
-                    seen_ids.add(item_id)
-
-                flattened.append(item)
-
-            if len(flattened) > self.max_items:
-                raise GateError(EXIT_INFRA, "pagination_item_cap_reached",
-                                f"Too many items: {len(flattened)} > {self.max_items}")
-
-        return flattened
 
     def _gh_paginated_pages(self, endpoint):
         """Paginated API call returning dict-with-array responses.
@@ -555,7 +550,8 @@ class GitHubClient:
 
 class Gate:
     def __init__(self, phase, pr_number, expected_head, repo, fixtures_dir,
-                 policy_path, max_items):
+                 policy_path, max_items, worker_report_comment_id=None,
+                 submission_run_id=None):
         self.phase = phase
         self.pr_number = pr_number
         self.expected_head = expected_head
@@ -563,6 +559,8 @@ class Gate:
         self.fixtures_dir = fixtures_dir
         self.policy_path = policy_path
         self.max_items = max_items
+        self.worker_report_comment_id = worker_report_comment_id
+        self._submission_run_id_input = submission_run_id
 
         self.policy = self._load_policy()
         self.client = GitHubClient(repo, fixtures_dir, max_items)
@@ -580,6 +578,9 @@ class Gate:
         self.controller_reviews_found = []
         self.parent_authority = None
         self._reviews_loaded = False
+        self._comments_loaded = False
+        self._submission_run_id_validated = None
+        self._review_receipt_validated = False
 
     def _load_policy(self):
         if not os.path.exists(self.policy_path):
@@ -637,12 +638,14 @@ class Gate:
             if self.phase == "advance":
                 pass
             elif self.phase == "submission":
-                self._validate_worker_report()
+                self._validate_worker_report_submission()
                 self._validate_ci_run()
+                self._validate_advance_run()
             elif self.phase == "review":
-                self._validate_worker_report()
+                self._validate_worker_report_replay()
                 self._validate_ci_run()
                 self._validate_controller_review()
+                self._validate_submission_receipt()
             else:
                 raise GateError(EXIT_INFRA, "unknown_phase",
                                 f"Unknown phase: {self.phase}")
@@ -1106,6 +1109,16 @@ class Gate:
 
         # Latest marker review is valid — parent review confirmed
 
+        # FIX2: if parent controller review has submission receipt fields,
+        # validate the submission run receipt (future-child advance §9)
+        latest_review = marker_reviews[-1]["review"]
+        body = latest_review.get("body", "") or ""
+        latest_json, _, _ = parse_json_block(body, CONTROLLER_MARKER)
+        if isinstance(latest_json, dict):
+            sub_id = latest_json.get("submission_run_id")
+            wr_cid = latest_json.get("worker_report_comment_id")
+            if isinstance(sub_id, int) and not isinstance(sub_id, bool) and sub_id >= 1:
+                self._validate_submission_run_receipt(sub_id, wr_cid, target_head=self.parent_sha)
 
     def _check_parent_review_marker_wrong_commit(self):
         """Check if a controller marker exists on a wrong commit."""
@@ -1152,6 +1165,15 @@ class Gate:
         if data.get("release_authorized", False):
             errors.append("controller_release_true")
 
+        # FIX2: require submission receipt fields
+        wr_cid = data.get("worker_report_comment_id")
+        if not isinstance(wr_cid, int) or isinstance(wr_cid, bool) or wr_cid < 1:
+            errors.append("controller_worker_report_comment_id_invalid")
+
+        sub_rid = data.get("submission_run_id")
+        if not isinstance(sub_rid, int) or isinstance(sub_rid, bool) or sub_rid < 1:
+            errors.append("controller_submission_run_id_invalid")
+
         return errors
 
     def _check_review_before_child(self, review):
@@ -1189,89 +1211,13 @@ class Gate:
 
     # === Worker report validation ===
 
-    def _validate_worker_report(self):
-        self.comments = self.client.get_comments(self.pr_number)
-        if not isinstance(self.comments, list):
-            raise GateError(EXIT_INFRA, "object_unparseable",
-                            "Comments data is not a list")
-
-        if not self._reviews_loaded:
-            self._load_reviews()
-
-        worker_reports_current = []
-        worker_reports_historical = []
-        marker_in_review = False
-        marker_in_inline = False
-
-        for c in self.comments:
-            body = c.get("body", "") or ""
-            if WORKER_MARKER not in body:
-                continue
-
-            if c.get("in_reply_to_id"):
-                raise GateError(EXIT_POLICY, "report_reply",
-                                "Worker report is a reply to another comment")
-
-            if c.get("path") or c.get("position"):
-                raise GateError(EXIT_POLICY, "report_inline",
-                                "Worker report is an inline comment")
-
-            report_json, marker_count, block_count = parse_json_block(body, WORKER_MARKER)
-
-            if marker_count != 1:
-                raise GateError(EXIT_POLICY, "report_marker_duplicated",
-                                f"Marker count != 1 (got {marker_count})")
-
-            if block_count != 1:
-                raise GateError(EXIT_POLICY, "report_json_block_duplicated",
-                                f"JSON block count != 1 (got {block_count})")
-
-            if report_json is None:
-                raise GateError(EXIT_POLICY, "report_malformed_current_head",
-                                "Worker report JSON is malformed")
-
-            if report_json.get("kind") != "worker_report":
-                raise GateError(EXIT_POLICY, "report_malformed_current_head",
-                                "Worker report kind mismatch")
-
-            head_sha_from_report = report_json.get("head_sha")
-
-            if head_sha_from_report == self.expected_head:
-                worker_reports_current.append({"comment": c, "report": report_json})
-            else:
-                worker_reports_historical.append({"comment": c, "report": report_json})
-
-        # Check reviews for misplaced Worker reports
-        for r in self.reviews:
-            body = r.get("body", "") or ""
-            if WORKER_MARKER in body:
-                marker_in_review = True
-                break
-
-        if len(worker_reports_current) > 1:
-            raise GateError(EXIT_POLICY, "duplicate_current_head_reports",
-                            "Multiple worker reports for current HEAD")
-
-        if len(worker_reports_current) == 0:
-            if marker_in_review:
-                raise GateError(EXIT_POLICY, "report_not_top_level",
-                                "Worker report found in PR review, not top-level comment")
-            raise GateError(EXIT_POLICY, "report_missing",
-                            "No worker report found for current HEAD")
-
-        entry = worker_reports_current[0]
-        report = entry["report"]
-        comment = entry["comment"]
-
-        # Schema validation
-        try:
-            schema = load_schema(WORKER_SCHEMA_PATH)
-            validator = SchemaValidator()
-            if not validator.validate(report, schema, WORKER_SCHEMA_PATH):
-                raise GateError(EXIT_POLICY, "report_extra_property",
-                                "Worker report does not match schema")
-        except GateError:
-            raise
+    def _validate_worker_report_fields(self, report, comment):
+        """Shared field validation for worker reports (FIX2)."""
+        schema = load_schema(WORKER_SCHEMA_PATH)
+        validator = SchemaValidator()
+        if not validator.validate(report, schema, WORKER_SCHEMA_PATH):
+            raise GateError(EXIT_POLICY, "report_extra_property",
+                            "Worker report does not match schema")
 
         if report.get("head_sha") != self.expected_head:
             raise GateError(EXIT_POLICY, "report_head_mismatch",
@@ -1287,9 +1233,9 @@ class Gate:
                             "Report commit_count != 1")
 
         workstream = report.get("workstream", "")
-        if workstream != "U1R18-R7-FIX1":
+        if workstream != FIX2_WORKSTREAM:
             raise GateError(EXIT_POLICY, "report_workstream_mismatch",
-                            f"Report workstream != U1R18-R7-FIX1 (got {workstream})")
+                            f"Report workstream != {FIX2_WORKSTREAM} (got {workstream})")
 
         if not report.get("stop"):
             raise GateError(EXIT_POLICY, "report_stop_false",
@@ -1303,6 +1249,11 @@ class Gate:
             if report.get(field):
                 raise GateError(EXIT_POLICY, "report_unsafe_action",
                                 f"Report {field} == true")
+
+        # gate_submission_run_id must be null for pre-submission worker report
+        if report.get("gate_submission_run_id") is not None:
+            raise GateError(EXIT_POLICY, "report_submission_run_not_null",
+                            "Worker report gate_submission_run_id must be null (pre-submission)")
 
         # Core CI jobs validation
         ci_jobs = report.get("core_ci_jobs", [])
@@ -1345,8 +1296,116 @@ class Gate:
             raise GateError(EXIT_POLICY, "report_edited_after_review",
                             "Worker report was edited after initial creation")
 
-        self.worker_report = report
+    def _validate_worker_report_submission(self):
+        """FIX2 submission: fetch worker report by comment ID."""
+        if self.worker_report_comment_id is None:
+            raise GateError(EXIT_INFRA, "worker_report_comment_id_required",
+                            "Worker report comment ID is required for submission phase")
+
+        comment = self.client.get_comment_by_id(self.worker_report_comment_id)
+        if not isinstance(comment, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Comment data is not an object")
+
+        body = comment.get("body", "") or ""
+
+        if comment.get("in_reply_to_id"):
+            raise GateError(EXIT_POLICY, "report_reply",
+                            "Worker report is a reply to another comment")
+        if comment.get("path") or comment.get("position"):
+            raise GateError(EXIT_POLICY, "report_inline",
+                            "Worker report is an inline comment")
+
+        report_json, marker_count, block_count = parse_json_block(body, WORKER_MARKER)
+
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "report_marker_duplicated",
+                            f"Marker count != 1 (got {marker_count})")
+        if block_count != 1:
+            raise GateError(EXIT_POLICY, "report_json_block_duplicated",
+                            f"JSON block count != 1 (got {block_count})")
+        if report_json is None:
+            raise GateError(EXIT_POLICY, "report_malformed_current_head",
+                            "Worker report JSON is malformed")
+        if report_json.get("kind") != "worker_report":
+            raise GateError(EXIT_POLICY, "report_malformed_current_head",
+                            "Worker report kind mismatch")
+
+        self._validate_worker_report_fields(report_json, comment)
+
+        self.worker_report = report_json
         self.worker_report_comment = comment
+
+        # FIX2 replay protection: scan the full comment list for the current
+        # HEAD worker report. This detects duplicated reports, conflicting
+        # historical reports, and reports posted in PR reviews instead of
+        # top-level comments.
+        self._validate_worker_report_replay()
+
+    def _validate_worker_report_replay(self):
+        """FIX2 review: scan comments for current HEAD worker report."""
+        self.comments = self.client.get_comments(self.pr_number)
+        if not isinstance(self.comments, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Comments data is not a list")
+
+        if not self._reviews_loaded:
+            self._load_reviews()
+
+        worker_reports_current = []
+        marker_in_review = False
+
+        for c in self.comments:
+            body = c.get("body", "") or ""
+            if WORKER_MARKER not in body:
+                continue
+
+            if c.get("in_reply_to_id"):
+                raise GateError(EXIT_POLICY, "report_reply",
+                                "Worker report is a reply to another comment")
+            if c.get("path") or c.get("position"):
+                raise GateError(EXIT_POLICY, "report_inline",
+                                "Worker report is an inline comment")
+
+            report_json, marker_count, block_count = parse_json_block(body, WORKER_MARKER)
+
+            if marker_count != 1:
+                raise GateError(EXIT_POLICY, "report_marker_duplicated",
+                                f"Marker count != 1 (got {marker_count})")
+            if block_count != 1:
+                raise GateError(EXIT_POLICY, "report_json_block_duplicated",
+                                f"JSON block count != 1 (got {block_count})")
+            if report_json is None:
+                raise GateError(EXIT_POLICY, "report_malformed_current_head",
+                                "Worker report JSON is malformed")
+            if report_json.get("kind") != "worker_report":
+                raise GateError(EXIT_POLICY, "report_malformed_current_head",
+                                "Worker report kind mismatch")
+
+            if report_json.get("head_sha") == self.expected_head:
+                worker_reports_current.append({"comment": c, "report": report_json})
+
+        for r in self.reviews:
+            body = r.get("body", "") or ""
+            if WORKER_MARKER in body:
+                marker_in_review = True
+                break
+
+        if len(worker_reports_current) > 1:
+            raise GateError(EXIT_POLICY, "duplicate_current_head_reports",
+                            "Multiple worker reports for current HEAD")
+        if len(worker_reports_current) == 0:
+            if marker_in_review:
+                raise GateError(EXIT_POLICY, "report_not_top_level",
+                                "Worker report found in PR review, not top-level comment")
+            raise GateError(EXIT_POLICY, "report_missing",
+                            "No worker report found for current HEAD")
+
+        entry = worker_reports_current[0]
+        self._validate_worker_report_fields(entry["report"], entry["comment"])
+
+        self.worker_report = entry["report"]
+        self.worker_report_comment = entry["comment"]
 
     # === CI run validation ===
 
@@ -1428,6 +1487,43 @@ class Gate:
             if advance_run.get("conclusion") != "success":
                 raise GateError(EXIT_POLICY, "ci_run_not_success",
                                 "Gate advance run conclusion != success")
+
+    def _validate_advance_run(self):
+        """FIX2: validate the gate_advance_run_id from the worker report."""
+        advance_run_id = self.worker_report.get("gate_advance_run_id")
+        if advance_run_id is None or advance_run_id == 0:
+            raise GateError(EXIT_POLICY, "advance_run_missing",
+                            "Worker report gate_advance_run_id is 0 or missing")
+
+        advance_run = self.client.get_workflow_run_by_id(advance_run_id)
+        if advance_run is None:
+            raise GateError(EXIT_POLICY, "advance_run_missing",
+                            f"Advance run {advance_run_id} not found")
+        if not isinstance(advance_run, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Advance run data is not an object")
+
+        if advance_run.get("head_sha") != self.expected_head:
+            raise GateError(EXIT_POLICY, "advance_run_wrong_head",
+                            "Advance run head_sha != expected head")
+
+        workflow_name = advance_run.get("name", "")
+        if workflow_name != "Workstream Review Gate":
+            raise GateError(EXIT_POLICY, "advance_run_wrong_workflow",
+                            f"Advance run workflow name is '{workflow_name}', expected 'Workstream Review Gate'")
+
+        if advance_run.get("status") != "completed":
+            raise GateError(EXIT_POLICY, "advance_run_incomplete",
+                            "Advance run not completed")
+
+        if advance_run.get("conclusion") != "success":
+            raise GateError(EXIT_POLICY, "advance_run_not_success",
+                            "Advance run conclusion != success")
+
+        run_attempt = advance_run.get("run_attempt")
+        if run_attempt is not None and run_attempt != 1:
+            raise GateError(EXIT_POLICY, "advance_run_attempt_gt_one",
+                            f"Advance run attempt > 1 ({run_attempt})")
 
     # === Controller review validation (review phase) ===
 
@@ -1583,6 +1679,164 @@ class Gate:
             raise GateError(EXIT_POLICY, "controller_release_true",
                             "release_authorized == true")
 
+        self._controller_review_data = data
+        self._controller_review_submitted_at = latest.get("submitted_at")
+
+    # === Submission receipt validation (FIX2) ===
+
+    def _validate_submission_receipt(self):
+        """FIX2 review phase: validate submission workflow run receipt via GitHub API."""
+        data = getattr(self, '_controller_review_data', None)
+        if data is None:
+            raise GateError(EXIT_POLICY, "controller_review_missing",
+                            "No accepted controller review for HEAD")
+
+        review_submit_time = getattr(self, '_controller_review_submitted_at', None)
+        review_time = parse_iso_datetime(review_submit_time) if review_submit_time else None
+
+        self._validate_submission_run_receipt(
+            data.get("submission_run_id"),
+            data.get("worker_report_comment_id"),
+            target_head=self.expected_head,
+            worker_report_comment=self.worker_report_comment,
+            review_submit_time=review_time,
+        )
+        self._review_receipt_validated = True
+
+    def _validate_submission_run_receipt(self, submission_run_id, worker_report_comment_id,
+                                         target_head=None, worker_report_comment=None,
+                                         review_submit_time=None):
+        """Validate a submission workflow run against the FIX2 contract (§8).
+        target_head: the head_sha the submission run should be for (HEAD or parent).
+        worker_report_comment: the worker report comment (for chronology check)."""
+        if target_head is None:
+            target_head = self.expected_head
+
+        if not isinstance(submission_run_id, int) or isinstance(submission_run_id, bool) or submission_run_id < 1:
+            raise GateError(EXIT_POLICY, "submission_run_id_invalid",
+                            "submission_run_id must be a positive integer")
+
+        if worker_report_comment_id is None:
+            raise GateError(EXIT_POLICY, "submission_run_wrong_report_id",
+                            "worker_report_comment_id is required for submission run validation")
+
+        run = self.client.get_workflow_run_by_id(submission_run_id)
+        if run is None:
+            raise GateError(EXIT_POLICY, "submission_run_missing",
+                            f"Submission run {submission_run_id} not found")
+        if not isinstance(run, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Submission run data is not an object")
+
+        # §8.1 Workflow run contract
+        repo_full = self.repo
+        if run.get("repository", {}).get("full_name") != repo_full:
+            raise GateError(EXIT_POLICY, "submission_run_wrong_repository",
+                            "Submission run repository mismatch")
+        if run.get("head_sha") != target_head:
+            raise GateError(EXIT_POLICY, "submission_run_wrong_head",
+                            "Submission run head_sha != expected head")
+        expected_branch = self.policy.get("branch", "")
+        if run.get("head_branch") != expected_branch:
+            raise GateError(EXIT_POLICY, "submission_run_wrong_branch",
+                            "Submission run head_branch != expected branch")
+        if run.get("event") != "workflow_dispatch":
+            raise GateError(EXIT_POLICY, "submission_run_wrong_event",
+                            "Submission run event != workflow_dispatch")
+
+        # Run-name encoding validation
+        # GitHub API v3 does not return run-name; use display_title or
+        # reconstruct from workflow_run.name (the canonical run-name)
+        run_name = run.get("name", "") or ""
+        if "submission" not in run_name.lower():
+            raise GateError(EXIT_POLICY, "submission_run_wrong_phase",
+                            "Submission run name does not encode phase=submission")
+        if f"HEAD={target_head}" not in run_name:
+            raise GateError(EXIT_POLICY, "submission_run_wrong_head_in_name",
+                            "Submission run name does not encode exact HEAD")
+        if f"PR={self.pr_number}" not in run_name:
+            raise GateError(EXIT_POLICY, "submission_run_wrong_pr",
+                            "Submission run name does not encode PR number")
+        if f"REPORT={worker_report_comment_id}" not in run_name:
+            raise GateError(EXIT_POLICY, "submission_run_wrong_report_id",
+                            "Submission run name does not encode worker report comment ID")
+
+        if str(run.get("id")) != str(submission_run_id):
+            raise GateError(EXIT_POLICY, "submission_run_id_mismatch",
+                            "Submission run ID mismatch")
+
+        if run.get("status") != "completed":
+            raise GateError(EXIT_POLICY, "submission_run_incomplete",
+                            "Submission run not completed")
+        if run.get("conclusion") != "success":
+            raise GateError(EXIT_POLICY, "submission_run_failed",
+                            "Submission run conclusion != success")
+
+        run_attempt = run.get("run_attempt")
+        if run_attempt is not None and run_attempt != 1:
+            raise GateError(EXIT_POLICY, "submission_run_attempt_gt_one",
+                            f"Submission run attempt > 1 ({run_attempt})")
+
+        # §8.3 Job contract
+        jobs = self.client.get_workflow_jobs(submission_run_id)
+        if not isinstance(jobs, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Submission run jobs data is not a list")
+
+        gate_job_count = 0
+        for j in jobs:
+            if not isinstance(j, dict):
+                raise GateError(EXIT_INFRA, "pagination_page_type_invalid",
+                                "A job item is not an object")
+            jid = j.get("id")
+            if not isinstance(jid, int) or isinstance(jid, bool):
+                raise GateError(EXIT_INFRA, "submission_job_id_non_integer",
+                                "A submission job has a non-integer id")
+            jname = j.get("name", "")
+            if jname == "Submission Gate":
+                gate_job_count += 1
+                if j.get("status") != "completed":
+                    raise GateError(EXIT_POLICY, "submission_gate_job_incomplete",
+                                    "Submission gate job not completed")
+                if j.get("conclusion") != "success":
+                    raise GateError(EXIT_POLICY, "submission_gate_job_failed",
+                                    "Submission gate job conclusion != success")
+                if j.get("conclusion") in ("skipped", None):
+                    raise GateError(EXIT_POLICY, "submission_gate_job_skipped",
+                                    "Submission gate job was skipped")
+                if j.get("conclusion") == "cancelled":
+                    raise GateError(EXIT_POLICY, "submission_gate_job_cancelled",
+                                    "Submission gate job was cancelled")
+
+        if gate_job_count == 0:
+            raise GateError(EXIT_POLICY, "submission_gate_job_missing",
+                            "Submission gate job not found")
+        if gate_job_count > 1:
+            raise GateError(EXIT_POLICY, "submission_gate_job_duplicate",
+                            "Multiple submission gate jobs found")
+
+        # §8.2 Chronology
+        if worker_report_comment:
+            created_at = worker_report_comment.get("created_at")
+            if created_at:
+                report_time = parse_iso_datetime(created_at)
+                run_started = run.get("started_at") or run.get("created_at")
+                if run_started:
+                    run_start_time = parse_iso_datetime(run_started)
+                    if report_time > run_start_time:
+                        raise GateError(EXIT_POLICY, "report_created_after_submission_run",
+                                        "Worker report created after submission run started")
+
+        if review_submit_time:
+            completed_at_str = run.get("completed_at")
+            if completed_at_str:
+                completed_at = parse_iso_datetime(completed_at_str)
+                if completed_at > review_submit_time:
+                    raise GateError(EXIT_POLICY, "submission_completed_after_controller_review",
+                                    "Submission run completed after controller review")
+
+        self._submission_run_id_validated = submission_run_id
+
     # === Output ===
 
     def _output_success(self):
@@ -1594,13 +1848,26 @@ class Gate:
                 "next_workstream_admitted": False,
             }
         elif self.phase == "submission":
+            run_id = os.environ.get("GITHUB_RUN_ID")
+            if run_id:
+                submission_run_id = int(run_id)
+            else:
+                submission_run_id = 0
             result = {
                 "state": "WAITING_FOR_CONTROLLER_REVIEW",
+                "phase": "submission",
+                "head_sha": self.expected_head,
+                "worker_report_comment_id": self.worker_report_comment.get("id"),
+                "submission_run_id": submission_run_id,
+                "submission_run_attempt": 1,
                 "worker_report_valid": True,
                 "controller_review_present": False,
                 "next_workstream_admitted": False,
             }
         elif self.phase == "review":
+            if not self._review_receipt_validated:
+                raise GateError(EXIT_POLICY, "submission_receipt_not_bound",
+                                "Review cannot complete without a validated submission run receipt")
             result = {
                 "state": "REVIEW_COMPLETE_NX_REQUIRED",
                 "worker_report_valid": True,
@@ -1646,6 +1913,10 @@ def main():
                         help="Fixture directory for offline testing")
     parser.add_argument("--policy", default=POLICY_PATH_DEFAULT)
     parser.add_argument("--max-items", type=int, default=1000)
+    parser.add_argument("--worker-report-comment-id", type=int, default=None,
+                        help="Comment ID of the worker report (submission phase)")
+    parser.add_argument("--submission-run-id", type=int, default=None,
+                        help="Expected submission run ID (review phase)")
 
     args = parser.parse_args()
 
@@ -1657,6 +1928,8 @@ def main():
         fixtures_dir=args.fixtures,
         policy_path=args.policy,
         max_items=args.max_items,
+        worker_report_comment_id=args.worker_report_comment_id,
+        submission_run_id=args.submission_run_id,
     )
 
     sys.exit(gate.run())

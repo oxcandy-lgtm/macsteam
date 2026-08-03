@@ -17,6 +17,8 @@ Mutation categories:
   ci/        — CI run and job validation
   pr/        — PR state and policy binding
   routing/   — parent review routing (bootstrap/repair/normal)
+  submission/ — FIX2 submission phase validation
+  receipt/    — FIX2 submission run receipt validation
 """
 
 import sys
@@ -54,9 +56,9 @@ def apply_mutation(source, mutation_name):
 
         # === M4: report/ — Change workstream check ===
         "m4_wrong_workstream": (
-            'if workstream != "U1R18-R7-FIX1":',
+            'if workstream != FIX2_WORKSTREAM:',
             'if workstream != "U1R18-R7":',
-            "Worker report: check for U1R18-R7 instead of U1R18-R7-FIX1 (rejects valid workstream)"
+            "Worker report: check for U1R18-R7 instead of the active FIX2 workstream (rejects valid workstream)"
         ),
 
         # === M5: report/ — Invert before_commit timestamp comparison ===
@@ -134,6 +136,76 @@ def apply_mutation(source, mutation_name):
             'if not report.get("stop"):',
             'if report.get("stop"):',
             "Worker report: invert stop check (rejects valid stop=True)"
+        ),
+
+        # === M16: report/ — Allow non-null gate_submission_run_id ===
+        "m16_allow_non_null_submission_run_id": (
+            'if report.get("gate_submission_run_id") is not None:',
+            'if report.get("gate_submission_run_id") is None:',
+            "Worker report: invert null gate_submission_run_id check (allows non-null)"
+        ),
+
+        # === M17: submission/ — Invert worker_report_comment_id existence ===
+        "m17_invert_comment_id_required": (
+            'if self.worker_report_comment_id is None:',
+            'if self.worker_report_comment_id is not None:',
+            "Submission: invert worker_report_comment_id requirement (allows missing comment id)"
+        ),
+
+        # === M18: receipt/ — Invert submission run status check ===
+        "m18_invert_submission_status_check": (
+            'if run.get("status") != "completed":',
+            'if run.get("status") == "completed":',
+            "Submission receipt: invert status != completed check (rejects valid completed runs)"
+        ),
+
+        # === M19: receipt/ — Invert submission run conclusion check ===
+        "m19_invert_submission_conclusion_check": (
+            'if run.get("conclusion") != "success":',
+            'if run.get("conclusion") == "success":',
+            "Submission receipt: invert conclusion != success check (rejects valid successful runs)"
+        ),
+
+        # === M20: receipt/ — Invert submission gate job check ===
+        "m20_invert_gate_job_status": (
+            'if j.get("status") != "completed":',
+            'if j.get("status") == "completed":',
+            "Submission job: invert job status completed check (rejects valid completed jobs)"
+        ),
+
+        # === M21: receipt/ — Invert submission gate job conclusion ===
+        "m21_invert_gate_job_conclusion": (
+            'if j.get("conclusion") != "success":',
+            'if j.get("conclusion") == "success":',
+            "Submission job: invert job conclusion success check (rejects valid successful jobs)"
+        ),
+
+        # === M22: receipt/ — Skip submission run chronology check ===
+        "m22_skip_chronology_check": (
+            'if report_time > run_start_time:',
+            'if report_time < run_start_time:',
+            "Submission receipt: invert chronology check (allows invalid ordering)"
+        ),
+
+        # === M23: receipt/ — Skip submission completed-after-review check ===
+        "m23_invert_completed_after_review": (
+            'if completed_at > review_submit_time:',
+            'if completed_at < review_submit_time:',
+            "Submission receipt: invert completed-after-review check (allows invalid ordering)"
+        ),
+
+        # === M24: receipt/ — Skip submission run attempt check ===
+        "m24_skip_run_attempt_check": (
+            'if run_attempt is not None and run_attempt != 1:\n            raise GateError(EXIT_POLICY, "submission_run_attempt_gt_one",',
+            'if run_attempt is not None and run_attempt == 1:\n            raise GateError(EXIT_POLICY, "submission_run_attempt_gt_one",',
+            "Submission: invert run_attempt check (rejects attempt != 1)"
+        ),
+
+        # === M25: receipt/ — Bypass _validate_submission_run_receipt ===
+        "m25_bypass_submission_receipt": (
+            'self._validate_submission_receipt()',
+            '# self._validate_submission_receipt()  # bypassed by mutation',
+            "Review: bypass submission run receipt validation entirely"
         ),
     }
 

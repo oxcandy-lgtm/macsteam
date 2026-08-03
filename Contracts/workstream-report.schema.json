@@ -63,7 +63,7 @@
       "minimum": 1
     },
     "gate_submission_run_id": {
-      "type": ["integer", "null"]
+      "const": null
     },
     "stop": {
       "type": "boolean"

@@ -6,14 +6,16 @@
     }
   ],
   "commit": {
+    "message": "test commit\n",
     "committer": {
       "date": "2026-08-03T03:00:00Z",
-      "name": "Worker"
+      "name": "Test",
+      "email": "test@example.com"
     },
     "author": {
       "date": "2026-08-03T03:00:00Z",
-      "name": "Worker"
-    },
-    "message": "feat: normal workstream commit"
+      "name": "Test",
+      "email": "test@example.com"
+    }
   }
 }

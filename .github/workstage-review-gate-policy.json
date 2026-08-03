@@ -12,11 +12,11 @@
     "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
   },
   "repair_authorization": {
-    "parent_sha": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d",
-    "review_id": 4841397951,
-    "classification": "RED_U1R18_R7_SELF_REVIEW_AND_SEQUENTIAL_GATE_FAIL_OPEN",
-    "required_commit_message": "ci: close workstream review authority gate (U1R18-R7-FIX1)",
-    "required_workstream": "U1R18-R7-FIX1",
+    "parent_sha": "4b7cbe162d0dbf4e660972b2eda3f369588884e3",
+    "review_id": 4843792148,
+    "classification": "RED_U1R18_R7_FIX1_CANONICAL_SUBMISSION_RECEIPT_NOT_BOUND",
+    "required_commit_message": "ci: bind trusted submission receipt (U1R18-R7-FIX2)",
+    "required_workstream": "U1R18-R7-FIX2",
     "single_direct_child_only": true
   },
   "quarantined_review_ids": [4841357081],
