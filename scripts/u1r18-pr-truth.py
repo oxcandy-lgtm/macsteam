@@ -243,6 +243,8 @@ def semantic_validate(state):
         return "state_semantic_invalid"
     if pr.get("merged") is not False:
         return "state_semantic_invalid"
+    if pr.get("mergeable") is not True:
+        return "state_pr_mergeable_invalid"
 
     workstreams = state.get("workstreams", [])
     seen = set()
@@ -283,12 +285,25 @@ def semantic_validate(state):
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             return "state_semantic_invalid"
 
+    if rg.get("final_state") != "REVIEW_COMPLETE_NX_REQUIRED":
+        return "state_review_final_state_invalid"
+    if rg.get("worker_report_valid") is not True:
+        return "state_worker_report_valid_invalid"
+    if rg.get("controller_review_valid") is not True:
+        return "state_controller_review_valid_invalid"
+    if rg.get("nx_required") is not True:
+        return "state_nx_required_invalid"
+
     cc = state.get("core_ci", {})
     if not isinstance(cc.get("run_id"), int) or cc.get("run_id") < 1:
         return "state_semantic_invalid"
     ga = state.get("gate_advance", {})
     if not isinstance(ga.get("run_id"), int) or ga.get("run_id") < 1:
         return "state_semantic_invalid"
+    if ga.get("state") != "CURRENT_WORKSTREAM_ACTIVE":
+        return "state_gate_advance_state_invalid"
+    if ga.get("parent_authority") != "controller_review":
+        return "state_gate_parent_authority_invalid"
 
     if rg.get("next_workstream_admitted") is True:
         return "unsafe_authorization"

@@ -146,6 +146,13 @@ run "red state-release-authorized" 1 "unsafe_authorization" -- python3 "$PY" val
 run "red state-next-workstream-admitted" 1 "unsafe_authorization" -- python3 "$PY" validate-state --state "$RED/state-next-workstream-admitted.json"
 run "red state-r5-proof-performed" 1 "state_semantic_invalid" -- python3 "$PY" validate-state --state "$RED/state-r5-proof-performed.json"
 run "red state-r5-proof-claimed" 1 "state_semantic_invalid" -- python3 "$PY" validate-state --state "$RED/state-r5-proof-claimed.json"
+run "red state-pr-mergeable-false" 1 "state_pr_mergeable_invalid" -- python3 "$PY" validate-state --state "$RED/state-pr-mergeable-false.json"
+run "red state-review-final-state-wrong" 1 "state_review_final_state_invalid" -- python3 "$PY" validate-state --state "$RED/state-review-final-state-wrong.json"
+run "red state-worker-report-valid-false" 1 "state_worker_report_valid_invalid" -- python3 "$PY" validate-state --state "$RED/state-worker-report-valid-false.json"
+run "red state-controller-review-valid-false" 1 "state_controller_review_valid_invalid" -- python3 "$PY" validate-state --state "$RED/state-controller-review-valid-false.json"
+run "red state-nx-required-false" 1 "state_nx_required_invalid" -- python3 "$PY" validate-state --state "$RED/state-nx-required-false.json"
+run "red state-gate-advance-state-wrong" 1 "state_gate_advance_state_invalid" -- python3 "$PY" validate-state --state "$RED/state-gate-advance-state-wrong.json"
+run "red state-gate-parent-authority-wrong" 1 "state_gate_parent_authority_invalid" -- python3 "$PY" validate-state --state "$RED/state-gate-parent-authority-wrong.json"
 
 echo "--- RED: body mutations (render) ---"
 run "red body-marker-missing" 1 "body_marker_missing" -- python3 "$PY" render --state "$STATE" --body "$RED/body-marker-missing.md" --output "$TMP/x.md"
@@ -164,7 +171,7 @@ MISSING_MAP=0
 for f in "$RED"/*; do
     name=$(basename "$f")
     case "$name" in
-        state-malformed-json.json|state-schema-version-mismatch.json|state-invalid-sha.json|state-duplicate-workstream-id.json|state-workstream-order-violation.json|state-receipt-id-zero.json|state-ready-authorized.json|state-merge-authorized.json|state-release-authorized.json|state-next-workstream-admitted.json|state-r5-proof-performed.json|state-r5-proof-claimed.json|body-marker-missing.md|body-marker-duplicate.md|body-sentinel-missing.md|body-sentinel-duplicate.md|body-sentinel-before-marker.md|after-suffix-changed.md|after-output-marker-duplicate.md)
+        state-malformed-json.json|state-schema-version-mismatch.json|state-invalid-sha.json|state-duplicate-workstream-id.json|state-workstream-order-violation.json|state-receipt-id-zero.json|state-ready-authorized.json|state-merge-authorized.json|state-release-authorized.json|state-next-workstream-admitted.json|state-r5-proof-performed.json|state-r5-proof-claimed.json|state-pr-mergeable-false.json|state-review-final-state-wrong.json|state-worker-report-valid-false.json|state-controller-review-valid-false.json|state-nx-required-false.json|state-gate-advance-state-wrong.json|state-gate-parent-authority-wrong.json|body-marker-missing.md|body-marker-duplicate.md|body-sentinel-missing.md|body-sentinel-duplicate.md|body-sentinel-before-marker.md|after-suffix-changed.md|after-output-marker-duplicate.md)
             ;;
         *)
             bad "RED fixture without mapping: $name"
@@ -173,6 +180,16 @@ for f in "$RED"/*; do
     esac
 done
 [ "$MISSING_MAP" -eq 0 ] && ok "every RED fixture has a mapping"
+
+# No orphan mapping: every expected mutation name must have a fixture file.
+ORPHAN=0
+for name in state-malformed-json.json state-schema-version-mismatch.json state-invalid-sha.json state-duplicate-workstream-id.json state-workstream-order-violation.json state-receipt-id-zero.json state-ready-authorized.json state-merge-authorized.json state-release-authorized.json state-next-workstream-admitted.json state-r5-proof-performed.json state-r5-proof-claimed.json state-pr-mergeable-false.json state-review-final-state-wrong.json state-worker-report-valid-false.json state-controller-review-valid-false.json state-nx-required-false.json state-gate-advance-state-wrong.json state-gate-parent-authority-wrong.json body-marker-missing.md body-marker-duplicate.md body-sentinel-missing.md body-sentinel-duplicate.md body-sentinel-before-marker.md after-suffix-changed.md after-output-marker-duplicate.md; do
+    if [ ! -f "$RED/$name" ]; then
+        bad "orphan mapping without fixture: $name"
+        ORPHAN=1
+    fi
+done
+[ "$ORPHAN" -eq 0 ] && ok "no orphan mapping"
 
 # No empty fixtures.
 EMPTY=0
