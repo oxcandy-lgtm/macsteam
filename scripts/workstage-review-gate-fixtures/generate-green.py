@@ -54,6 +54,13 @@ PRODUCT_CHILD_HEAD = "d0e3a2b3c4d5e6f708192a3b4c5d6e7f8899aabb"
 PRODUCT_CHILD_MSG = ("fix: prove packaged CloverPit recipe (U1R18-R8-FIX1)\n\n"
                      "Workstream: U1R18-R8-FIX1")
 
+GATE1_FIX1_REPAIR_PARENT = "59dbd88d7e4b82869f7cf5ac138fc74ceb68cd85"
+GATE1_FIX1_REPAIR_HEAD = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+GATE1_FIX1_REPAIR_REVIEW_ID = 4849925632
+GATE1_FIX1_REPAIR_CLASSIFICATION = "RED_U1R18_R8_GATE1_HISTORICAL_MALFORMED_REPORT_POISONS_REPLAY_SCAN"
+GATE1_FIX1_REPAIR_COMMIT_MSG = ("ci: isolate historical report replay (U1R18-R8-GATE1-FIX1)\n\n"
+                                "Workstream: U1R18-R8-GATE1-FIX1")
+
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
 REPAIR_REVIEW_ID_CHILD = 4843792150
@@ -365,14 +372,16 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=GATE1_HEAD, parent_sha=GATE1_PARENT, message=GATE1_REPAIR_COMMIT_MSG)
-    repair_body = (controller_review_json(GATE1_PARENT, decision="rejected",
-                                          classification=GATE1_REPAIR_CLASSIFICATION)
-                   + "\n\nRepair authorization granted for U1R18-R8-GATE1. "
-                     "This RED review authorizes a single direct child commit.\n")
+    _base(d, head_sha=GATE1_FIX1_REPAIR_HEAD, parent_sha=GATE1_FIX1_REPAIR_PARENT,
+          message=GATE1_FIX1_REPAIR_COMMIT_MSG)
+    repair_body = (controller_review_json(GATE1_FIX1_REPAIR_PARENT, decision="rejected",
+                                          classification=GATE1_FIX1_REPAIR_CLASSIFICATION)
+                   + "\n\nRepair authorization granted for "
+                     "U1R18-R8-GATE1-FIX1. This RED review authorizes a single "
+                     "direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(GATE1_PARENT, GATE1_REPAIR_REVIEW_ID, repair_body,
-                               "COMMENTED", REPAIR_REVIEW_TS)])
+                  [review_json(GATE1_FIX1_REPAIR_PARENT, GATE1_FIX1_REPAIR_REVIEW_ID,
+                               repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json", {"total_count": 0, "files": []})
 
 
@@ -496,6 +505,54 @@ def create_submission_historical_reports():
                                  workstream="U1R18-R6")
     write_fixture(d, "comment.json", digest(wr))
     write_fixture(d, "comments.json", comments_json(digest(hist_wr), digest(wr)))
+    parent_body = controller_review_json(NORMAL_PARENT, sub_run_id=PARENT_SUBMISSION_RUN_ID)
+    write_fixture(d, "reviews.json",
+                  [review_json(NORMAL_PARENT, NORMAL_REVIEW_ID, parent_body, "APPROVED", PARENT_REVIEW_TS)])
+    _ci_files(d)
+    _parent_receipt(d)
+
+
+def create_historical_malformed_report_before_head():
+    """GREEN: malformed marker comment created before the HEAD commit is a
+    historical object and must not poison the current-HEAD replay scan."""
+    d = os.path.join(FIXTURE_DIR, "historical_malformed_report_before_head")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    _base(d)
+    wr = worker_report_json(NORMAL_HEAD, NORMAL_PARENT)
+    hist_malformed = {
+        "id": 5172949000,
+        "user": {"login": "macsteam-dev"},
+        "body": (WORKER_MARKER + "\n\nMalformed historical report with no "
+                 "JSON fence.\n"),
+        "created_at": "2026-08-03T02:00:00Z",
+        "updated_at": "2026-08-03T02:00:00Z",
+        "path": None,
+        "position": None,
+        "in_reply_to_id": None,
+    }
+    write_fixture(d, "comment.json", digest(wr))
+    write_fixture(d, "comments.json", comments_json(hist_malformed, digest(wr)))
+    parent_body = controller_review_json(NORMAL_PARENT, sub_run_id=PARENT_SUBMISSION_RUN_ID)
+    write_fixture(d, "reviews.json",
+                  [review_json(NORMAL_PARENT, NORMAL_REVIEW_ID, parent_body, "APPROVED", PARENT_REVIEW_TS)])
+    _ci_files(d)
+    _parent_receipt(d)
+
+
+def create_historical_valid_report_after_head_for_other_sha():
+    """GREEN: a well-formed worker report created after the HEAD commit but
+    targeting a different head_sha must not count as a current candidate."""
+    d = os.path.join(FIXTURE_DIR, "historical_valid_report_after_head_for_other_sha")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    _base(d)
+    wr = worker_report_json(NORMAL_HEAD, NORMAL_PARENT)
+    other_wr = worker_report_json(HISTORICAL_HEAD, HISTORICAL_PARENT,
+                                  comment_id=WORKER_REPORT_COMMENT_ID - 1,
+                                  workstream="U1R18-R7-FIX2")
+    write_fixture(d, "comment.json", digest(wr))
+    write_fixture(d, "comments.json", comments_json(digest(other_wr), digest(wr)))
     parent_body = controller_review_json(NORMAL_PARENT, sub_run_id=PARENT_SUBMISSION_RUN_ID)
     write_fixture(d, "reviews.json",
                   [review_json(NORMAL_PARENT, NORMAL_REVIEW_ID, parent_body, "APPROVED", PARENT_REVIEW_TS)])
@@ -750,6 +807,8 @@ GREEN_FACTORIES = [
     create_historical_reports_plus_one_current,
     create_historical_submission_runs_do_not_collide,
     create_submission_historical_reports,
+    create_historical_malformed_report_before_head,
+    create_historical_valid_report_after_head_for_other_sha,
     create_submission_historical_reviews,
     create_review_approved_accepted,
     create_review_commented_accepted,

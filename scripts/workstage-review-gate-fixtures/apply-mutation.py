@@ -50,7 +50,7 @@ BEFORE_COMMIT_TS = "2026-08-03T02:00:00Z"
 
 # === IDs ===
 BOOTSTRAP_REVIEW_ID = 4840817794
-REPAIR_REVIEW_ID = 4849753406
+REPAIR_REVIEW_ID = 4849925632
 QUARANTINED_REVIEW_ID = 4841357081
 NORMAL_REVIEW_ID = 4840817795
 
@@ -63,9 +63,9 @@ FIX3_WORKSTREAM = "U1R18-R7-FIX3"
 FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
 GATE1_WORKSTREAM = "U1R18-R8-GATE1"
-REPAIR_COMMIT_MSG = "ci: generalize workstream authority (U1R18-R8-GATE1)"
+REPAIR_COMMIT_MSG = "ci: isolate historical report replay (U1R18-R8-GATE1-FIX1)"
 REPAIR_COMMIT_MSG_FIX1 = "ci: close workstream review authority gate (U1R18-R7-FIX1)"
-REPAIR_CLASSIFICATION = "RED_U1R18_R8_GATE_GENERICITY_AND_REPAIR_ROUTING_INCOMPLETE"
+REPAIR_CLASSIFICATION = "RED_U1R18_R8_GATE1_HISTORICAL_MALFORMED_REPORT_POISONS_REPLAY_SCAN"
 BOOTSTRAP_CLASSIFICATION = "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
 
 WORKER_REPORT_COMMENT_ID = 5161887211
@@ -731,9 +731,85 @@ def m_head_workstream_trailer_duplicated(d):
 def m_head_workstream_trailer_invalid(d):
     commit = load_json(d, "commit_HEAD.json")
     msg = commit["commit"]["message"]
-    msg = re.sub(r"^Workstream:.*$", "Workstream: not-a-valid-workstream", msg, flags=re.MULTILINE)
+    msg = re.sub(r"^Workstream:.*$", "Workstream: U1R18/R8", msg, flags=re.MULTILINE)
     commit["commit"]["message"] = msg
     save_json(d, "commit_HEAD.json", commit)
+
+
+# === FIX1: Replay isolation mutations (base: submission_exact_comment_id) ===
+
+def m_replay_malformed_marker_at_or_after_head(d):
+    """Current-window marker comment with no JSON fence → block_count 0."""
+    comments = load_json(d, "comments.json")
+    for c in comments:
+        if WORKER_MARKER in (c.get("body", "")):
+            c["body"] = WORKER_MARKER + "\n\nNo fence here.\n"
+    save_json(d, "comments.json", comments)
+
+
+def m_replay_malformed_json_at_or_after_head(d):
+    """Current-window marker comment with broken JSON → malformed report."""
+    comments = load_json(d, "comments.json")
+    for c in comments:
+        if WORKER_MARKER in (c.get("body", "")):
+            c["body"] = WORKER_MARKER + "\n```json\n{broken json\n```\n"
+    save_json(d, "comments.json", comments)
+
+
+def m_replay_historical_marker_missing_timestamp(d):
+    """A marker-bearing comment (before HEAD) with no created_at → infra."""
+    comments = load_json(d, "comments.json")
+    bad = {
+        "id": 5172949100,
+        "user": {"login": "macsteam-dev"},
+        "body": WORKER_MARKER + "\n```json\n{}\n```\n",
+        "created_at": None,
+        "updated_at": None,
+        "path": None,
+        "position": None,
+        "in_reply_to_id": None,
+    }
+    comments.insert(0, bad)
+    save_json(d, "comments.json", comments)
+
+
+def m_replay_historical_marker_malformed_timestamp(d):
+    """A marker-bearing comment (before HEAD) with malformed created_at."""
+    comments = load_json(d, "comments.json")
+    bad = {
+        "id": 5172949101,
+        "user": {"login": "macsteam-dev"},
+        "body": WORKER_MARKER + "\n```json\n{}\n```\n",
+        "created_at": "not-a-date",
+        "updated_at": "not-a-date",
+        "path": None,
+        "position": None,
+        "in_reply_to_id": None,
+    }
+    comments.insert(0, bad)
+    save_json(d, "comments.json", comments)
+
+
+def m_replay_duplicate_valid_current_head_reports(d):
+    """Two valid current-HEAD worker reports → duplicate_current_head_reports."""
+    comments = load_json(d, "comments.json")
+    head = get_pr_head(d)
+    for c in comments:
+        if WORKER_MARKER in (c.get("body", "")):
+            json_data, _, _ = parse_json_block_local(c["body"], WORKER_MARKER)
+            if json_data and json_data.get("head_sha") == head:
+                dup = dict(c)
+                dup["id"] = 5161887299
+                comments.append(dup)
+                break
+    save_json(d, "comments.json", comments)
+
+
+def m_replay_selected_exact_report_malformed(d):
+    """The exact selected comment (comment.json) is malformed → selected guard."""
+    comment = load_json(d, "comment.json")
+    comment["body"] = WORKER_MARKER + "\n```json\n{bad\n```\n"
+    save_json(d, "comment.json", comment)
 
 
 def m_report_stop_false(d):
@@ -1855,6 +1931,12 @@ MUTATIONS = {
     "head_workstream_trailer_missing": m_head_workstream_trailer_missing,
     "head_workstream_trailer_duplicated": m_head_workstream_trailer_duplicated,
     "head_workstream_trailer_invalid": m_head_workstream_trailer_invalid,
+    "replay_malformed_marker_at_or_after_head": m_replay_malformed_marker_at_or_after_head,
+    "replay_malformed_json_at_or_after_head": m_replay_malformed_json_at_or_after_head,
+    "replay_historical_marker_missing_timestamp": m_replay_historical_marker_missing_timestamp,
+    "replay_historical_marker_malformed_timestamp": m_replay_historical_marker_malformed_timestamp,
+    "replay_duplicate_valid_current_head_reports": m_replay_duplicate_valid_current_head_reports,
+    "replay_selected_exact_report_malformed": m_replay_selected_exact_report_malformed,
     "report_stop_false": m_report_stop_false,
     "report_next_workstream_true": m_report_next_workstream_true,
     "report_ready_true": m_report_ready_true,

@@ -2,7 +2,7 @@
   "number": 2,
   "head": {
     "ref": "feat/ultimate-cloverpit-u1",
-    "sha": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
     "repo": {
       "full_name": "oxcandy-lgtm/macsteam"
     }

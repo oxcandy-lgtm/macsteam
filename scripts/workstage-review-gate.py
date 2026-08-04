@@ -1489,8 +1489,32 @@ class Gate:
         # top-level comments.
         self._validate_worker_report_replay()
 
+    def _head_commit_datetime(self):
+        """HEAD commit committer datetime. Fail closed if missing/malformed."""
+        commit_date_str = self.commit_head.get("commit", {}).get("committer", {}).get("date")
+        if not commit_date_str:
+            raise GateError(EXIT_INFRA, "timestamp_malformed",
+                            "HEAD commit has no committer date")
+        return parse_iso_datetime(commit_date_str)
+
+    def _comment_datetime(self, comment):
+        """Comment created_at datetime. Fail-closed if missing/malformed."""
+        created_at = comment.get("created_at")
+        if not created_at:
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Comment has no created_at timestamp")
+        return parse_iso_datetime(created_at)
+
     def _validate_worker_report_replay(self):
-        """FIX2 review: scan comments for current HEAD worker report."""
+        """FIX1 review: scan comments for current HEAD worker report.
+
+        Replay isolation is based on the HEAD commit timestamp boundary:
+        marker-bearing comments created strictly before the HEAD commit are
+        historical objects and are excluded from current-HEAD uniqueness, so a
+        historical malformed report can never poison a later HEAD. Comments at
+        or after the HEAD commit are current-window objects and are validated
+        fully fail-closed.
+        """
         self.comments = self.client.get_comments(self.pr_number)
         if not isinstance(self.comments, list):
             raise GateError(EXIT_INFRA, "object_unparseable",
@@ -1499,6 +1523,7 @@ class Gate:
         if not self._reviews_loaded:
             self._load_reviews()
 
+        commit_date = self._head_commit_datetime()
         worker_reports_current = []
         marker_in_review = False
 
@@ -1507,6 +1532,15 @@ class Gate:
             if WORKER_MARKER not in body:
                 continue
 
+            created_at = self._comment_datetime(c)
+
+            # Historical marker object: it existed before this HEAD. It is a
+            # separate historical object and must not poison a later window,
+            # regardless of whether its marker/JSON is well-formed.
+            if created_at < commit_date:
+                continue
+
+            # Current-window marker objects are strict / fail-closed.
             if c.get("in_reply_to_id"):
                 raise GateError(EXIT_POLICY, "report_reply",
                                 "Worker report is a reply to another comment")
