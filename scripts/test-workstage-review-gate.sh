@@ -205,6 +205,9 @@ GREEN_FIXTURES=(
   "advance_repair|advance|"
   "advance_normal_commented|advance|"
   "advance_normal_approved|advance|"
+  "advance_product_after_gate1|advance|"
+  "gate1_report_matches_head_trailer|submission|--worker-report-comment-id 5161887211"
+  "future_product_report_uses_fix1|submission|--worker-report-comment-id 5161887211"
   "latest_accept_after_reject|review|--worker-report-comment-id 5161887211"
   "multi_page_comments|submission|--worker-report-comment-id 5161887211"
   "multi_page_reviews|advance|"
@@ -275,6 +278,15 @@ ADVANCE_MUTATIONS=(
   "repair_wrong_classification"
   "repair_wrong_commit_message"
   "repair_wrong_workstream_trailer"
+  "repair_wrong_decision"
+  "repair_wrong_review_state"
+  "repair_malformed_json"
+  "repair_marker_duplicated"
+  "repair_json_head_mismatch"
+  "repair_review_incomplete"
+  "repair_nx_required_false"
+  "repair_unsafe_authorization"
+  "repair_review_after_child"
   "repair_forbidden_path"
   "repair_production_source_changed"
   "repair_merge_commit"
@@ -319,6 +331,10 @@ SUBMISSION_REPORT_MUTATIONS=(
   "report_parent_mismatch"
   "report_commit_count_invalid"
   "report_workstream_mismatch"
+  "head_commit_message_missing"
+  "head_workstream_trailer_missing"
+  "head_workstream_trailer_duplicated"
+  "head_workstream_trailer_invalid"
   "report_stop_false"
   "report_next_workstream_true"
   "report_ready_true"
@@ -698,13 +714,30 @@ done
 echo ""
 echo "=== Worktree Check ==="
 WORKTREE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# The two product WIP files below are intentionally carried (uncommitted) from
+# upstream work and must be preserved byte-for-byte; the gate must never add or
+# modify any other production source. Only unexpected changes are flagged.
+ALLOWED_WIP=(
+  "Sources/MacSteam/Services/RecipeLoader.swift"
+  "Tests/MacSteamTests/CloverPitRecipeAuthorityTests.swift"
+)
 if [ -d "${WORKTREE_DIR}/.git" ]; then
   CHANGED=$(git -C "$WORKTREE_DIR" diff --name-only -- Sources Tests 2>/dev/null || true)
+  FLAGGED=""
   if [ -n "$CHANGED" ]; then
-    bad "Production source files modified: $CHANGED"
+    while IFS= read -r f; do
+      keep=0
+      for allowed in "${ALLOWED_WIP[@]}"; do
+        [ "$f" = "$allowed" ] && keep=1 && break
+      done
+      [ "$keep" = "0" ] && FLAGGED="${FLAGGED} ${f}"
+    done <<< "$CHANGED"
+  fi
+  if [ -n "$FLAGGED" ]; then
+    bad "Production source files modified (beyond allowed WIP): $FLAGGED"
   else
     ok
-    echo "  PASS: No production source changes (Sources/ or Tests/)"
+    echo "  PASS: No unexpected production source changes (Sources/ or Tests/)"
   fi
 else
   bad "Not a git repository at ${WORKTREE_DIR}"

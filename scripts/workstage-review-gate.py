@@ -62,6 +62,8 @@ FIX3_WORKSTREAM = "U1R18-R7-FIX3"
 FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
 
+WORKSTREAM_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
 WORKFLOW_PATH_DEFAULT = ".github/workflows/workstage-review-gate.yml"
 WORKFLOW_NAME_DEFAULT = "Workstream Review Gate"
 
@@ -863,13 +865,53 @@ class Gate:
                             "Repair review commit_id != repair parent_sha")
 
         review_body = review.get("body", "") or ""
-        if classification not in review_body:
-            raise GateError(EXIT_POLICY, "repair_wrong_classification",
-                            "Repair review body does not contain exact classification")
+        review_state = review.get("state", "") or ""
+        if review_state not in ("COMMENTED", "CHANGES_REQUESTED"):
+            raise GateError(EXIT_POLICY, "repair_wrong_review_state",
+                            "Repair review state must be COMMENTED or CHANGES_REQUESTED")
 
-        if "R7" not in review_body or "repair" not in review_body.lower():
+        marker_count = review_body.count(CONTROLLER_MARKER)
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "repair_marker_duplicated",
+                            f"Repair review controller marker count != 1 (got {marker_count})")
+
+        json_data, _, block_count = parse_json_block(review_body, CONTROLLER_MARKER)
+        if block_count != 1:
+            raise GateError(EXIT_POLICY, "repair_json_blocks_duplicated",
+                            f"Repair review JSON block count != 1 (got {block_count})")
+        if json_data is None:
+            raise GateError(EXIT_POLICY, "repair_malformed_json",
+                            "Repair review controller JSON is malformed")
+        if not validate_document(json_data, CONTROLLER_SCHEMA_PATH, CONTROLLER_SCHEMA_PATH):
+            raise GateError(EXIT_POLICY, "repair_schema_invalid",
+                            "Repair review controller JSON fails schema validation")
+
+        if json_data.get("kind") != "controller_review":
+            raise GateError(EXIT_POLICY, "repair_wrong_kind",
+                            "Repair review JSON kind != controller_review")
+        if json_data.get("head_sha") != parent_sha:
+            raise GateError(EXIT_POLICY, "repair_json_head_mismatch",
+                            "Repair review JSON head_sha != policy parent_sha")
+        if json_data.get("decision") != "rejected":
+            raise GateError(EXIT_POLICY, "repair_wrong_decision",
+                            "Repair review decision != rejected")
+        if json_data.get("classification") != classification:
             raise GateError(EXIT_POLICY, "repair_wrong_classification",
-                            "Repair review body does not contain R7 repair instruction")
+                            "Repair review JSON classification != policy classification")
+        if json_data.get("review_complete") is not True:
+            raise GateError(EXIT_POLICY, "repair_review_incomplete",
+                            "Repair review review_complete != true")
+        if json_data.get("nx_required_for_next_workstream") is not True:
+            raise GateError(EXIT_POLICY, "repair_nx_required_false",
+                            "Repair review nx_required_for_next_workstream != true")
+        for flag in ("ready_authorized", "merge_authorized", "release_authorized"):
+            if json_data.get(flag):
+                raise GateError(EXIT_POLICY, "repair_unsafe_authorization",
+                                f"Repair review {flag} == true")
+
+        if not self._check_review_before_child(review):
+            raise GateError(EXIT_POLICY, "repair_review_after_child",
+                            "Repair review timestamp does not precede child commit")
 
         if review_id in quarantined:
             raise GateError(EXIT_POLICY, "repair_quarantined_review_used",
@@ -1275,6 +1317,46 @@ class Gate:
 
     # === Worker report validation ===
 
+    def _head_workstream(self):
+        message = self.commit_head.get("commit", {}).get("message", "")
+        if not isinstance(message, str) or not message:
+            raise GateError(
+                EXIT_INFRA,
+                "head_commit_message_missing",
+                "HEAD commit message is missing",
+            )
+
+        matches = re.findall(
+            r"^Workstream:\s*(.+?)\s*$",
+            message,
+            re.MULTILINE,
+        )
+
+        if len(matches) == 0:
+            raise GateError(
+                EXIT_POLICY,
+                "head_workstream_trailer_missing",
+                "HEAD commit has no Workstream trailer",
+            )
+
+        if len(matches) != 1:
+            raise GateError(
+                EXIT_POLICY,
+                "head_workstream_trailer_duplicated",
+                "HEAD commit must contain exactly one Workstream trailer",
+            )
+
+        workstream = matches[0].strip()
+
+        if not WORKSTREAM_PATTERN.fullmatch(workstream):
+            raise GateError(
+                EXIT_POLICY,
+                "head_workstream_trailer_invalid",
+                "HEAD Workstream trailer is invalid",
+            )
+
+        return workstream
+
     def _validate_worker_report_fields(self, report, comment):
         """Shared field validation for worker reports (FIX2)."""
         schema = load_schema(WORKER_SCHEMA_PATH)
@@ -1297,11 +1379,10 @@ class Gate:
                             "Report commit_count != 1")
 
         workstream = report.get("workstream", "")
-        expected_ws = self.policy.get("repair_authorization", {}).get(
-            "required_workstream", FIX3_WORKSTREAM)
+        expected_ws = self._head_workstream()
         if workstream != expected_ws:
             raise GateError(EXIT_POLICY, "report_workstream_mismatch",
-                            f"Report workstream != {expected_ws} (got {workstream})")
+                            f"Report workstream != HEAD trailer {expected_ws} (got {workstream})")
 
         if not report.get("stop"):
             raise GateError(EXIT_POLICY, "report_stop_false",

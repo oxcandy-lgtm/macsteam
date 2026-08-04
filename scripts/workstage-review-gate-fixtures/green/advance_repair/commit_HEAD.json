@@ -1,12 +1,12 @@
 {
-  "sha": "111122223333444455556666777788889999aabb",
+  "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f90feedc0de",
   "parents": [
     {
-      "sha": "4d2cdeec23a098deeff4d7ceacc36c9dc4c8c595"
+      "sha": "bad527b5ff818b1a9b1f93f9104c309abbe409cf"
     }
   ],
   "commit": {
-    "message": "ci: wire hosted submission lane (U1R18-R7-FIX3)\n\nWorkstream: U1R18-R7-FIX3",
+    "message": "ci: generalize workstream authority (U1R18-R8-GATE1)\n\nWorkstream: U1R18-R8-GATE1",
     "committer": {
       "date": "2026-08-03T03:00:00Z",
       "name": "Test",

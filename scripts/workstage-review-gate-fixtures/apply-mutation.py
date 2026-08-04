@@ -50,7 +50,7 @@ BEFORE_COMMIT_TS = "2026-08-03T02:00:00Z"
 
 # === IDs ===
 BOOTSTRAP_REVIEW_ID = 4840817794
-REPAIR_REVIEW_ID = 4847645684
+REPAIR_REVIEW_ID = 4849753406
 QUARANTINED_REVIEW_ID = 4841357081
 NORMAL_REVIEW_ID = 4840817795
 
@@ -62,9 +62,10 @@ REQUIRED_JOBS = ["Swift Build", "Public Audit", "Recipe Validation", "License Va
 FIX3_WORKSTREAM = "U1R18-R7-FIX3"
 FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
-REPAIR_COMMIT_MSG = "ci: wire hosted submission lane (U1R18-R7-FIX3)"
+GATE1_WORKSTREAM = "U1R18-R8-GATE1"
+REPAIR_COMMIT_MSG = "ci: generalize workstream authority (U1R18-R8-GATE1)"
 REPAIR_COMMIT_MSG_FIX1 = "ci: close workstream review authority gate (U1R18-R7-FIX1)"
-REPAIR_CLASSIFICATION = "RED_U1R18_R7_FIX2_HOSTED_SUBMISSION_LANE_NOT_WIRED"
+REPAIR_CLASSIFICATION = "RED_U1R18_R8_GATE_GENERICITY_AND_REPAIR_ROUTING_INCOMPLETE"
 BOOTSTRAP_CLASSIFICATION = "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
 
 WORKER_REPORT_COMMENT_ID = 5161887211
@@ -449,8 +450,97 @@ def m_repair_wrong_commit_message(d):
 
 def m_repair_wrong_workstream_trailer(d):
     commit = load_json(d, "commit_HEAD.json")
-    commit["commit"]["message"] = REPAIR_COMMIT_MSG.replace("\n\nWorkstream: U1R18-R7-FIX3", "")
+    msg = commit["commit"]["message"]
+    msg = re.sub(r"^Workstream:.*$", "Workstream: U1R18-R7-FIX9", msg, flags=re.MULTILINE)
+    commit["commit"]["message"] = msg
     save_json(d, "commit_HEAD.json", commit)
+
+
+def m_repair_wrong_decision(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            json_data, _, _ = parse_json_block_local(r["body"], CONTROLLER_MARKER)
+            if json_data:
+                json_data["decision"] = "approved"
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_repair_wrong_review_state(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            r["state"] = "APPROVED"
+    save_json(d, "reviews.json", reviews)
+
+
+def m_repair_malformed_json(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            r["body"] = CONTROLLER_MARKER + "\n```json\n{bad json\n```\n"
+    save_json(d, "reviews.json", reviews)
+
+
+def m_repair_marker_duplicated(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            r["body"] = CONTROLLER_MARKER + "\n" + CONTROLLER_MARKER + r["body"]
+    save_json(d, "reviews.json", reviews)
+
+
+def m_repair_json_head_mismatch(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            json_data, _, _ = parse_json_block_local(r["body"], CONTROLLER_MARKER)
+            if json_data:
+                json_data["head_sha"] = WRONG_SHA
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_repair_review_incomplete(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            json_data, _, _ = parse_json_block_local(r["body"], CONTROLLER_MARKER)
+            if json_data:
+                json_data["review_complete"] = False
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_repair_nx_required_false(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            json_data, _, _ = parse_json_block_local(r["body"], CONTROLLER_MARKER)
+            if json_data:
+                json_data["nx_required_for_next_workstream"] = False
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_repair_unsafe_authorization(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            json_data, _, _ = parse_json_block_local(r["body"], CONTROLLER_MARKER)
+            if json_data:
+                json_data["merge_authorized"] = True
+                r["body"] = rebuild_body(json_data)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_repair_review_after_child(d):
+    reviews = load_json(d, "reviews.json")
+    for r in reviews:
+        if r.get("id") == REPAIR_REVIEW_ID:
+            r["submitted_at"] = "2026-08-03T04:00:00Z"
+    save_json(d, "reviews.json", reviews)
 
 
 def m_repair_forbidden_path(d):
@@ -614,6 +704,36 @@ def m_report_workstream_mismatch(d):
                 json_data["workstream"] = "U1R18-R7"
                 c["body"] = rebuild_worker_body(json_data)
     save_json(d, "comments.json", comments)
+
+
+def m_head_commit_message_missing(d):
+    commit = load_json(d, "commit_HEAD.json")
+    commit["commit"]["message"] = ""
+    save_json(d, "commit_HEAD.json", commit)
+
+
+def m_head_workstream_trailer_missing(d):
+    commit = load_json(d, "commit_HEAD.json")
+    msg = commit["commit"]["message"]
+    msg = re.sub(r"\n\nWorkstream: [^\n]*", "", msg, flags=re.MULTILINE)
+    commit["commit"]["message"] = msg
+    save_json(d, "commit_HEAD.json", commit)
+
+
+def m_head_workstream_trailer_duplicated(d):
+    commit = load_json(d, "commit_HEAD.json")
+    msg = commit["commit"]["message"]
+    msg += "\nWorkstream: U1R18-R7-FIX3"
+    commit["commit"]["message"] = msg
+    save_json(d, "commit_HEAD.json", commit)
+
+
+def m_head_workstream_trailer_invalid(d):
+    commit = load_json(d, "commit_HEAD.json")
+    msg = commit["commit"]["message"]
+    msg = re.sub(r"^Workstream:.*$", "Workstream: not-a-valid-workstream", msg, flags=re.MULTILINE)
+    commit["commit"]["message"] = msg
+    save_json(d, "commit_HEAD.json", commit)
 
 
 def m_report_stop_false(d):
@@ -1705,6 +1825,15 @@ MUTATIONS = {
     "repair_wrong_classification": m_repair_wrong_classification,
     "repair_wrong_commit_message": m_repair_wrong_commit_message,
     "repair_wrong_workstream_trailer": m_repair_wrong_workstream_trailer,
+    "repair_wrong_decision": m_repair_wrong_decision,
+    "repair_wrong_review_state": m_repair_wrong_review_state,
+    "repair_malformed_json": m_repair_malformed_json,
+    "repair_marker_duplicated": m_repair_marker_duplicated,
+    "repair_json_head_mismatch": m_repair_json_head_mismatch,
+    "repair_review_incomplete": m_repair_review_incomplete,
+    "repair_nx_required_false": m_repair_nx_required_false,
+    "repair_unsafe_authorization": m_repair_unsafe_authorization,
+    "repair_review_after_child": m_repair_review_after_child,
     "repair_forbidden_path": m_repair_forbidden_path,
     "repair_production_source_changed": m_repair_production_source_changed,
     "repair_merge_commit": m_repair_merge_commit,
@@ -1722,6 +1851,10 @@ MUTATIONS = {
     "report_parent_mismatch": m_report_parent_mismatch,
     "report_commit_count_invalid": m_report_commit_count_invalid,
     "report_workstream_mismatch": m_report_workstream_mismatch,
+    "head_commit_message_missing": m_head_commit_message_missing,
+    "head_workstream_trailer_missing": m_head_workstream_trailer_missing,
+    "head_workstream_trailer_duplicated": m_head_workstream_trailer_duplicated,
+    "head_workstream_trailer_invalid": m_head_workstream_trailer_invalid,
     "report_stop_false": m_report_stop_false,
     "report_next_workstream_true": m_report_next_workstream_true,
     "report_ready_true": m_report_ready_true,

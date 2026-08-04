@@ -41,6 +41,19 @@ WORKER_REPORT_WORKSTREAM = FIX3_WORKSTREAM
 FIX3_REPAIR_COMMIT_MSG = ("ci: wire hosted submission lane (U1R18-R7-FIX3)\n\n"
                           "Workstream: U1R18-R7-FIX3")
 
+GATE1_PARENT = "bad527b5ff818b1a9b1f93f9104c309abbe409cf"
+GATE1_HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f90feedc0de"
+GATE1_WORKSTREAM = "U1R18-R8-GATE1"
+GATE1_REPAIR_REVIEW_ID = 4849753406
+GATE1_REPAIR_CLASSIFICATION = "RED_U1R18_R8_GATE_GENERICITY_AND_REPAIR_ROUTING_INCOMPLETE"
+GATE1_REPAIR_COMMIT_MSG = ("ci: generalize workstream authority (U1R18-R8-GATE1)\n\n"
+                           "Workstream: U1R18-R8-GATE1")
+
+FIX1_WORKSTREAM = "U1R18-R8-FIX1"
+PRODUCT_CHILD_HEAD = "d0e3a2b3c4d5e6f708192a3b4c5d6e7f8899aabb"
+PRODUCT_CHILD_MSG = ("fix: prove packaged CloverPit recipe (U1R18-R8-FIX1)\n\n"
+                     "Workstream: U1R18-R8-FIX1")
+
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
 REPAIR_REVIEW_ID_CHILD = 4843792150
@@ -107,7 +120,7 @@ def pr_json(head_sha):
 
 def commit_json(head_sha, parent_sha, message=None):
     if message is None:
-        message = "test commit\n"
+        message = f"test commit\n\nWorkstream: {WORKER_REPORT_WORKSTREAM}\n"
     return {
         "sha": head_sha,
         "parents": [{"sha": parent_sha}],
@@ -119,17 +132,20 @@ def commit_json(head_sha, parent_sha, message=None):
     }
 
 
-def worker_report_json(head_sha, parent_sha, comment_id=WORKER_REPORT_COMMENT_ID):
+def worker_report_json(head_sha, parent_sha, comment_id=WORKER_REPORT_COMMENT_ID,
+                       workstream=None, ci_run_id=CI_RUN_ID, advance_run_id=GATE_ADVANCE_RUN_ID):
+    if workstream is None:
+        workstream = WORKER_REPORT_WORKSTREAM
     report = {
         "schema_version": 1,
         "kind": "worker_report",
-        "workstream": WORKER_REPORT_WORKSTREAM,
+        "workstream": workstream,
         "head_sha": head_sha,
         "parent_sha": parent_sha,
         "commit_count": 1,
-        "core_ci_run_id": CI_RUN_ID,
+        "core_ci_run_id": ci_run_id,
         "core_ci_jobs": REQUIRED_JOBS,
-        "gate_advance_run_id": GATE_ADVANCE_RUN_ID,
+        "gate_advance_run_id": advance_run_id,
         "gate_submission_run_id": None,
         "stop": True,
         "next_workstream_started": False,
@@ -349,14 +365,62 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=FIX3_HEAD, parent_sha=FIX3_PARENT, message=FIX3_REPAIR_COMMIT_MSG)
-    repair_body = (controller_review_json(FIX3_PARENT, decision="rejected",
-                                          classification="RED_U1R18_R7_FIX2_HOSTED_SUBMISSION_LANE_NOT_WIRED")
-                   + "\n\nR7 repair authorization granted for U1R18-R7-FIX3. "
+    _base(d, head_sha=GATE1_HEAD, parent_sha=GATE1_PARENT, message=GATE1_REPAIR_COMMIT_MSG)
+    repair_body = (controller_review_json(GATE1_PARENT, decision="rejected",
+                                          classification=GATE1_REPAIR_CLASSIFICATION)
+                   + "\n\nRepair authorization granted for U1R18-R8-GATE1. "
                      "This RED review authorizes a single direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(FIX3_PARENT, REPAIR_REVIEW_ID, repair_body, "APPROVED", REPAIR_REVIEW_TS)])
+                  [review_json(GATE1_PARENT, GATE1_REPAIR_REVIEW_ID, repair_body,
+                               "COMMENTED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json", {"total_count": 0, "files": []})
+
+
+def create_gate1_report_matches_head_trailer():
+    """G3: GATE1 worker report workstream matches the HEAD commit trailer."""
+    d = os.path.join(FIXTURE_DIR, "gate1_report_matches_head_trailer")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    _base(d, head_sha=GATE1_HEAD, parent_sha=NORMAL_PARENT,
+          message="ci: generalize workstream authority (U1R18-R8-GATE1)\n\n"
+                  "Workstream: U1R18-R8-GATE1")
+    wr = worker_report_json(GATE1_HEAD, NORMAL_PARENT, workstream=GATE1_WORKSTREAM)
+    write_fixture(d, "comment.json", digest(wr))
+    write_fixture(d, "comments.json", comments_json(digest(wr)))
+    parent_body = controller_review_json(NORMAL_PARENT, sub_run_id=PARENT_SUBMISSION_RUN_ID)
+    write_fixture(d, "reviews.json",
+                  [review_json(NORMAL_PARENT, NORMAL_REVIEW_ID, parent_body, "APPROVED", PARENT_REVIEW_TS)])
+    _ci_files(d, head=GATE1_HEAD)
+    _parent_receipt(d)
+
+
+def create_future_product_report_uses_fix1():
+    """G4: normal future child report uses U1R18-R8-FIX1 while repair policy
+    still says U1R18-R8-GATE1. Report must bind to the HEAD trailer."""
+    d = os.path.join(FIXTURE_DIR, "future_product_report_uses_fix1")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    _base(d, head_sha=PRODUCT_CHILD_HEAD, parent_sha=GATE1_HEAD, message=PRODUCT_CHILD_MSG)
+    wr = worker_report_json(PRODUCT_CHILD_HEAD, GATE1_HEAD, workstream=FIX1_WORKSTREAM)
+    write_fixture(d, "comment.json", digest(wr))
+    write_fixture(d, "comments.json", comments_json(digest(wr)))
+    parent_body = controller_review_json(GATE1_HEAD, sub_run_id=PARENT_SUBMISSION_RUN_ID)
+    write_fixture(d, "reviews.json",
+                  [review_json(GATE1_HEAD, NORMAL_REVIEW_ID, parent_body, "APPROVED", PARENT_REVIEW_TS)])
+    _ci_files(d, head=PRODUCT_CHILD_HEAD)
+    _parent_receipt(d, parent_head=GATE1_HEAD)
+
+
+def create_advance_product_after_gate1():
+    """G6: accepted normal-parent review after GATE1 admits one product child."""
+    d = os.path.join(FIXTURE_DIR, "advance_product_after_gate1")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    _base(d, head_sha=PRODUCT_CHILD_HEAD, parent_sha=GATE1_HEAD, message=PRODUCT_CHILD_MSG)
+    body = controller_review_json(GATE1_HEAD, sub_run_id=PARENT_SUBMISSION_RUN_ID)
+    write_fixture(d, "reviews.json",
+                  [review_json(GATE1_HEAD, NORMAL_REVIEW_ID, body, "APPROVED", PARENT_REVIEW_TS)])
+    _parent_receipt(d, parent_head=GATE1_HEAD)
 
 
 def create_multi_page_reviews():
@@ -428,7 +492,8 @@ def create_submission_historical_reports():
     _base(d)
     wr = worker_report_json(NORMAL_HEAD, NORMAL_PARENT)
     hist_wr = worker_report_json(HISTORICAL_HEAD, HISTORICAL_PARENT,
-                                 comment_id=WORKER_REPORT_COMMENT_ID - 1)
+                                 comment_id=WORKER_REPORT_COMMENT_ID - 1,
+                                 workstream="U1R18-R6")
     write_fixture(d, "comment.json", digest(wr))
     write_fixture(d, "comments.json", comments_json(digest(hist_wr), digest(wr)))
     parent_body = controller_review_json(NORMAL_PARENT, sub_run_id=PARENT_SUBMISSION_RUN_ID)
@@ -669,6 +734,9 @@ GREEN_FACTORIES = [
     create_advance_normal_approved,
     create_advance_normal_commented,
     create_advance_repair,
+    create_gate1_report_matches_head_trailer,
+    create_future_product_report_uses_fix1,
+    create_advance_product_after_gate1,
     create_latest_accept_after_reject,
     create_multi_page_reviews,
     create_multi_page_comments,

@@ -1,0 +1,21 @@
+{
+  "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f90feedc0de",
+  "parents": [
+    {
+      "sha": "8888888888888888888888888888888888888888"
+    }
+  ],
+  "commit": {
+    "message": "test commit\n\nWorkstream: U1R18-R7-FIX3\n",
+    "committer": {
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    },
+    "author": {
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    }
+  }
+}
