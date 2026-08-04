@@ -41,7 +41,7 @@ final class RecipeLoader: Sendable {
             guard let bundleURL = Bundle.module.url(
                 forResource: name,
                 withExtension: "json",
-                subdirectory: "Resources/Recipes"
+                subdirectory: "Recipes"
             ) else {
                 throw LoaderError.recipeNotFound(name)
             }

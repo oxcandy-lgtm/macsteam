@@ -6,36 +6,75 @@ import Testing
 
 struct CloverPitRecipeAuthorityTests {
 
-    /// The source-directory recipe (the exact byte stream that SwiftPM copies
-    /// into the bundle as `Recipes/cloverpit.json`). The default
-    /// `RecipeLoader()` search is under `Resources/Recipes/`, which does not
-    /// match the packaged layout, so we inject the canonical source dir.
-    private var bundledRecipesURL: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/MacSteam/Resources/Recipes")
-    }
+    // MARK: - Packaged recipe (production default loader path)
 
-    private func loadBundledRecipe() throws -> GameRecipe {
-        try RecipeLoader(baseURL: bundledRecipesURL).loadRecipe(named: "cloverpit")
+    @Test
+    func packagedRecipeLoadsThroughDefaultLoader() throws {
+        let packaged = try RecipeLoader().loadRecipe(named: "cloverpit")
+
+        #expect(packaged.id == "cloverpit")
+        #expect(packaged.schemaVersion == 2)
+        #expect(packaged.isValid)
     }
 
     @Test
-    func bundledRecipeLoadsSuccessfully() throws {
-        let bundled = try loadBundledRecipe()
-        #expect(bundled.id == "cloverpit")
-        #expect(bundled.schemaVersion == 2)
-        #expect(bundled.isValid)
-    }
+    func packagedRecipeExactlyEqualsCanonicalAuthority() throws {
+        let packaged = try RecipeLoader().loadRecipe(named: "cloverpit")
 
-    @Test
-    func bundledRecipeExactlyEqualsCanonicalAuthority() throws {
-        let bundled = try loadBundledRecipe()
         // Full equality including array order across every field.
-        #expect(bundled == CloverPitRecipeAuthority.canonical)
+        #expect(packaged == CloverPitRecipeAuthority.canonical)
     }
+
+    @Test
+    func missingPackagedRecipeFailsClosed() {
+        #expect(throws: RecipeLoader.LoaderError.self) {
+            try RecipeLoader().loadRecipe(named: "definitely-missing-u1r18-r8-fix1")
+        }
+    }
+
+    @Test
+    func injectedBaseURLRegressionProof() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("u1r18-r8-fix1-injected-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let minimalJSON = """
+        {
+          "schemaVersion": 2,
+          "id": "injected-proof",
+          "displayName": "Injected Proof",
+          "store": { "type": "steam", "appId": "1" },
+          "runtime": {
+            "requiredCapabilities": ["isolated-prefix"],
+            "preferredRuntime": "imported-wine",
+            "fallbackRuntimes": []
+          },
+          "graphics": { "preferred": "wined3d", "fallback": [] },
+          "prefix": { "id": "injected", "windowsVersion": "win10", "isolation": "per-game" },
+          "storeInstallation": {
+            "installerMode": "user-selected-file",
+            "installerProduct": "steam-client",
+            "redistribution": "forbidden"
+          },
+          "launch": { "storeArguments": ["-applaunch", "1"] },
+          "detection": { "manifestName": "appmanifest_1.acf", "executableCandidates": ["Game.exe"] },
+          "savePolicy": { "mode": "discover-only", "backupBeforeDestructiveRepair": true }
+        }
+        """
+
+        try minimalJSON.write(to: tempDir.appendingPathComponent("injected-proof.json"),
+                              atomically: true, encoding: .utf8)
+
+        let loader = RecipeLoader(baseURL: tempDir)
+        let recipe = try loader.loadRecipe(named: "injected-proof")
+        #expect(recipe.id == "injected-proof")
+        #expect(recipe.schemaVersion == 2)
+        #expect(recipe.isValid)
+    }
+
+    // MARK: - Canonical authority semantics
 
     @Test
     func canonicalRecipeUsesImportedWine() {
