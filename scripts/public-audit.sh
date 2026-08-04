@@ -212,6 +212,14 @@ else
     check "No .hermes tracked files in repository" "pass"
 fi
 
+# ––– U1R18 canonical PR truth authority –––
+echo "--- U1R18 Canonical PR Truth Authority ---"
+if bash scripts/test-u1r18-pr-truth.sh >/dev/null 2>&1; then
+    check "Test U1R18 canonical PR truth authority" "pass"
+else
+    check "Test U1R18 canonical PR truth authority" "fail"
+fi
+
 # ––– Summary –––
 echo ""
 echo "=== Summary ==="

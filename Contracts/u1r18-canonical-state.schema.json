@@ -1,0 +1,153 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://macsteam.example.com/schemas/u1r18-canonical-state.schema.json",
+  "title": "MacSteam U1R18 Canonical PR State",
+  "description": "Schema for the deterministic machine-readable canonical U1R18 state block rendered at the head of the PR body. Structural validation only; value-level invariants are enforced by the semantic validator in scripts/u1r18-pr-truth.py.",
+  "schema_version": 1,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "repository",
+    "pull_request",
+    "branch",
+    "base_branch",
+    "head_sha",
+    "pr",
+    "workstreams",
+    "review_gate",
+    "core_ci",
+    "gate_advance",
+    "authorization"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "u1r18_canonical_state"
+    },
+    "repository": {
+      "const": "oxcandy-lgtm/macsteam"
+    },
+    "pull_request": {
+      "const": 2
+    },
+    "branch": {
+      "const": "feat/ultimate-cloverpit-u1"
+    },
+    "base_branch": {
+      "const": "feat/public-oss-bootstrap"
+    },
+    "head_sha": {
+      "type": "string"
+    },
+    "pr": {
+      "type": "object",
+      "required": ["state", "draft", "merged", "mergeable"],
+      "properties": {
+        "state": { "type": "string" },
+        "draft": { "type": "boolean" },
+        "merged": { "type": "boolean" },
+        "mergeable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "workstreams": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["id", "state", "classification"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^R[0-9]+$" },
+              "state": { "const": "CLOSED" },
+              "classification": { "type": "string", "pattern": "^[A-Z0-9_]+$" }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "state",
+              "external_real_mac_proof_performed",
+              "external_real_mac_proof_claimed"
+            ],
+            "properties": {
+              "id": { "const": "R5" },
+              "state": { "const": "EXTERNAL_PROOF_REQUIREMENT_REMOVED" },
+              "external_real_mac_proof_performed": { "type": "boolean" },
+              "external_real_mac_proof_claimed": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "review_gate": {
+      "type": "object",
+      "required": [
+        "worker_report_comment_id",
+        "submission_run_id",
+        "controller_review_id",
+        "live_review_run_id",
+        "final_state",
+        "worker_report_valid",
+        "controller_review_valid",
+        "nx_required",
+        "next_workstream_admitted"
+      ],
+      "properties": {
+        "worker_report_comment_id": { "type": "integer" },
+        "submission_run_id": { "type": "integer" },
+        "controller_review_id": { "type": "integer" },
+        "live_review_run_id": { "type": "integer" },
+        "final_state": { "type": "string" },
+        "worker_report_valid": { "type": "boolean" },
+        "controller_review_valid": { "type": "boolean" },
+        "nx_required": { "type": "boolean" },
+        "next_workstream_admitted": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "core_ci": {
+      "type": "object",
+      "required": ["run_id", "required_jobs_success"],
+      "properties": {
+        "run_id": { "type": "integer" },
+        "required_jobs_success": { "const": 5 }
+      },
+      "additionalProperties": false
+    },
+    "gate_advance": {
+      "type": "object",
+      "required": ["run_id", "state", "parent_authority"],
+      "properties": {
+        "run_id": { "type": "integer" },
+        "state": { "type": "string" },
+        "parent_authority": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "authorization": {
+      "type": "object",
+      "required": [
+        "next_workstream_defined",
+        "ready_authorized",
+        "merge_authorized",
+        "release_authorized"
+      ],
+      "properties": {
+        "next_workstream_defined": { "type": "boolean" },
+        "ready_authorized": { "type": "boolean" },
+        "merge_authorized": { "type": "boolean" },
+        "release_authorized": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
