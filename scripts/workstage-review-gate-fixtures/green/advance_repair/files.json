@@ -1,4 +1,8 @@
-{
-  "total_count": 0,
-  "files": []
-}
+[
+  ".github/workstage-review-gate-policy.json",
+  "scripts/workstage-review-gate.py",
+  "scripts/test-workstage-review-gate.sh",
+  "scripts/workstage-review-gate-fixtures/generate-green.py",
+  "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+  "scripts/test-workstage-review-gate.sh"
+]

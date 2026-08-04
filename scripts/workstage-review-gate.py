@@ -64,6 +64,20 @@ FIX1_WORKSTREAM = "U1R18-R7-FIX1"
 
 WORKSTREAM_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
+# Tier A: immutable safe envelope for repair-path authority.
+# A changed file must satisfy the envelope AND the policy-declared scope.
+SAFE_REPAIR_EXACT_PATHS = frozenset({
+    ".github/workstage-review-gate-policy.json",
+    "scripts/workstage-review-gate.py",
+    "scripts/test-workstage-review-gate.sh",
+    "scripts/u1r18-pr-truth.py",
+    "scripts/test-u1r18-pr-truth.sh",
+})
+SAFE_REPAIR_PATH_PREFIXES = (
+    "scripts/workstage-review-gate-fixtures/",
+    "scripts/u1r18-pr-truth-fixtures/",
+)
+
 WORKFLOW_PATH_DEFAULT = ".github/workflows/workstage-review-gate.yml"
 WORKFLOW_NAME_DEFAULT = "Workstream Review Gate"
 
@@ -843,6 +857,9 @@ class Gate:
     # === Repair authorization validation ===
 
     def _validate_repair_authorization(self, repair):
+        # Two-tier repair authority: first validate the policy-declared scope.
+        self._validate_repair_scope(repair)
+
         review_id = repair.get("review_id")
         parent_sha = repair.get("parent_sha")
         classification = repair.get("classification", "")
@@ -937,10 +954,10 @@ class Gate:
             raise GateError(EXIT_POLICY, "repair_reused_after_fix1",
                             "Repair authorization parent mismatch on child")
 
-        # Changed paths validation
+        # Changed paths validation (two-tier: safe envelope AND declared scope)
         files = self._get_changed_files()
         for filepath in files:
-            if not self._is_allowed_path(filepath):
+            if not self._repair_path_allowed(filepath):
                 raise GateError(EXIT_POLICY, "repair_forbidden_path",
                                 f"Changed file not in allowed paths: {filepath}")
             if filepath.startswith("Sources/") or filepath.startswith("Tests/"):
@@ -960,22 +977,94 @@ class Gate:
             files_list = self.client.get_commit_files(self.expected_head)
         return [f.get("filename", f) if isinstance(f, dict) else f for f in files_list]
 
+    # === Two-tier repair-path authority ===
+    #
+    # Tier A: immutable safe envelope (hardcoded). A repair child may only touch
+    # paths that live inside the safe envelope.
+    # Tier B: the current policy repair_authorization declares the permitted
+    # scope (allowed_exact_paths / allowed_path_prefixes). A changed path must
+    # satisfy BOTH tiers.
     @staticmethod
-    def _is_allowed_path(filepath):
-        ALLOWED = {
-            ".github/workflows/ci.yml",
-            ".github/workflows/workstage-review-gate.yml",
-            ".github/workstage-review-gate-policy.json",
-            "Contracts/controller-review.schema.json",
-            "Contracts/workstream-report.schema.json",
-            "docs/WORKSTREAM_REVIEW_GATE.md",
-            "scripts/workstage-review-gate.py",
-            "scripts/test-workstage-review-gate.sh",
-        }
-        if filepath in ALLOWED:
+    def _in_safe_envelope(filepath):
+        if filepath in SAFE_REPAIR_EXACT_PATHS:
             return True
-        if filepath.startswith("scripts/workstage-review-gate-fixtures/"):
+        for prefix in SAFE_REPAIR_PATH_PREFIXES:
+            if filepath.startswith(prefix):
+                return True
+        return False
+
+    @staticmethod
+    def _validate_repair_path_entry(entry, is_prefix):
+        if not isinstance(entry, str) or not entry:
+            return False
+        if is_prefix and not entry.endswith("/"):
+            return False
+        if entry.startswith("/"):
+            return False
+        if entry.startswith("./"):
+            return False
+        if "\\" in entry:
+            return False
+        if "//" in entry:
+            return False
+        if any(ord(c) < 32 for c in entry):
+            return False
+        segments = entry.rstrip("/").split("/")
+        for seg in segments:
+            if seg in ("", ".", ".."):
+                return False
+        return True
+
+    def _validate_repair_scope(self, repair):
+        exact = repair.get("allowed_exact_paths")
+        prefixes = repair.get("allowed_path_prefixes")
+
+        if exact is None or prefixes is None:
+            raise GateError(EXIT_INFRA, "repair_scope_invalid",
+                            "Repair scope fields missing")
+        if not isinstance(exact, list) or not isinstance(prefixes, list):
+            raise GateError(EXIT_INFRA, "repair_scope_invalid",
+                            "Repair scope fields must be arrays")
+        if not exact or not prefixes:
+            raise GateError(EXIT_INFRA, "repair_scope_invalid",
+                            "Repair scope arrays must be non-empty")
+
+        seen = set()
+        for entry in exact:
+            if not self._validate_repair_path_entry(entry, is_prefix=False):
+                raise GateError(EXIT_INFRA, "repair_scope_invalid",
+                                f"Invalid repair exact path: {entry!r}")
+            if entry in seen:
+                raise GateError(EXIT_INFRA, "repair_scope_invalid",
+                                f"Duplicate repair exact path: {entry!r}")
+            seen.add(entry)
+            if not self._in_safe_envelope(entry):
+                raise GateError(EXIT_POLICY, "repair_scope_outside_safe_envelope",
+                                f"Repair exact path outside safe envelope: {entry!r}")
+
+        for entry in prefixes:
+            if not self._validate_repair_path_entry(entry, is_prefix=True):
+                raise GateError(EXIT_INFRA, "repair_scope_invalid",
+                                f"Invalid repair path prefix: {entry!r}")
+            if entry in seen:
+                raise GateError(EXIT_INFRA, "repair_scope_invalid",
+                                f"Duplicate repair path prefix: {entry!r}")
+            seen.add(entry)
+            if not self._in_safe_envelope(entry):
+                raise GateError(EXIT_POLICY, "repair_scope_outside_safe_envelope",
+                                f"Repair path prefix outside safe envelope: {entry!r}")
+
+    def _repair_path_allowed(self, filepath):
+        if not self._in_safe_envelope(filepath):
+            return False
+        repair = self.policy.get("repair_authorization", {})
+        exact = repair.get("allowed_exact_paths", [])
+        prefixes = repair.get("allowed_path_prefixes", [])
+        if filepath in exact:
             return True
+        for prefix in prefixes:
+            if filepath.startswith(prefix):
+                return True
         return False
 
     # === Normal parent review validation ===

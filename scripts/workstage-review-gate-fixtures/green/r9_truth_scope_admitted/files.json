@@ -1,0 +1,6 @@
+[
+  ".github/workstage-review-gate-policy.json",
+  "scripts/u1r18-pr-truth.py",
+  "scripts/test-u1r18-pr-truth.sh",
+  "scripts/u1r18-pr-truth-fixtures/red/state-child.json"
+]

@@ -54,12 +54,12 @@ PRODUCT_CHILD_HEAD = "d0e3a2b3c4d5e6f708192a3b4c5d6e7f8899aabb"
 PRODUCT_CHILD_MSG = ("fix: prove packaged CloverPit recipe (U1R18-R8-FIX1)\n\n"
                      "Workstream: U1R18-R8-FIX1")
 
-GATE1_FIX1_REPAIR_PARENT = "59dbd88d7e4b82869f7cf5ac138fc74ceb68cd85"
-GATE1_FIX1_REPAIR_HEAD = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
-GATE1_FIX1_REPAIR_REVIEW_ID = 4849925632
-GATE1_FIX1_REPAIR_CLASSIFICATION = "RED_U1R18_R8_GATE1_HISTORICAL_MALFORMED_REPORT_POISONS_REPLAY_SCAN"
-GATE1_FIX1_REPAIR_COMMIT_MSG = ("ci: isolate historical report replay (U1R18-R8-GATE1-FIX1)\n\n"
-                                "Workstream: U1R18-R8-GATE1-FIX1")
+U1R18_R9_REPAIR_PARENT = "d70fd1b980d9a4d67024f7d820637c6aeddd186d"
+U1R18_R9_REPAIR_HEAD = "90f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0ff"
+U1R18_R9_REPAIR_REVIEW_ID = 4858475471
+U1R18_R9_REPAIR_CLASSIFICATION = "RED_U1R18_R9_FIX1_REPAIR_GATE_SCOPE_AND_FIXTURES_STALE"
+U1R18_R9_REPAIR_COMMIT_MSG = ("ci: generalize R9 repair gate authority (U1R18-R9-FIX1-GATE1)\n\n"
+                              "Workstream: U1R18-R9-FIX1-GATE1")
 
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
@@ -372,17 +372,75 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=GATE1_FIX1_REPAIR_HEAD, parent_sha=GATE1_FIX1_REPAIR_PARENT,
-          message=GATE1_FIX1_REPAIR_COMMIT_MSG)
-    repair_body = (controller_review_json(GATE1_FIX1_REPAIR_PARENT, decision="rejected",
-                                          classification=GATE1_FIX1_REPAIR_CLASSIFICATION)
+    _base(d, head_sha=U1R18_R9_REPAIR_HEAD, parent_sha=U1R18_R9_REPAIR_PARENT,
+          message=U1R18_R9_REPAIR_COMMIT_MSG)
+    repair_body = (controller_review_json(U1R18_R9_REPAIR_PARENT, decision="rejected",
+                                          classification=U1R18_R9_REPAIR_CLASSIFICATION)
                    + "\n\nRepair authorization granted for "
-                     "U1R18-R8-GATE1-FIX1. This RED review authorizes a single "
+                     "U1R18-R9-FIX1-GATE1. This RED review authorizes a single "
                      "direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(GATE1_FIX1_REPAIR_PARENT, GATE1_FIX1_REPAIR_REVIEW_ID,
+                  [review_json(U1R18_R9_REPAIR_PARENT, U1R18_R9_REPAIR_REVIEW_ID,
                                repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
-    write_fixture(d, "files.json", {"total_count": 0, "files": []})
+    write_fixture(d, "files.json",
+                  [".github/workstage-review-gate-policy.json",
+                   "scripts/workstage-review-gate.py",
+                   "scripts/test-workstage-review-gate.sh",
+                   "scripts/workstage-review-gate-fixtures/generate-green.py",
+                   "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+                   "scripts/test-workstage-review-gate.sh"])
+
+
+def create_r9_truth_scope_admitted():
+    """R9 truth fixture: fixture-local policy admits the R9 truth path; gate-only
+    path fails under that fixture policy; synthetic identities only."""
+    d = os.path.join(FIXTURE_DIR, "r9_truth_scope_admitted")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    _base(d, head_sha=U1R18_R9_REPAIR_HEAD, parent_sha=U1R18_R9_REPAIR_PARENT,
+          message=U1R18_R9_REPAIR_COMMIT_MSG)
+    repair_body = (controller_review_json(U1R18_R9_REPAIR_PARENT, decision="rejected",
+                                          classification=U1R18_R9_REPAIR_CLASSIFICATION)
+                   + "\n\nFixture-local policy: R9 truth path admitted via "
+                     "policy-declared scope.\n")
+    write_fixture(d, "reviews.json",
+                  [review_json(U1R18_R9_REPAIR_PARENT, U1R18_R9_REPAIR_REVIEW_ID,
+                               repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
+    write_fixture(d, "files.json",
+                  [".github/workstage-review-gate-policy.json",
+                   "scripts/u1r18-pr-truth.py",
+                   "scripts/test-u1r18-pr-truth.sh",
+                   "scripts/u1r18-pr-truth-fixtures/red/state-child.json"])
+    policy = {
+        "schema_version": 1,
+        "repository": "oxcandy-lgtm/macsteam",
+        "pr_number": 2,
+        "branch": "feat/ultimate-cloverpit-u1",
+        "base_branch": "feat/public-oss-bootstrap",
+        "bootstrap": {"head_sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db",
+                      "only_child_head": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d",
+                      "worker_report_comment_id": 5161887210,
+                      "controller_review_id": 4840817794,
+                      "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"},
+        "repair_authorization": {
+            "parent_sha": U1R18_R9_REPAIR_PARENT,
+            "review_id": U1R18_R9_REPAIR_REVIEW_ID,
+            "classification": U1R18_R9_REPAIR_CLASSIFICATION,
+            "required_commit_message": "ci: generalize R9 repair gate authority (U1R18-R9-FIX1-GATE1)",
+            "required_workstream": "U1R18-R9-FIX1-GATE1",
+            "single_direct_child_only": True,
+            "allowed_exact_paths": [
+                ".github/workstage-review-gate-policy.json",
+                "scripts/u1r18-pr-truth.py",
+                "scripts/test-u1r18-pr-truth.sh"
+            ],
+            "allowed_path_prefixes": ["scripts/u1r18-pr-truth-fixtures/"]
+        },
+        "quarantined_review_ids": [4841357081],
+        "core_ci": {"required_jobs": REQUIRED_JOBS},
+        "max_api_items": 1000
+    }
+    write_fixture(d, "policy.json", policy)
 
 
 def create_gate1_report_matches_head_trailer():
@@ -791,6 +849,7 @@ GREEN_FACTORIES = [
     create_advance_normal_approved,
     create_advance_normal_commented,
     create_advance_repair,
+    create_r9_truth_scope_admitted,
     create_gate1_report_matches_head_trailer,
     create_future_product_report_uses_fix1,
     create_advance_product_after_gate1,

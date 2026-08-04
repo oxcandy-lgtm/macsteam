@@ -20,14 +20,16 @@
     "single_direct_child_only": true,
     "allowed_exact_paths": [
       ".github/workstage-review-gate-policy.json",
-      "scripts/workstage-review-gate.py",
-      "scripts/test-workstage-review-gate.sh"
+      "scripts/u1r18-pr-truth.py",
+      "scripts/test-u1r18-pr-truth.sh"
     ],
     "allowed_path_prefixes": [
-      "scripts/workstage-review-gate-fixtures/"
+      "scripts/u1r18-pr-truth-fixtures/"
     ]
   },
-  "quarantined_review_ids": [4841357081],
+  "quarantined_review_ids": [
+    4841357081
+  ],
   "core_ci": {
     "required_jobs": [
       "Swift Build",

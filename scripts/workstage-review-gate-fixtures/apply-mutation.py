@@ -50,7 +50,7 @@ BEFORE_COMMIT_TS = "2026-08-03T02:00:00Z"
 
 # === IDs ===
 BOOTSTRAP_REVIEW_ID = 4840817794
-REPAIR_REVIEW_ID = 4849925632
+REPAIR_REVIEW_ID = 4858475471
 QUARANTINED_REVIEW_ID = 4841357081
 NORMAL_REVIEW_ID = 4840817795
 
@@ -63,9 +63,9 @@ FIX3_WORKSTREAM = "U1R18-R7-FIX3"
 FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
 GATE1_WORKSTREAM = "U1R18-R8-GATE1"
-REPAIR_COMMIT_MSG = "ci: isolate historical report replay (U1R18-R8-GATE1-FIX1)"
+REPAIR_COMMIT_MSG = "ci: generalize R9 repair gate authority (U1R18-R9-FIX1-GATE1)"
 REPAIR_COMMIT_MSG_FIX1 = "ci: close workstream review authority gate (U1R18-R7-FIX1)"
-REPAIR_CLASSIFICATION = "RED_U1R18_R8_GATE1_HISTORICAL_MALFORMED_REPORT_POISONS_REPLAY_SCAN"
+REPAIR_CLASSIFICATION = "RED_U1R18_R9_FIX1_REPAIR_GATE_SCOPE_AND_FIXTURES_STALE"
 BOOTSTRAP_CLASSIFICATION = "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
 
 WORKER_REPORT_COMMENT_ID = 5161887211
@@ -580,6 +580,107 @@ def m_repair_quarantined_review_used(d):
         if r.get("id") == REPAIR_REVIEW_ID:
             r["id"] = QUARANTINED_REVIEW_ID
     save_json(d, "reviews.json", reviews)
+
+
+# === Repair scope mutations (two-tier authority) ===
+
+def _scope_policy(d, scope_mutator):
+    policy = load_policy()
+    scope_mutator(policy["repair_authorization"])
+    save_policy(d, policy)
+
+
+def m_repair_scope_missing(d):
+    policy = load_policy()
+    policy["repair_authorization"].pop("allowed_exact_paths", None)
+    policy["repair_authorization"].pop("allowed_path_prefixes", None)
+    save_policy(d, policy)
+
+
+def m_repair_scope_wrong_type_exact(d):
+    _scope_policy(d, lambda ra: ra.__setitem__("allowed_exact_paths", "not-a-list"))
+
+
+def m_repair_scope_wrong_type_prefix(d):
+    _scope_policy(d, lambda ra: ra.__setitem__("allowed_path_prefixes", 42))
+
+
+def m_repair_scope_empty_entry(d):
+    _scope_policy(d, lambda ra: ra["allowed_exact_paths"].append(""))
+
+
+def m_repair_scope_duplicate(d):
+    _scope_policy(d, lambda ra: ra["allowed_exact_paths"].append(
+        ra["allowed_exact_paths"][0]))
+
+
+def m_repair_scope_absolute(d):
+    _scope_policy(d, lambda ra: ra["allowed_exact_paths"].append("/etc/passwd"))
+
+
+def m_repair_scope_traversal(d):
+    _scope_policy(d, lambda ra: ra["allowed_exact_paths"].append(
+        "scripts/../../secret"))
+
+
+def m_repair_scope_prefix_no_slash(d):
+    _scope_policy(d, lambda ra: ra["allowed_path_prefixes"].append(
+        "scripts/workstage-review-gate-fixtures"))
+
+
+def m_repair_scope_outside_envelope(d):
+    _scope_policy(d, lambda ra: ra["allowed_exact_paths"].append(
+        "docs/UNRELATED.md"))
+
+
+def m_repair_scope_sources_declared(d):
+    _scope_policy(d, lambda ra: ra["allowed_path_prefixes"].append("Sources/"))
+
+
+def m_repair_scope_tests_declared(d):
+    _scope_policy(d, lambda ra: ra["allowed_path_prefixes"].append("Tests/"))
+
+
+def m_repair_scope_front_file_omitted(d):
+    # A safe-envelope file (u1r18-pr-truth.py) changed but omitted from the
+    # declared scope.
+    files = load_json(d, "files.json") if os.path.exists(os.path.join(d, "files.json")) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("scripts/u1r18-pr-truth.py")
+    save_json(d, "files.json", files)
+
+
+def m_repair_scope_gate1_changes_truth_py(d):
+    files = load_json(d, "files.json") if os.path.exists(os.path.join(d, "files.json")) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("scripts/u1r18-pr-truth.py")
+    save_json(d, "files.json", files)
+
+
+def m_repair_scope_gate1_changes_truth_fixtures(d):
+    files = load_json(d, "files.json") if os.path.exists(os.path.join(d, "files.json")) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("scripts/u1r18-pr-truth-fixtures/red/state-child.json")
+    save_json(d, "files.json", files)
+
+
+def m_repair_scope_old_r8_review_id(d):
+    policy = load_policy()
+    policy["repair_authorization"]["review_id"] = 4849925632
+    save_policy(d, policy)
+
+
+def m_repair_scope_r9_rejects_gate_path(d):
+    # Under the r9 fixture-local policy (admits only R9 truth path), a gate-only
+    # file change must fail.
+    files = load_json(d, "files.json") if os.path.exists(os.path.join(d, "files.json")) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("scripts/workstage-review-gate.py")
+    save_json(d, "files.json", files)
 
 
 # === Worker report mutations (based on submission_historical_reports) ===
@@ -1915,6 +2016,22 @@ MUTATIONS = {
     "repair_merge_commit": m_repair_merge_commit,
     "repair_reused_after_fix1": m_repair_reused_after_fix1,
     "repair_quarantined_review_used": m_repair_quarantined_review_used,
+    "repair_scope_missing": m_repair_scope_missing,
+    "repair_scope_wrong_type_exact": m_repair_scope_wrong_type_exact,
+    "repair_scope_wrong_type_prefix": m_repair_scope_wrong_type_prefix,
+    "repair_scope_empty_entry": m_repair_scope_empty_entry,
+    "repair_scope_duplicate": m_repair_scope_duplicate,
+    "repair_scope_absolute": m_repair_scope_absolute,
+    "repair_scope_traversal": m_repair_scope_traversal,
+    "repair_scope_prefix_no_slash": m_repair_scope_prefix_no_slash,
+    "repair_scope_outside_envelope": m_repair_scope_outside_envelope,
+    "repair_scope_sources_declared": m_repair_scope_sources_declared,
+    "repair_scope_tests_declared": m_repair_scope_tests_declared,
+    "repair_scope_front_file_omitted": m_repair_scope_front_file_omitted,
+    "repair_scope_gate1_changes_truth_py": m_repair_scope_gate1_changes_truth_py,
+    "repair_scope_gate1_changes_truth_fixtures": m_repair_scope_gate1_changes_truth_fixtures,
+    "repair_scope_old_r8_review_id": m_repair_scope_old_r8_review_id,
+    "repair_scope_r9_rejects_gate_path": m_repair_scope_r9_rejects_gate_path,
     "report_missing": m_report_missing,
     "report_malformed_current_head": m_report_malformed_current_head,
     "report_marker_duplicated": m_report_marker_duplicated,

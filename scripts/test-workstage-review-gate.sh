@@ -239,6 +239,7 @@ echo "=== GREEN Fixtures (baseline) ==="
 GREEN_FIXTURES=(
   "advance_bootstrap|advance|"
   "advance_repair|advance|"
+  "r9_truth_scope_admitted|advance|"
   "advance_normal_commented|advance|"
   "advance_normal_approved|advance|"
   "advance_product_after_gate1|advance|"
@@ -330,6 +331,21 @@ ADVANCE_MUTATIONS=(
   "repair_merge_commit|1|merge_commit_rejected|advance_repair"
   "repair_reused_after_fix1|1|latest_rejected_overrides_old_green|advance_repair"
   "repair_quarantined_review_used|1|repair_quarantined_review_used|advance_repair"
+  "repair_scope_missing|2|repair_scope_invalid|advance_repair"
+  "repair_scope_wrong_type_exact|2|repair_scope_invalid|advance_repair"
+  "repair_scope_wrong_type_prefix|2|repair_scope_invalid|advance_repair"
+  "repair_scope_empty_entry|2|repair_scope_invalid|advance_repair"
+  "repair_scope_duplicate|2|repair_scope_invalid|advance_repair"
+  "repair_scope_absolute|2|repair_scope_invalid|advance_repair"
+  "repair_scope_traversal|2|repair_scope_invalid|advance_repair"
+  "repair_scope_prefix_no_slash|2|repair_scope_invalid|advance_repair"
+  "repair_scope_outside_envelope|1|repair_scope_outside_safe_envelope|advance_repair"
+  "repair_scope_sources_declared|1|repair_scope_outside_safe_envelope|advance_repair"
+  "repair_scope_tests_declared|1|repair_scope_outside_safe_envelope|advance_repair"
+  "repair_scope_front_file_omitted|1|repair_forbidden_path|advance_repair"
+  "repair_scope_gate1_changes_truth_py|1|repair_forbidden_path|advance_repair"
+  "repair_scope_gate1_changes_truth_fixtures|1|repair_forbidden_path|advance_repair"
+  "repair_scope_old_r8_review_id|2|api_404_reviews|advance_repair"
 )
 
 for entry in "${ADVANCE_MUTATIONS[@]}"; do
@@ -338,6 +354,13 @@ for entry in "${ADVANCE_MUTATIONS[@]}"; do
   run_fixture_mutation "$mut_name" "advance" "$base_dir" "" || true
   assert_rejected_exact "$mut_name" "$expected_rc" "$expected_guard" "advance"
 done
+
+# Reverse-direction generality: under the fixture-local R9 truth policy (which
+# admits only the R9 truth path / truth-fixtures prefix), a gate-only file
+# change must be rejected.
+run_fixture_mutation "repair_scope_r9_rejects_gate_path" "advance" \
+  "${FIXTURE_DIR}/green/r9_truth_scope_admitted" "" || true
+assert_rejected_exact "repair_scope_r9_rejects_gate_path" "1" "repair_forbidden_path" "advance/r9-reverse"
 
 # ================================================
 # TEST 2b: Fixture mutations — submission phase (worker report) — should fail
