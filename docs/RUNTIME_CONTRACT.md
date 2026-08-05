@@ -159,3 +159,19 @@ When Managed Wine distribution is implemented, the installation pipeline will fo
 - On failure: remove staging directory; leave no partial state.
 
 > **U1 note:** The installation pipeline is designed but not implemented. Runtime selection uses only user-provided runtimes in U1.
+
+---
+
+## 8. U1 Runtime Selection Contract
+
+- Imported Wine is the canonical U1 runtime.
+- The user selects/imports the runtime.
+- System Wine may be discovered but is not selected by default for the U1 Steam path.
+- Managed Wine is future/unavailable.
+- CrossOver is not canonical.
+- CrossOver is not required.
+- CrossOver is not default-enabled.
+- CrossOver is disabled by default.
+- CrossOver requires explicit opt-in.
+- CrossOver is lowest priority.
+- CrossOver is never a prerequisite.

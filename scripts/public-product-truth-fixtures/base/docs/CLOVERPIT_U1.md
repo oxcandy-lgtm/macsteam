@@ -10,6 +10,18 @@ CloverPit is the target game for the MacSteam Ultimate U1 release. This document
 
 ---
 
+## Current Product Status
+
+- The Steam App ID is exactly `3314790`.
+- CloverPit integration status is `implemented-pending-local-acceptance`.
+- Local end-to-end Steam rendering and CloverPit gameplay acceptance has not yet been completed.
+- Playability is not claimed.
+- No FPS, audio, input, or stability success is claimed.
+
+Implementation exists. Acceptance remains pending. Playability is not proven or advertised.
+
+---
+
 ## 1. Game Identification
 
 | Property | Value |

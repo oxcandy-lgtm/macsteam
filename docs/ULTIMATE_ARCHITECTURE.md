@@ -99,7 +99,7 @@ When a game recipe specifies runtime requirements, MacSteam evaluates adapters c
 | Component | Bundled? | User-obtained? | License |
 |-----------|----------|---------------|---------|
 | MacSteam source | ✅ Yes | — | GPL-3.0-or-later |
-| MacSteam binaries | ✅ Yes | — | GPL-3.0-or-later |
+| MacSteam packaged binaries | ❌ No packaged `.app` release available (Swift Package dev build only) | — | GPL-3.0-or-later |
 | Steam Client | ❌ No | ✅ Yes, user-installed | Proprietary |
 | CloverPit | ❌ No | ✅ Yes, via Steam | Proprietary |
 | Wine (runtime) | ❌ No (U1) | ✅ Yes, user-provided | LGPL-2.1-or-later |
@@ -181,3 +181,13 @@ Each command is a value type that the UI creates and passes to GameManager. The 
 4. **Privacy-first logging** — All paths redacted; logs are local-only.
 5. **No shell execution** — All processes via `Process.executableURL` + `Process.arguments`.
 6. **Fail-closed security** — If a validation gate cannot determine safety, the operation is blocked.
+
+---
+
+## 9. Current Acceptance Status
+
+- Imported Wine remains the canonical U1 runtime.
+- Implementation does not equal completed local acceptance.
+- Steam rendering and CloverPit gameplay acceptance remain pending.
+- Playability is not claimed.
+- No packaged `.app` release is currently available.

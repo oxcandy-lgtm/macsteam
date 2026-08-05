@@ -128,3 +128,16 @@ Before any component is distributed (bundled or downloaded by MacSteam):
 4. **Update distribution-gate.sh** — Ensure CI distribution gate allows the new component.
 5. **Update SBOM** — Record the component in the software bill of materials.
 6. **Source offer** — If GPL/LGPL, ensure Corresponding Source offer is satisfied.
+
+---
+
+## 10. Current MacsTeam Distribution Status
+
+- The current executable distribution is a Swift Package development build.
+- Current use is through `swift run` or Xcode.
+- No downloadable `.app` bundle is available.
+- Code-signing is not complete.
+- Notarization is not complete.
+- No packaged ZIP/DMG/release is available.
+- Release is not authorized.
+- Source distribution remains governed by GPL-3.0-or-later.

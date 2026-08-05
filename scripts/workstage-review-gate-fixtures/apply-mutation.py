@@ -40,6 +40,8 @@ NORMAL_HEAD = "0123456789abcdef0123456789abcdef01234567"
 HISTORICAL_HEAD = "9999999999999999999999999999999999999999"
 HISTORICAL_PARENT = "8888888888888888888888888888888888888888"
 WRONG_SHA = "cafe1234cafe1234cafe1234cafe1234cafe1234"
+REPAIR_PARENT = "f4db9ce293545431f09db284130dcff1816f2b25"
+REPAIR_HEAD = "aabbccddeeff00112233445566778899aabbcc01"
 
 # === Timestamps ===
 HEAD_COMMIT_TS = "2026-08-03T03:00:00Z"
@@ -50,7 +52,7 @@ BEFORE_COMMIT_TS = "2026-08-03T02:00:00Z"
 
 # === IDs ===
 BOOTSTRAP_REVIEW_ID = 4840817794
-REPAIR_REVIEW_ID = 4858475471
+REPAIR_REVIEW_ID = 4860650446
 QUARANTINED_REVIEW_ID = 4841357081
 NORMAL_REVIEW_ID = 4840817795
 
@@ -63,9 +65,9 @@ FIX3_WORKSTREAM = "U1R18-R7-FIX3"
 FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
 GATE1_WORKSTREAM = "U1R18-R8-GATE1"
-REPAIR_COMMIT_MSG = "ci: generalize R9 repair gate authority (U1R18-R9-FIX1-GATE1)"
+REPAIR_COMMIT_MSG = "docs: bind public truth docs and harden audit (U1R18-R10-FIX1-SCOPE1)"
 REPAIR_COMMIT_MSG_FIX1 = "ci: close workstream review authority gate (U1R18-R7-FIX1)"
-REPAIR_CLASSIFICATION = "RED_U1R18_R9_FIX1_REPAIR_GATE_SCOPE_AND_FIXTURES_STALE"
+REPAIR_CLASSIFICATION = "RED_U1R18_R10_FIX1_STRICT_DOC_BINDINGS_AND_SCOPE_CONTRACT_CONFLICT"
 BOOTSTRAP_CLASSIFICATION = "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
 
 WORKER_REPORT_COMMENT_ID = 5161887211
@@ -664,6 +666,18 @@ def m_repair_scope_gate1_changes_truth_fixtures(d):
     files = files if isinstance(files, list) else files.get("files", [])
     files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
     files.append("scripts/u1r18-pr-truth-fixtures/red/state-child.json")
+    save_json(d, "files.json", files)
+
+
+def m_repair_scope_tier_a_doc_denied(d):
+    # A §9 canonical doc lives in the Tier A safe envelope but is NOT declared
+    # in the SCOPE1 repair Tier B scope. Tier B is the binding constraint, so
+    # a changed file there must be rejected (repair_forbidden_path), even
+    # though Tier A would otherwise admit it.
+    files = load_json(d, "files.json") if os.path.exists(os.path.join(d, "files.json")) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("docs/ARCHITECTURE.md")
     save_json(d, "files.json", files)
 
 
@@ -2032,6 +2046,7 @@ MUTATIONS = {
     "repair_scope_gate1_changes_truth_fixtures": m_repair_scope_gate1_changes_truth_fixtures,
     "repair_scope_old_r8_review_id": m_repair_scope_old_r8_review_id,
     "repair_scope_r9_rejects_gate_path": m_repair_scope_r9_rejects_gate_path,
+    "repair_scope_tier_a_doc_denied": m_repair_scope_tier_a_doc_denied,
     "report_missing": m_report_missing,
     "report_malformed_current_head": m_report_malformed_current_head,
     "report_marker_duplicated": m_report_marker_duplicated,

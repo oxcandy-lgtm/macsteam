@@ -345,6 +345,7 @@ ADVANCE_MUTATIONS=(
   "repair_scope_front_file_omitted|1|repair_forbidden_path|advance_repair"
   "repair_scope_gate1_changes_truth_py|1|repair_forbidden_path|advance_repair"
   "repair_scope_gate1_changes_truth_fixtures|1|repair_forbidden_path|advance_repair"
+  "repair_scope_tier_a_doc_denied|1|repair_forbidden_path|advance_repair"
   "repair_scope_old_r8_review_id|2|api_404_reviews|advance_repair"
 )
 

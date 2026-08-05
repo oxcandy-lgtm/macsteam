@@ -61,6 +61,13 @@ U1R18_R9_REPAIR_CLASSIFICATION = "RED_U1R18_R9_FIX1_REPAIR_GATE_SCOPE_AND_FIXTUR
 U1R18_R9_REPAIR_COMMIT_MSG = ("ci: generalize R9 repair gate authority (U1R18-R9-FIX1-GATE1)\n\n"
                               "Workstream: U1R18-R9-FIX1-GATE1")
 
+U1R18_R10_REPAIR_PARENT = "f4db9ce293545431f09db284130dcff1816f2b25"
+U1R18_R10_REPAIR_HEAD = "aabbccddeeff00112233445566778899aabbcc01"
+U1R18_R10_REPAIR_REVIEW_ID = 4860650446
+U1R18_R10_REPAIR_CLASSIFICATION = "RED_U1R18_R10_FIX1_STRICT_DOC_BINDINGS_AND_SCOPE_CONTRACT_CONFLICT"
+U1R18_R10_REPAIR_COMMIT_MSG = ("docs: bind public truth docs and harden audit (U1R18-R10-FIX1-SCOPE1)\n\n"
+                               "Workstream: U1R18-R10-FIX1-SCOPE1")
+
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
 REPAIR_REVIEW_ID_CHILD = 4843792150
@@ -372,23 +379,30 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=U1R18_R9_REPAIR_HEAD, parent_sha=U1R18_R9_REPAIR_PARENT,
-          message=U1R18_R9_REPAIR_COMMIT_MSG)
-    repair_body = (controller_review_json(U1R18_R9_REPAIR_PARENT, decision="rejected",
-                                          classification=U1R18_R9_REPAIR_CLASSIFICATION)
+    _base(d, head_sha=U1R18_R10_REPAIR_HEAD, parent_sha=U1R18_R10_REPAIR_PARENT,
+          message=U1R18_R10_REPAIR_COMMIT_MSG)
+    repair_body = (controller_review_json(U1R18_R10_REPAIR_PARENT, decision="rejected",
+                                          classification=U1R18_R10_REPAIR_CLASSIFICATION)
                    + "\n\nRepair authorization granted for "
-                     "U1R18-R9-FIX1-GATE1. This RED review authorizes a single "
+                     "U1R18-R10-FIX1-SCOPE1. This RED review authorizes a single "
                      "direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(U1R18_R9_REPAIR_PARENT, U1R18_R9_REPAIR_REVIEW_ID,
+                  [review_json(U1R18_R10_REPAIR_PARENT, U1R18_R10_REPAIR_REVIEW_ID,
                                repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json",
                   [".github/workstage-review-gate-policy.json",
+                   "Contracts/public-product-truth.schema.json",
+                   "docs/CLOVERPIT_U1.md",
+                   "docs/DISTRIBUTION_BOUNDARIES.md",
+                   "docs/RUNTIME_CONTRACT.md",
+                   "docs/ULTIMATE_ARCHITECTURE.md",
+                   "scripts/public-product-truth-audit.py",
+                   "scripts/test-public-product-truth-audit.sh",
                    "scripts/workstage-review-gate.py",
                    "scripts/test-workstage-review-gate.sh",
+                   "scripts/public-product-truth-fixtures/base/README.md",
                    "scripts/workstage-review-gate-fixtures/generate-green.py",
-                   "scripts/workstage-review-gate-fixtures/apply-mutation.py",
-                   "scripts/test-workstage-review-gate.sh"])
+                   "scripts/workstage-review-gate-fixtures/apply-mutation.py"])
 
 
 def create_r9_truth_scope_admitted():

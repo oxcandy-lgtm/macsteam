@@ -72,10 +72,28 @@ SAFE_REPAIR_EXACT_PATHS = frozenset({
     "scripts/test-workstage-review-gate.sh",
     "scripts/u1r18-pr-truth.py",
     "scripts/test-u1r18-pr-truth.sh",
+    # Tier A public-truth governance envelope: the accepted README/authority
+    # manifest/schema and the designated canonical docs plus their audit tooling.
+    # These are bounded exact paths, never a generic docs/ or Contracts/ glob.
+    "README.md",
+    "Contracts/public-product-truth.schema.json",
+    "docs/public-product-truth.json",
+    "docs/ARCHITECTURE.md",
+    "docs/CLOVERPIT_U1.md",
+    "docs/DISTRIBUTION_BOUNDARIES.md",
+    "docs/GAME_RECIPE_CONTRACT.md",
+    "docs/PREFIX_LIFECYCLE.md",
+    "docs/RUNTIME_CONTRACT.md",
+    "docs/SECURITY_BOUNDARIES.md",
+    "docs/STEAM_BOUNDARY.md",
+    "docs/ULTIMATE_ARCHITECTURE.md",
+    "scripts/public-product-truth-audit.py",
+    "scripts/test-public-product-truth-audit.sh",
 })
 SAFE_REPAIR_PATH_PREFIXES = (
     "scripts/workstage-review-gate-fixtures/",
     "scripts/u1r18-pr-truth-fixtures/",
+    "scripts/public-product-truth-fixtures/",
 )
 
 WORKFLOW_PATH_DEFAULT = ".github/workflows/workstage-review-gate.yml"

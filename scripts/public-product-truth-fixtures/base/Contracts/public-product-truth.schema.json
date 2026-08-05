@@ -138,7 +138,8 @@
       "type": "object",
       "properties": {
         "steam_app_id": {
-          "type": "string"
+          "type": "string",
+          "const": "3314790"
         },
         "implementation_status": {
           "type": "string",

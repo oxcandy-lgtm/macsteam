@@ -1,12 +1,12 @@
 {
-  "sha": "90f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0ff",
+  "sha": "aabbccddeeff00112233445566778899aabbcc01",
   "parents": [
     {
-      "sha": "d70fd1b980d9a4d67024f7d820637c6aeddd186d"
+      "sha": "f4db9ce293545431f09db284130dcff1816f2b25"
     }
   ],
   "commit": {
-    "message": "ci: generalize R9 repair gate authority (U1R18-R9-FIX1-GATE1)\n\nWorkstream: U1R18-R9-FIX1-GATE1",
+    "message": "docs: bind public truth docs and harden audit (U1R18-R10-FIX1-SCOPE1)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1",
     "committer": {
       "date": "2026-08-03T03:00:00Z",
       "name": "Test",

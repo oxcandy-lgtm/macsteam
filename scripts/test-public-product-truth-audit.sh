@@ -5,8 +5,18 @@
 # Every GREEN fixture must pass (rc=0); every RED fixture must be rejected
 # (rc=1) with the EXACT guard label. The harness self-checks the mapping the
 # same way as the other U1R18 harnesses: a RED fixture without a mapping, a
-# mapping without a fixture, an empty fixture, or two byte-identical fixtures
-# is a FAIL.
+# mapping without a fixture, an empty fixture, or two content-identical
+# fixtures is a FAIL.
+#
+# Fixture overlay model:
+#   - $BASE/** is the shared template (copied verbatim to the tree).
+#   - A fixture dir's files are copied recursively over the base (any file,
+#     including nested Contracts/ or docs/ overlays), so a fixture can mutate
+#     the schema, the authority manifest, README.md, or any canonical doc.
+#   - An optional delete-paths.txt declares repo-relative paths to DELETE
+#     from the tree (e.g. to simulate a missing schema / authority / doc).
+#     Delete paths must be repo-relative, contain no ".." or leading slash,
+#     and name a file that exists in the copied tree.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,20 +37,56 @@ FAIL=0
 ok()  { echo "ok   $1"; PASS=$((PASS + 1)); }
 bad() { echo "FAIL $1"; FAIL=$((FAIL + 1)); }
 
-# build <fixture_dir> -> copies base tree and overlays fixture README into TMP/tree
+# delete_path <rel> -> ensure rel is a safe repo-relative path, else die
+delete_path() {
+    local rel="$1"
+    case "$rel" in
+        /*) bad "unsafe absolute delete path: $rel"; return 1 ;;
+        *..*) bad "unsafe delete path with '..': $rel"; return 1 ;;
+        *\\*) bad "unsafe delete path with backslash: $rel"; return 1 ;;
+        *$'\r') return 0 ;;
+        '') return 0 ;;
+    esac
+    local target="$TMP/tree/$rel"
+    if [ ! -e "$target" ]; then
+        bad "delete path names a missing file: $rel"
+        return 1
+    fi
+    rm -f "$target"
+    return 0
+}
+
+# build <fixture_dir> -> copies base tree, applies delete-paths.txt, then
+# recursively overlays every other file in the fixture over the tree.
 build_tree() {
     local src="$1"
     rm -rf "$TMP/tree"
     cp -R "$BASE" "$TMP/tree"
-    if [ -f "$src/README.md" ]; then
-        cp "$src/README.md" "$TMP/tree/README.md"
+
+    if [ -f "$src/delete-paths.txt" ]; then
+        while IFS= read -r rel; do
+            delete_path "$rel" || return 1
+        done < "$src/delete-paths.txt"
     fi
+
+    # recursive overlay: copy every non-control file, preserving structure
+    local f
+    while IFS= read -r -d '' f; do
+        local rel="${f#$src/}"
+        case "$rel" in
+            delete-paths.txt) continue ;;
+        esac
+        local dst="$TMP/tree/$rel"
+        mkdir -p "$(dirname "$dst")"
+        cp "$f" "$dst"
+    done < <(find "$src" -type f -print0)
 }
 
 echo "=== Public product truth audit harness ==="
 echo "--- toolchain prerequisites ---"
 for f in "$PY" "Contracts/public-product-truth.schema.json" "$BASE/README.md" \
-         "$BASE/docs/public-product-truth.json"; do
+         "$BASE/docs/public-product-truth.json" "$BASE/docs/ARCHITECTURE.md" \
+         "$BASE/docs/RUNTIME_CONTRACT.md" "$BASE/docs/STEAM_BOUNDARY.md"; do
     if [ -f "$f" ]; then
         ok "prerequisite exists: $f"
     else
@@ -49,7 +95,7 @@ for f in "$PY" "Contracts/public-product-truth.schema.json" "$BASE/README.md" \
 done
 
 echo "--- GREEN: exact current truth (base) ---"
-build_tree "$GREEN"
+build_tree "$GREEN" || { bad "build_tree failed for base green"; }
 if python3 "$PY" audit --root "$TMP/tree" >/dev/null 2>&1; then
     ok "base/current truth passes"
 else
@@ -59,19 +105,25 @@ fi
 echo "--- GREEN: all variants pass ---"
 for d in "$GREEN"/*/; do
     name=$(basename "$d")
-    build_tree "$d"
-    if python3 "$PY" audit --root "$TMP/tree" >/dev/null 2>&1; then
-        ok "green passes: $name"
+    if build_tree "$d" 2>/dev/null; then
+        if python3 "$PY" audit --root "$TMP/tree" >/dev/null 2>&1; then
+            ok "green passes: $name"
+        else
+            bad "green should pass but failed: $name"
+        fi
     else
-        bad "green should pass but failed: $name"
+        bad "build_tree failed: $name"
     fi
 done
 
 echo "--- RED: exact guard assertions ---"
 run_red() {
     local name="$1" exp_guard="$2"
-    build_tree "$RED/$name"
-    local out rc guard
+    local exp_rc="${3:-1}" out rc guard
+    if ! build_tree "$RED/$name" 2>/dev/null; then
+        bad "red $name build_tree failed"
+        return
+    fi
     set +e
     out=$(python3 "$PY" audit --root "$TMP/tree" 2>&1)
     rc=$?
@@ -86,10 +138,10 @@ except Exception:
     print("")
 PY
 )
-    if [ "$rc" -eq 1 ] && [ "$guard" = "$exp_guard" ]; then
+    if [ "$rc" -eq "$exp_rc" ] && [ "$guard" = "$exp_guard" ]; then
         ok "red rejected $name -> $exp_guard"
     else
-        bad "red $name (rc=$rc exp_rc=1 guard='$guard' exp='$exp_guard')"
+        bad "red $name (rc=$rc exp_rc=$exp_rc guard='$guard' exp='$exp_guard')"
     fi
 }
 
@@ -115,14 +167,33 @@ run_red "r19-truth-only-in-comment" "public_truth_runtime_invalid"
 run_red "r20-truth-in-unrelated-section" "public_truth_marker_missing"
 run_red "r21-roadmap-minimal-complete" "public_truth_roadmap_invalid"
 run_red "r22-roadmap-distribution-authorized" "public_truth_roadmap_invalid"
+run_red "r23-schema-weakened-app-id" "public_truth_schema_invalid"
+run_red "r24-manifest-app-id-wrong" "public_truth_schema_invalid"
+run_red "r25-schema-missing" "public_truth_schema_io_error" 2
+run_red "r26-schema-invalid-json" "public_truth_schema_parse_error" 2
+run_red "r27-authority-missing" "public_truth_authority_io_error" 2
+run_red "r28-authority-invalid-json" "public_truth_authority_parse_error" 2
+run_red "r29-readme-missing" "public_truth_readme_io_error" 2
+run_red "r30-readme-current-status-missing" "public_truth_docs_drift"
+run_red "r31-readme-runtime-section-duplicate" "public_truth_docs_drift"
+run_red "r32-readme-runtime-truth-wrong-section-only" "public_truth_runtime_invalid"
+run_red "r33-readme-roadmap-general-lane-missing" "public_truth_roadmap_invalid"
+run_red "r34-readme-roadmap-positive-authorized" "public_truth_roadmap_invalid"
+run_red "r35-canonical-doc-missing" "public_truth_docs_drift"
+run_red "r36-architecture-positive-binding-removed" "public_truth_docs_drift"
+run_red "r37-runtime-contract-positive-binding-removed" "public_truth_docs_drift"
+run_red "r38-steam-boundary-positive-binding-removed" "public_truth_docs_drift"
+run_red "r39-distribution-boundaries-positive-binding-removed" "public_truth_docs_drift"
+run_red "r40-schema-weakened-plus-semantic-false" "public_truth_semantic_invalid"
+run_red "r41-cloverpit-app-id-doc-wrong" "public_truth_docs_drift"
 
 echo "--- harness mapping self-check ---"
-EXPECTED_RED="r1-crossover-prerequisite r2-crossover-canonical r3-no-wine-support r4-system-wine-default r5-managed-wine-available r6-installer-bundled r7-installer-downloaded r8-cloverpit-proven-playable r9-rendered-stable-claim r10-app-bundle-available r11-codesign-notarize-complete r12-release-download-available r13-ready-merge-release-authorized r14-name-reverted-macsteam r15-r5-performed r16-r5-claimed r17-marker-missing r18-marker-duplicate r19-truth-only-in-comment r20-truth-in-unrelated-section r21-roadmap-minimal-complete r22-roadmap-distribution-authorized"
+EXPECTED_RED="r1-crossover-prerequisite r2-crossover-canonical r3-no-wine-support r4-system-wine-default r5-managed-wine-available r6-installer-bundled r7-installer-downloaded r8-cloverpit-proven-playable r9-rendered-stable-claim r10-app-bundle-available r11-codesign-notarize-complete r12-release-download-available r13-ready-merge-release-authorized r14-name-reverted-macsteam r15-r5-performed r16-r5-claimed r17-marker-missing r18-marker-duplicate r19-truth-only-in-comment r20-truth-in-unrelated-section r21-roadmap-minimal-complete r22-roadmap-distribution-authorized r23-schema-weakened-app-id r24-manifest-app-id-wrong r25-schema-missing r26-schema-invalid-json r27-authority-missing r28-authority-invalid-json r29-readme-missing r30-readme-current-status-missing r31-readme-runtime-section-duplicate r32-readme-runtime-truth-wrong-section-only r33-readme-roadmap-general-lane-missing r34-readme-roadmap-positive-authorized r35-canonical-doc-missing r36-architecture-positive-binding-removed r37-runtime-contract-positive-binding-removed r38-steam-boundary-positive-binding-removed r39-distribution-boundaries-positive-binding-removed r40-schema-weakened-plus-semantic-false r41-cloverpit-app-id-doc-wrong"
 
-# every RED mapping must have a fixture
+# every RED mapping must have a fixture dir with at least one overlay/control file
 MISSING_FIX=0
 for name in $EXPECTED_RED; do
-    if [ ! -d "$RED/$name" ] || [ ! -f "$RED/$name/README.md" ]; then
+    if [ ! -d "$RED/$name" ]; then
         bad "RED mapping without fixture: $name"
         MISSING_FIX=1
     fi
@@ -140,27 +211,52 @@ for d in "$RED"/*/; do
 done
 [ "$ORPHAN" -eq 0 ] && ok "no orphan RED fixture"
 
-# no empty fixtures
+# no empty fixtures (control files and overlay files must be non-empty;
+# base/ is a shared template and is exempt)
 EMPTY=0
-for f in "$GREEN"/*/README.md "$RED"/*/README.md "$BASE/README.md"; do
-    if [ ! -s "$f" ]; then
-        bad "empty fixture: $f"
+for f in "$GREEN"/* "${RED}"/*/delete-paths.txt; do
+    [ -e "$f" ] || continue
+    if [ -f "$f" ] && [ ! -s "$f" ]; then
+        bad "empty fixture entry: $f"
         EMPTY=1
     fi
 done
+while IFS= read -r -d '' f; do
+    if [ ! -s "$f" ]; then
+        bad "empty overlay file: $f"
+        EMPTY=1
+    fi
+done < <(find "$GREEN" "$RED" -type f ! -name delete-paths.txt -print0)
 [ "$EMPTY" -eq 0 ] && ok "no empty fixtures"
 
-# no byte-identical fixtures (compare only the green/ and red/ trees; base/ is
-# a shared template whose content legitimately mirrors the repo README).
+# no content-identical fixtures: for each fixture dir, build a global digest
+# over (sorted relative paths + bytes + delete-paths content). Two fixtures
+# with the same digest are duplicates.
 DUP=0
-prev=""
-for h in $(cd "$FIX" && find green red -type f | sort | while read -r f; do shasum -a 256 "$f"; done | cut -d' ' -f1); do
-    if [ "$h" = "$prev" ] && [ -n "$h" ]; then
-        bad "duplicate fixture content detected"
+prev_fixture=""
+prev_hash=""
+while IFS= read -r -d '' d; do
+    name=$(basename "$d")
+    # sorted, path-qualified content lines -> hash
+    content="$(
+        while IFS= read -r -d '' f; do
+            rel="${f#$d/}"
+            printf '%s\n' "$rel"
+            shasum -a 256 "$f" | cut -d' ' -f1
+        done < <(find "$d" -type f -print0 | sort -z)
+        if [ -f "$d/delete-paths.txt" ]; then
+            printf 'DEL\n'
+            shasum -a 256 "$d/delete-paths.txt" | cut -d' ' -f1
+        fi
+    )"
+    h=$(printf '%s' "$content" | shasum -a 256 | cut -d' ' -f1)
+    if [ -n "$prev_hash" ] && [ "$h" = "$prev_hash" ]; then
+        bad "duplicate fixture content: $name matches $prev_fixture"
         DUP=1
     fi
-    prev="$h"
-done
+    prev_fixture="$name"
+    prev_hash="$h"
+done < <(find "$GREEN" "$RED" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
 [ "$DUP" -eq 0 ] && ok "no duplicate fixtures"
 
 echo ""
