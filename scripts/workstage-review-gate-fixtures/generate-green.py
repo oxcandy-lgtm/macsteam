@@ -68,6 +68,13 @@ U1R18_R10_REPAIR_CLASSIFICATION = "RED_U1R18_R10_FIX1_STRICT_DOC_BINDINGS_AND_SC
 U1R18_R10_REPAIR_COMMIT_MSG = ("docs: bind public truth docs and harden audit (U1R18-R10-FIX1-SCOPE1)\n\n"
                                "Workstream: U1R18-R10-FIX1-SCOPE1")
 
+U1R18_R10_FIX1_REPAIR_PARENT = "3c8432951e542879b437b8f7ed4ce2b27ae02429"
+U1R18_R10_FIX1_REPAIR_HEAD = "fee5d4c3b2a1908f7e6d5c4b3a291807f6e5d4c3"
+U1R18_R10_FIX1_REPAIR_REVIEW_ID = 4861219247
+U1R18_R10_FIX1_REPAIR_CLASSIFICATION = "RED_U1R18_R10_FIX1_SCOPE1_OWNER_SECTION_SEMANTICS_AND_GLOBAL_DEDUP_INCOMPLETE"
+U1R18_R10_FIX1_REPAIR_COMMIT_MSG = ("ci: close R10 SCOPE1 audit gaps (U1R18-R10-FIX1-SCOPE1-FIX1)\n\n"
+                                    "Workstream: U1R18-R10-FIX1-SCOPE1-FIX1")
+
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
 REPAIR_REVIEW_ID_CHILD = 4843792150
@@ -379,26 +386,20 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=U1R18_R10_REPAIR_HEAD, parent_sha=U1R18_R10_REPAIR_PARENT,
-          message=U1R18_R10_REPAIR_COMMIT_MSG)
-    repair_body = (controller_review_json(U1R18_R10_REPAIR_PARENT, decision="rejected",
-                                          classification=U1R18_R10_REPAIR_CLASSIFICATION)
+    _base(d, head_sha=U1R18_R10_FIX1_REPAIR_HEAD, parent_sha=U1R18_R10_FIX1_REPAIR_PARENT,
+          message=U1R18_R10_FIX1_REPAIR_COMMIT_MSG)
+    repair_body = (controller_review_json(U1R18_R10_FIX1_REPAIR_PARENT, decision="rejected",
+                                          classification=U1R18_R10_FIX1_REPAIR_CLASSIFICATION)
                    + "\n\nRepair authorization granted for "
-                     "U1R18-R10-FIX1-SCOPE1. This RED review authorizes a single "
+                     "U1R18-R10-FIX1-SCOPE1-FIX1. This RED review authorizes a single "
                      "direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(U1R18_R10_REPAIR_PARENT, U1R18_R10_REPAIR_REVIEW_ID,
+                  [review_json(U1R18_R10_FIX1_REPAIR_PARENT, U1R18_R10_FIX1_REPAIR_REVIEW_ID,
                                repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json",
                   [".github/workstage-review-gate-policy.json",
-                   "Contracts/public-product-truth.schema.json",
-                   "docs/CLOVERPIT_U1.md",
-                   "docs/DISTRIBUTION_BOUNDARIES.md",
-                   "docs/RUNTIME_CONTRACT.md",
-                   "docs/ULTIMATE_ARCHITECTURE.md",
                    "scripts/public-product-truth-audit.py",
                    "scripts/test-public-product-truth-audit.sh",
-                   "scripts/workstage-review-gate.py",
                    "scripts/test-workstage-review-gate.sh",
                    "scripts/public-product-truth-fixtures/base/README.md",
                    "scripts/workstage-review-gate-fixtures/generate-green.py",

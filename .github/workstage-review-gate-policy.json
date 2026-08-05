@@ -12,22 +12,16 @@
     "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
   },
   "repair_authorization": {
-    "parent_sha": "f4db9ce293545431f09db284130dcff1816f2b25",
-    "review_id": 4860650446,
-    "classification": "RED_U1R18_R10_FIX1_STRICT_DOC_BINDINGS_AND_SCOPE_CONTRACT_CONFLICT",
-    "required_commit_message": "docs: bind public truth docs and harden audit (U1R18-R10-FIX1-SCOPE1)",
-    "required_workstream": "U1R18-R10-FIX1-SCOPE1",
+    "parent_sha": "3c8432951e542879b437b8f7ed4ce2b27ae02429",
+    "review_id": 4861219247,
+    "classification": "RED_U1R18_R10_FIX1_SCOPE1_OWNER_SECTION_SEMANTICS_AND_GLOBAL_DEDUP_INCOMPLETE",
+    "required_commit_message": "ci: close R10 SCOPE1 audit gaps (U1R18-R10-FIX1-SCOPE1-FIX1)",
+    "required_workstream": "U1R18-R10-FIX1-SCOPE1-FIX1",
     "single_direct_child_only": true,
     "allowed_exact_paths": [
       ".github/workstage-review-gate-policy.json",
-      "Contracts/public-product-truth.schema.json",
-      "docs/CLOVERPIT_U1.md",
-      "docs/DISTRIBUTION_BOUNDARIES.md",
-      "docs/RUNTIME_CONTRACT.md",
-      "docs/ULTIMATE_ARCHITECTURE.md",
       "scripts/public-product-truth-audit.py",
       "scripts/test-public-product-truth-audit.sh",
-      "scripts/workstage-review-gate.py",
       "scripts/test-workstage-review-gate.sh"
     ],
     "allowed_path_prefixes": [

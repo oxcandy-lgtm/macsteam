@@ -37,22 +37,85 @@ FAIL=0
 ok()  { echo "ok   $1"; PASS=$((PASS + 1)); }
 bad() { echo "FAIL $1"; FAIL=$((FAIL + 1)); }
 
-# delete_path <rel> -> ensure rel is a safe repo-relative path, else die
-delete_path() {
-    local rel="$1"
-    case "$rel" in
-        /*) bad "unsafe absolute delete path: $rel"; return 1 ;;
-        *..*) bad "unsafe delete path with '..': $rel"; return 1 ;;
-        *\\*) bad "unsafe delete path with backslash: $rel"; return 1 ;;
-        *$'\r') return 0 ;;
-        '') return 0 ;;
-    esac
-    local target="$TMP/tree/$rel"
-    if [ ! -e "$target" ]; then
-        bad "delete path names a missing file: $rel"
-        return 1
+# tree_rp: resolved path of the current copied tree (for symlink-escape and
+# outside-tree resolution checks). Rebuilt on each build_tree invocation.
+tree_rp=""
+
+# validate_delete_paths <file> -> fail-closed validation of delete-paths.txt.
+# Rejects (echoes ONE diagnostic line, returns 1): absolute paths, "..",
+# backslash, empty/whitespace-only entries, duplicate entries, TAB, CR, NUL,
+# DEL, any other ASCII control character, invalid UTF-8, missing paths,
+# directory deletions, symlinks, and any path resolving outside the copied
+# base tree. LF is the only permitted line delimiter. Nothing is silently
+# skipped/trimmed/accepted.
+validate_delete_paths() {
+    local file="$1" line n=0 seen="$TMP/.del-seen.$$"
+    : > "$seen"
+    if LC_ALL=C grep -q $'\r' "$file"; then
+        echo "delete-paths.txt contains CR (LF-only line delimiter required)"
+        rm -f "$seen"; return 1
     fi
-    rm -f "$target"
+    if LC_ALL=C grep -q $'\t' "$file"; then
+        echo "delete-paths.txt contains a TAB"
+        rm -f "$seen"; return 1
+    fi
+    if LC_ALL=C tr -d '\n\t\r' < "$file" | LC_ALL=C grep -aq '[[:cntrl:]]'; then
+        echo "delete-paths.txt contains ASCII control characters (NUL/DEL/etc.)"
+        rm -f "$seen"; return 1
+    fi
+    if ! iconv -f UTF-8 -t UTF-8 "$file" >/dev/null 2>&1; then
+        echo "delete-paths.txt is not valid UTF-8"
+        rm -f "$seen"; return 1
+    fi
+    while IFS= read -r line; do
+        n=$((n + 1))
+        if [ -z "$line" ]; then
+            echo "delete-paths.txt line $n: empty entry"
+            rm -f "$seen"; return 1
+        fi
+        if [ -z "$(printf '%s' "$line" | LC_ALL=C tr -d '[:space:]')" ]; then
+            echo "delete-paths.txt line $n: whitespace-only entry"
+            rm -f "$seen"; return 1
+        fi
+        case "$line" in
+            /*) echo "delete-paths.txt line $n: absolute path: $line"
+                rm -f "$seen"; return 1 ;;
+            *..*) echo "delete-paths.txt line $n: path with '..': $line"
+                rm -f "$seen"; return 1 ;;
+            *\\*) echo "delete-paths.txt line $n: path with backslash: $line"
+                rm -f "$seen"; return 1 ;;
+        esac
+        if LC_ALL=C grep -qxF "$line" "$seen"; then
+            echo "delete-paths.txt line $n: duplicate entry: $line"
+            rm -f "$seen"; return 1
+        fi
+        printf '%s\n' "$line" >> "$seen"
+        local target="$TMP/tree/$line"
+        if [ ! -e "$target" ]; then
+            echo "delete-paths.txt line $n: path missing in base tree: $line"
+            rm -f "$seen"; return 1
+        fi
+        if [ -d "$target" ]; then
+            echo "delete-paths.txt line $n: directory deletion: $line"
+            rm -f "$seen"; return 1
+        fi
+        if [ -L "$target" ]; then
+            echo "delete-paths.txt line $n: symlink not permitted: $line"
+            rm -f "$seen"; return 1
+        fi
+        local rp
+        rp="$(cd "$(dirname "$target")" 2>/dev/null && pwd -P)/$(basename "$target")" || rp=""
+        if [ -z "$rp" ]; then
+            echo "delete-paths.txt line $n: cannot resolve path: $line"
+            rm -f "$seen"; return 1
+        fi
+        case "$rp" in
+            "$tree_rp"/*) ;;
+            *) echo "delete-paths.txt line $n: resolves outside repo tree: $line"
+               rm -f "$seen"; return 1 ;;
+        esac
+    done < "$file"
+    rm -f "$seen"
     return 0
 }
 
@@ -62,10 +125,16 @@ build_tree() {
     local src="$1"
     rm -rf "$TMP/tree"
     cp -R "$BASE" "$TMP/tree"
+    tree_rp="$(cd "$TMP/tree" && pwd -P)"
 
     if [ -f "$src/delete-paths.txt" ]; then
+        local err
+        if ! err="$(validate_delete_paths "$src/delete-paths.txt")"; then
+            bad "invalid delete-paths.txt: $err"
+            return 1
+        fi
         while IFS= read -r rel; do
-            delete_path "$rel" || return 1
+            rm -f "$TMP/tree/$rel"
         done < "$src/delete-paths.txt"
     fi
 
@@ -187,8 +256,72 @@ run_red "r39-distribution-boundaries-positive-binding-removed" "public_truth_doc
 run_red "r40-schema-weakened-plus-semantic-false" "public_truth_semantic_invalid"
 run_red "r41-cloverpit-app-id-doc-wrong" "public_truth_docs_drift"
 
+# --- §11 matrix A: semantic independence (15) ---
+for f in \
+    "a1-semantic-branding-display-name" \
+    "a2-semantic-branding-internal-module" \
+    "a3-semantic-platform-os" \
+    "a4-semantic-platform-min-version" \
+    "a5-semantic-platform-arch" \
+    "a6-semantic-runtime-wine-discoverable" \
+    "a7-semantic-runtime-wine-by-default" \
+    "a8-semantic-runtime-managed-available" \
+    "a9-semantic-runtime-crossover-canonical" \
+    "a10-semantic-runtime-crossover-required" \
+    "a11-semantic-runtime-crossover-default" \
+    "a12-semantic-steam-credentials" \
+    "a13-semantic-packaging-app-bundle" \
+    "a14-semantic-packaging-codesigned" \
+    "a15-semantic-packaging-notarized"; do
+    run_red "$f" "public_truth_semantic_invalid"
+done
+
+# --- §11 matrix B: schema self-contract (7) ---
+for f in \
+    "b1-schema-wrong-draft-id" \
+    "b2-schema-root-type-removed" \
+    "b3-schema-section-type-removed" \
+    "b4-schema-scalar-type-removed" \
+    "b5-schema-scalar-type-changed" \
+    "b6-schema-additional-properties-widened" \
+    "b7-schema-required-dropped"; do
+    run_red "$f" "public_truth_schema_invalid"
+done
+
+# --- §11 matrix C: README owner-section (18) ---
+run_red "c1-readme-current-status-fact-removed" "public_truth_docs_drift"
+run_red "c2-readme-runtime-fact-moved" "public_truth_runtime_invalid"
+run_red "c3-readme-how-it-works-fence-only" "public_truth_docs_drift"
+run_red "c4-readme-distribution-fact-removed" "public_truth_docs_drift"
+run_red "c5-readme-safety-comment-only" "public_truth_docs_drift"
+run_red "c6-readme-limitations-fact-removed" "public_truth_docs_drift"
+run_red "c7-readme-setup-flow-comment-only" "public_truth_steam_invalid"
+run_red "c8-readme-crossover-disabled-default-removed" "public_truth_runtime_invalid"
+run_red "c9-readme-crossover-optin-removed" "public_truth_runtime_invalid"
+run_red "c10-readme-crossover-lowest-priority-removed" "public_truth_runtime_invalid"
+run_red "c11-readme-crossover-never-prerequisite-removed" "public_truth_runtime_invalid"
+run_red "c12-readme-minimal-lane-mutated" "public_truth_roadmap_invalid"
+run_red "c13-readme-general-lane-mutated" "public_truth_roadmap_invalid"
+run_red "c14-readme-roadmap-lane-complete-claim" "public_truth_roadmap_invalid"
+run_red "c15-readme-roadmap-lane-authorized-claim" "public_truth_roadmap_invalid"
+run_red "c16-readme-fake-fenced-l2-heading" "public_truth_docs_drift"
+run_red "c17-readme-duplicate-l2-heading" "public_truth_docs_drift"
+run_red "c18-readme-r5-moved" "public_truth_r5_invalid"
+
+# --- §11 matrix D: canonical docs (10) ---
+run_red "d1-arch-crossover-disabled-default-removed" "public_truth_docs_drift"
+run_red "d2-arch-crossover-optin-removed" "public_truth_docs_drift"
+run_red "d3-arch-crossover-lowest-priority-removed" "public_truth_docs_drift"
+run_red "d4-arch-crossover-never-prerequisite-removed" "public_truth_docs_drift"
+run_red "d5-arch-overview-fence-only" "public_truth_docs_drift"
+run_red "d6-arch-overview-unrelated-only" "public_truth_docs_drift"
+run_red "d7-steam-credential-removed" "public_truth_docs_drift"
+run_red "d8-steam-credential-overview-only" "public_truth_docs_drift"
+run_red "d9-steam-credential-comment-only" "public_truth_docs_drift"
+run_red "d10-steam-credential-fence-only" "public_truth_docs_drift"
+
 echo "--- harness mapping self-check ---"
-EXPECTED_RED="r1-crossover-prerequisite r2-crossover-canonical r3-no-wine-support r4-system-wine-default r5-managed-wine-available r6-installer-bundled r7-installer-downloaded r8-cloverpit-proven-playable r9-rendered-stable-claim r10-app-bundle-available r11-codesign-notarize-complete r12-release-download-available r13-ready-merge-release-authorized r14-name-reverted-macsteam r15-r5-performed r16-r5-claimed r17-marker-missing r18-marker-duplicate r19-truth-only-in-comment r20-truth-in-unrelated-section r21-roadmap-minimal-complete r22-roadmap-distribution-authorized r23-schema-weakened-app-id r24-manifest-app-id-wrong r25-schema-missing r26-schema-invalid-json r27-authority-missing r28-authority-invalid-json r29-readme-missing r30-readme-current-status-missing r31-readme-runtime-section-duplicate r32-readme-runtime-truth-wrong-section-only r33-readme-roadmap-general-lane-missing r34-readme-roadmap-positive-authorized r35-canonical-doc-missing r36-architecture-positive-binding-removed r37-runtime-contract-positive-binding-removed r38-steam-boundary-positive-binding-removed r39-distribution-boundaries-positive-binding-removed r40-schema-weakened-plus-semantic-false r41-cloverpit-app-id-doc-wrong"
+EXPECTED_RED="r1-crossover-prerequisite r2-crossover-canonical r3-no-wine-support r4-system-wine-default r5-managed-wine-available r6-installer-bundled r7-installer-downloaded r8-cloverpit-proven-playable r9-rendered-stable-claim r10-app-bundle-available r11-codesign-notarize-complete r12-release-download-available r13-ready-merge-release-authorized r14-name-reverted-macsteam r15-r5-performed r16-r5-claimed r17-marker-missing r18-marker-duplicate r19-truth-only-in-comment r20-truth-in-unrelated-section r21-roadmap-minimal-complete r22-roadmap-distribution-authorized r23-schema-weakened-app-id r24-manifest-app-id-wrong r25-schema-missing r26-schema-invalid-json r27-authority-missing r28-authority-invalid-json r29-readme-missing r30-readme-current-status-missing r31-readme-runtime-section-duplicate r32-readme-runtime-truth-wrong-section-only r33-readme-roadmap-general-lane-missing r34-readme-roadmap-positive-authorized r35-canonical-doc-missing r36-architecture-positive-binding-removed r37-runtime-contract-positive-binding-removed r38-steam-boundary-positive-binding-removed r39-distribution-boundaries-positive-binding-removed r40-schema-weakened-plus-semantic-false r41-cloverpit-app-id-doc-wrong a1-semantic-branding-display-name a2-semantic-branding-internal-module a3-semantic-platform-os a4-semantic-platform-min-version a5-semantic-platform-arch a6-semantic-runtime-wine-discoverable a7-semantic-runtime-wine-by-default a8-semantic-runtime-managed-available a9-semantic-runtime-crossover-canonical a10-semantic-runtime-crossover-required a11-semantic-runtime-crossover-default a12-semantic-steam-credentials a13-semantic-packaging-app-bundle a14-semantic-packaging-codesigned a15-semantic-packaging-notarized b1-schema-wrong-draft-id b2-schema-root-type-removed b3-schema-section-type-removed b4-schema-scalar-type-removed b5-schema-scalar-type-changed b6-schema-additional-properties-widened b7-schema-required-dropped c1-readme-current-status-fact-removed c2-readme-runtime-fact-moved c3-readme-how-it-works-fence-only c4-readme-distribution-fact-removed c5-readme-safety-comment-only c6-readme-limitations-fact-removed c7-readme-setup-flow-comment-only c8-readme-crossover-disabled-default-removed c9-readme-crossover-optin-removed c10-readme-crossover-lowest-priority-removed c11-readme-crossover-never-prerequisite-removed c12-readme-minimal-lane-mutated c13-readme-general-lane-mutated c14-readme-roadmap-lane-complete-claim c15-readme-roadmap-lane-authorized-claim c16-readme-fake-fenced-l2-heading c17-readme-duplicate-l2-heading c18-readme-r5-moved d1-arch-crossover-disabled-default-removed d2-arch-crossover-optin-removed d3-arch-crossover-lowest-priority-removed d4-arch-crossover-never-prerequisite-removed d5-arch-overview-fence-only d6-arch-overview-unrelated-only d7-steam-credential-removed d8-steam-credential-overview-only d9-steam-credential-comment-only d10-steam-credential-fence-only"
 
 # every RED mapping must have a fixture dir with at least one overlay/control file
 MISSING_FIX=0
@@ -229,35 +362,105 @@ while IFS= read -r -d '' f; do
 done < <(find "$GREEN" "$RED" -type f ! -name delete-paths.txt -print0)
 [ "$EMPTY" -eq 0 ] && ok "no empty fixtures"
 
-# no content-identical fixtures: for each fixture dir, build a global digest
-# over (sorted relative paths + bytes + delete-paths content). Two fixtures
-# with the same digest are duplicates.
-DUP=0
-prev_fixture=""
-prev_hash=""
-while IFS= read -r -d '' d; do
-    name=$(basename "$d")
-    # sorted, path-qualified content lines -> hash
-    content="$(
+# no content-identical fixtures: GLOBAL digest dedup across ALL fixtures.
+# Canonical payload digest = (sorted relative paths + per-file digest +
+# delete-paths.txt content). All fixtures are collected as digest<TAB>identity
+# and grouped/sorted by digest; any digest shared by >= 2 fixtures is a FAIL
+# regardless of tree position (non-adjacent duplicates are still detected).
+# Bash 3 compatible (no associative arrays), locale-stable (LC_ALL=C sort).
+fixture_digest() {
+    local d="$1"
+    {
         while IFS= read -r -d '' f; do
-            rel="${f#$d/}"
-            printf '%s\n' "$rel"
+            printf '%s\n' "${f#$d/}"
             shasum -a 256 "$f" | cut -d' ' -f1
         done < <(find "$d" -type f -print0 | sort -z)
         if [ -f "$d/delete-paths.txt" ]; then
             printf 'DEL\n'
             shasum -a 256 "$d/delete-paths.txt" | cut -d' ' -f1
         fi
-    )"
-    h=$(printf '%s' "$content" | shasum -a 256 | cut -d' ' -f1)
-    if [ -n "$prev_hash" ] && [ "$h" = "$prev_hash" ]; then
-        bad "duplicate fixture content: $name matches $prev_fixture"
-        DUP=1
+    } | shasum -a 256 | cut -d' ' -f1
+}
+
+# global_dedup <dir...> -> prints diagnostics for every duplicate group and
+# returns 1 if any digest is shared by >= 2 fixtures (0 otherwise).
+global_dedup() {
+    local digests="$TMP/.dedup-digests.$$"
+    : > "$digests"
+    local d name h
+    for d in "$@"; do
+        name=$(basename "$d")
+        h=$(fixture_digest "$d")
+        printf '%s\t%s\n' "$h" "$name" >> "$digests"
+    done
+    local prev="" line h2 name2 dup=0
+    while IFS= read -r line; do
+        h2="${line%%$'\t'*}"
+        name2="${line#*$'\t'}"
+        if [ -n "$prev" ] && [ "$h2" = "$prev" ]; then
+            echo "duplicate fixture payload: $name2 (same digest as $prev_name)"
+            dup=1
+        fi
+        prev="$h2"
+        prev_name="$name2"
+    done < <(LC_ALL=C sort -t$'\t' -k1,1 "$digests")
+    rm -f "$digests"
+    return "$dup"
+}
+
+DUP=0
+if global_dedup "$GREEN"/*/ "$RED"/*/; then
+    ok "no duplicate fixtures (global digest dedup)"
+else
+    DUP=1
+fi
+
+echo "--- §9 global-dedup self-test (non-adjacent duplicate detection) ---"
+SELF="$TMP/.dedup-self"
+rm -rf "$SELF"; mkdir -p "$SELF/A" "$SELF/B" "$SELF/C"
+printf 'payload-X\n' > "$SELF/A/file.txt"
+printf 'payload-Y\n' > "$SELF/B/file.txt"
+printf 'payload-X\n' > "$SELF/C/file.txt"
+if global_dedup "$SELF/A" "$SELF/B" "$SELF/C" > "$SELF/out" 2>&1; then
+    bad "global dedup self-test: non-adjacent A/C duplicate NOT detected"
+else
+    if grep -q "duplicate fixture payload: C (same digest as A)" "$SELF/out"; then
+        ok "global dedup self-test: non-adjacent A/C detected"
+    else
+        bad "global dedup self-test wrong diagnostics: $(tr '\n' ' ' < "$SELF/out")"
     fi
-    prev_fixture="$name"
-    prev_hash="$h"
-done < <(find "$GREEN" "$RED" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
-[ "$DUP" -eq 0 ] && ok "no duplicate fixtures"
+fi
+rm -rf "$SELF"
+# self-test fixtures live only under $TMP, never in the production tree
+
+echo "--- §10 delete-paths fail-closed self-test ---"
+# Direct validation self-test (does not go through build_tree, which would
+# report a global FAIL for a legitimately-invalid control file). Each case
+# proves validate_delete_paths rejects the payload.
+del_rejects() {
+    local label="$1" content="$2"
+    local d="$TMP/.del-self"
+    rm -rf "$d"; mkdir -p "$d"; cp -R "$BASE" "$d/tree"
+    tree_rp="$(cd "$d/tree" && pwd -P)"
+    printf '%b' "$content" > "$d/delete-paths.txt"
+    if validate_delete_paths "$d/delete-paths.txt" >/dev/null 2>&1; then
+        bad "delete-paths self-test $label: NOT rejected"
+    else
+        ok "delete-paths self-test $label: rejected"
+    fi
+    rm -rf "$d"
+}
+del_rejects "TAB" 'README.md\t\n'
+del_rejects "CR" 'README.md\r\n'
+del_rejects "traversal" '../README.md\n'
+del_rejects "absolute" '/etc/passwd\n'
+del_rejects "backslash" 'README.md\\x\n'
+del_rejects "missing target" 'docs/no-such-file.md\n'
+del_rejects "duplicate" 'README.md\nREADME.md\n'
+del_rejects "whitespace-only" '   \n'
+del_rejects "NUL" 'README.md\x00\n'
+del_rejects "DEL" 'README.md\x7f\n'
+del_rejects "invalid UTF-8" '\xff\xfe\n'
 
 echo ""
 echo "=== Product truth harness summary: PASS=$PASS FAIL=$FAIL ==="

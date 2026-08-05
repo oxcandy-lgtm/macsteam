@@ -1,0 +1,251 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://macsteam.example.com/schemas/public-product-truth.schema.json",
+  "title": "MacSteam Public Product Truth",
+  "description": "Machine-readable authority describing the public-facing product that actually exists at a given repository HEAD. Distinguishes implemented code, development-only execution, unperformed local acceptance, unavailable distribution packaging, and future roadmap. Used as the canonical reference that README and public docs must agree with.",
+  "schema_version": 1,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "branding",
+    "platform",
+    "runtime",
+    "steam",
+    "cloverpit",
+    "packaging",
+    "release",
+    "r5"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "macsteam_public_product_truth"
+    },
+    "branding": {
+      "type": "object",
+      "properties": {
+        "product_display_name": {
+          "type": "string"
+        },
+        "internal_module_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "product_display_name",
+        "internal_module_name"
+      ],
+      "additionalProperties": false
+    },
+    "platform": {
+      "type": "object",
+      "properties": {
+        "operating_system": {
+          "type": "string",
+          "const": "macOS"
+        },
+        "minimum_version": {
+          "type": "string",
+          "const": "15.0"
+        },
+        "architecture": {
+          "type": "string",
+          "const": "Apple Silicon"
+        }
+      },
+      "required": [
+        "operating_system",
+        "minimum_version",
+        "architecture"
+      ],
+      "additionalProperties": false
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "canonical_u1_runtime": {
+          "type": "string",
+          "const": "imported-wine"
+        },
+        "system_wine_discoverable": {
+          "type": "boolean",
+          "const": true
+        },
+        "system_wine_selected_by_default": {
+          "type": "boolean",
+          "const": false
+        },
+        "managed_wine_available": {
+          "type": "boolean",
+          "const": false
+        },
+        "crossover_canonical": {
+          "type": "boolean",
+          "const": false
+        },
+        "crossover_required": {
+          "type": "boolean",
+          "const": false
+        },
+        "crossover_default_enabled": {
+          "type": "boolean",
+          "const": false
+        },
+        "crossover_policy": {
+          "type": "string",
+          "const": "disabled-by-default-explicit-opt-in-lowest-priority"
+        }
+      },
+      "required": [
+        "canonical_u1_runtime",
+        "system_wine_discoverable",
+        "system_wine_selected_by_default",
+        "managed_wine_available",
+        "crossover_canonical",
+        "crossover_required",
+        "crossover_default_enabled",
+        "crossover_policy"
+      ],
+      "additionalProperties": false
+    },
+    "steam": {
+      "type": "object",
+      "properties": {
+        "installer_mode": {
+          "type": "string",
+          "const": "user-selected-file"
+        },
+        "installer_bundled": {
+          "type": "boolean",
+          "const": false
+        },
+        "installer_downloaded_by_app": {
+          "type": "boolean",
+          "const": false
+        },
+        "credentials_accessed": {
+          "type": "boolean",
+          "const": false
+        }
+      },
+      "required": [
+        "installer_mode",
+        "installer_bundled",
+        "installer_downloaded_by_app",
+        "credentials_accessed"
+      ],
+      "additionalProperties": false
+    },
+    "cloverpit": {
+      "type": "object",
+      "properties": {
+        "steam_app_id": {
+          "type": "string",
+          "const": "3314790"
+        },
+        "implementation_status": {
+          "type": "string",
+          "const": "implemented-pending-local-acceptance"
+        },
+        "playability_claimed": {
+          "type": "boolean",
+          "const": false
+        }
+      },
+      "required": [
+        "steam_app_id",
+        "implementation_status",
+        "playability_claimed"
+      ],
+      "additionalProperties": false
+    },
+    "packaging": {
+      "type": "object",
+      "properties": {
+        "current_distribution": {
+          "type": "string",
+          "const": "swift-package-development-build"
+        },
+        "app_bundle_available": {
+          "type": "boolean",
+          "const": false
+        },
+        "codesigned": {
+          "type": "boolean",
+          "const": false
+        },
+        "notarized": {
+          "type": "boolean",
+          "const": false
+        },
+        "packaged_release_available": {
+          "type": "boolean",
+          "const": false
+        }
+      },
+      "required": [
+        "current_distribution",
+        "app_bundle_available",
+        "codesigned",
+        "notarized",
+        "packaged_release_available"
+      ],
+      "additionalProperties": false
+    },
+    "release": {
+      "type": "object",
+      "properties": {
+        "pull_request_draft": {
+          "type": "boolean",
+          "const": true
+        },
+        "ready_authorized": {
+          "type": "boolean",
+          "const": false
+        },
+        "merge_authorized": {
+          "type": "boolean",
+          "const": false
+        },
+        "release_authorized": {
+          "type": "boolean",
+          "const": false
+        }
+      },
+      "required": [
+        "pull_request_draft",
+        "ready_authorized",
+        "merge_authorized",
+        "release_authorized"
+      ],
+      "additionalProperties": false
+    },
+    "r5": {
+      "type": "object",
+      "properties": {
+        "external_real_mac_proof_requirement_removed": {
+          "type": "boolean",
+          "const": true
+        },
+        "external_real_mac_proof_performed": {
+          "type": "boolean",
+          "const": false
+        },
+        "external_real_mac_proof_claimed": {
+          "type": "boolean",
+          "const": false
+        }
+      },
+      "required": [
+        "external_real_mac_proof_requirement_removed",
+        "external_real_mac_proof_performed",
+        "external_real_mac_proof_claimed"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

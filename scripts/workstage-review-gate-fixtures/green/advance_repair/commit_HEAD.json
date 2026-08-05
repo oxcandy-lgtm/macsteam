@@ -1,12 +1,12 @@
 {
-  "sha": "aabbccddeeff00112233445566778899aabbcc01",
+  "sha": "fee5d4c3b2a1908f7e6d5c4b3a291807f6e5d4c3",
   "parents": [
     {
-      "sha": "f4db9ce293545431f09db284130dcff1816f2b25"
+      "sha": "3c8432951e542879b437b8f7ed4ce2b27ae02429"
     }
   ],
   "commit": {
-    "message": "docs: bind public truth docs and harden audit (U1R18-R10-FIX1-SCOPE1)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1",
+    "message": "ci: close R10 SCOPE1 audit gaps (U1R18-R10-FIX1-SCOPE1-FIX1)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1-FIX1",
     "committer": {
       "date": "2026-08-03T03:00:00Z",
       "name": "Test",

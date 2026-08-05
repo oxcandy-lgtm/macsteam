@@ -1,13 +1,7 @@
 [
   ".github/workstage-review-gate-policy.json",
-  "Contracts/public-product-truth.schema.json",
-  "docs/CLOVERPIT_U1.md",
-  "docs/DISTRIBUTION_BOUNDARIES.md",
-  "docs/RUNTIME_CONTRACT.md",
-  "docs/ULTIMATE_ARCHITECTURE.md",
   "scripts/public-product-truth-audit.py",
   "scripts/test-public-product-truth-audit.sh",
-  "scripts/workstage-review-gate.py",
   "scripts/test-workstage-review-gate.sh",
   "scripts/public-product-truth-fixtures/base/README.md",
   "scripts/workstage-review-gate-fixtures/generate-green.py",

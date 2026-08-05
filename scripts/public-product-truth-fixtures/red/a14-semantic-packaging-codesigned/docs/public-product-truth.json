@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "kind": "macsteam_public_product_truth",
+  "branding": {
+    "product_display_name": "MacsTeam",
+    "internal_module_name": "MacSteam"
+  },
+  "platform": {
+    "operating_system": "macOS",
+    "minimum_version": "15.0",
+    "architecture": "Apple Silicon"
+  },
+  "runtime": {
+    "canonical_u1_runtime": "imported-wine",
+    "system_wine_discoverable": true,
+    "system_wine_selected_by_default": false,
+    "managed_wine_available": false,
+    "crossover_canonical": false,
+    "crossover_required": false,
+    "crossover_default_enabled": false,
+    "crossover_policy": "disabled-by-default-explicit-opt-in-lowest-priority"
+  },
+  "steam": {
+    "installer_mode": "user-selected-file",
+    "installer_bundled": false,
+    "installer_downloaded_by_app": false,
+    "credentials_accessed": false
+  },
+  "cloverpit": {
+    "steam_app_id": "3314790",
+    "implementation_status": "implemented-pending-local-acceptance",
+    "playability_claimed": false
+  },
+  "packaging": {
+    "current_distribution": "swift-package-development-build",
+    "app_bundle_available": false,
+    "codesigned": true,
+    "notarized": false,
+    "packaged_release_available": false
+  },
+  "release": {
+    "pull_request_draft": true,
+    "ready_authorized": false,
+    "merge_authorized": false,
+    "release_authorized": false
+  },
+  "r5": {
+    "external_real_mac_proof_requirement_removed": true,
+    "external_real_mac_proof_performed": false,
+    "external_real_mac_proof_claimed": false
+  }
+}

@@ -89,6 +89,113 @@ REQUIRED_README_SECTIONS = [
     "R5 Note",
 ]
 
+# §7.1 Current Status - facts the owning section must carry on visible prose.
+CURRENT_STATUS_FACTS = [
+    (r"macOS\s*15\.0", "macOS 15.0+"),
+    (r"Apple Silicon", "Apple Silicon"),
+    (r"Swift Package", "Swift Package build"),
+    (r"3314790", "CloverPit Steam App ID"),
+    (r"Implemented", "CloverPit implemented"),
+    (r"acceptance\s*(Enhanced )?\|\s*Pending|acceptance\s*pending", "local acceptance pending"),
+    (r"Not yet available", "downloadable app unavailable"),
+]
+
+# §7.2 Runtime Truth - all 10 runtime/CrossOver conditions, in-section only.
+RUNTIME_TRUTH_FACTS = [
+    (r"imported wine[^\n]*canonical", "Imported Wine canonical"),
+    (r"system wine may be discovered", "System Wine discoverable"),
+    (r"excluded from the default", "System Wine not default"),
+    (r"future/unavailable|future[^\n]*unavailable", "Managed Wine unavailable"),
+    (r"cross[Oo]ver is not required|not required", "CrossOver not required"),
+    (r"cross[Oo]ver is not canonical|not canonical", "CrossOver not canonical"),
+    (r"disabled-by-default|disabled by default", "CrossOver disabled by default"),
+    (r"explicit opt-in|explicit opt in", "CrossOver explicit opt-in"),
+    (r"lowest-priority|lowest priority", "CrossOver lowest priority"),
+    (r"never a prerequisite", "CrossOver never prerequisite"),
+]
+
+# §7.3 Setup Flow - ordered coordinator steps (positions must increase).
+SETUP_FLOW_ORDER = [
+    r"select/import a runtime",
+    r"inspect/create a canonical wine prefix",
+    r"select a user[- ]obtained steam installer|user-selected steam installer",
+    r"install/open steam",
+    r"detect/install/launch cloverpit",
+]
+
+# §7.4 How It Works - visible prose only (fenced diagram alone fails).
+HOW_IT_WORKS_FACTS = [
+    (r"recipe loading", "recipe loading"),
+    (r"user-selected/imported runtime|imported runtime|runtime detection", "runtime resolution"),
+    (r"windows steam", "Windows Steam detection"),
+    (r"game inspection", "game installation inspection"),
+    (r"app id", "game launch with app ID"),
+]
+
+# §7.5 Distribution Truth - packaging facts, in-section only.
+DISTRIBUTION_TRUTH_FACTS = [
+    (r"swift package development execution", "Swift Package development execution"),
+    (r"\.app.*bundle.*not complete|no \.app bundle", "no completed .app bundle"),
+    (r"codesign[^\n]*not complete|codesign.*incomplete", "codesign incomplete"),
+    (r"notariz[^\n]*not complete|notariz.*incomplete", "notarization incomplete"),
+    (r"packaging[^\n]*not complete|packaging.*incomplete", "packaging incomplete"),
+    (r"no release download", "no release download advertised"),
+]
+
+# §7.6 Safety and Privacy - privacy facts, in-section only.
+SAFETY_PRIVACY_FACTS = [
+    (r"no steam installer bundling", "no installer bundling"),
+    (r"no app-controlled steam installer download", "no app-controlled download"),
+    (r"no steam credential access", "no credential access"),
+    (r"no sudo", "no sudo"),
+    (r"no shell command construction|no shell", "no shell command construction"),
+    (r"diagnostics[^\n]*local", "diagnostics local"),
+    (r"redacted", "diagnostics redacted"),
+]
+
+# §7.7 Known Limitations - limitation facts, in-section only.
+KNOWN_LIMITATIONS_FACTS = [
+    (r"steam rendering[^\n]*acceptance[^\n]*pending|steam rendering.*pending",
+     "Steam rendering pending"),
+    (r"cloverpit gameplay[^\n]*acceptance[^\n]*pending|cloverpit gameplay.*pending",
+     "CloverPit gameplay pending"),
+    (r"no performance", "no performance claim"),
+    (r"no[^\n]*audio", "no audio claim"),
+    (r"no[^\n]*input", "no input claim"),
+    (r"no clean-install", "no clean-install claim"),
+    (r"no[^\n]*gatekeeper", "no Gatekeeper claim"),
+    (r"only cloverpit", "CloverPit only current target"),
+    (r"no game.*metadata|no game.*save|no cloud sync", "no metadata/save/cloud"),
+]
+
+# §7.8 Completion Roadmap - ordered lanes.  Each lane lists the ordered steps;
+# both lanes must appear in order inside the owning section.
+MINIMAL_LANE_ORDER = [
+    r"public truth",
+    r"local runtime acceptance",
+    r"final audit",
+    r"ready",
+    r"merge",
+]
+GENERAL_LANE_ORDER = [
+    r"public truth",
+    r"\.app build",
+    r"signing",
+    r"notariz",
+    r"packaging",
+    r"local runtime acceptance",
+    r"clean-install",
+    r"gatekeeper acceptance",
+    r"final audit",
+    r"ready",
+    r"merge",
+    r"release",
+]
+
+# --------------------------------------------------------------------------
+# helpers
+# --------------------------------------------------------------------------
+
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
@@ -183,18 +290,59 @@ def _validate(instance, schema, path):
 # failure even though it would not fail a "validate instance against weakened
 # schema" pass.
 
-def _require_value(prop, expected):
-    """Return None if prop keeps an exact const == expected, else a message."""
+SCHEMA_DRAFT_07 = "http://json-schema.org/draft-07/schema#"
+
+# Each prop is (expected_const, expected_native_type, expected_declared_type).
+# expected_declared_type is the JSON "type" the reference schema declares for
+# that property, or None when the reference schema does not declare a "type"
+# (only schema_version/kind at the top level).  When it is not None, the schema
+# must keep that exact declared type (no removal / widening).  The native type
+# of the const is always enforced so a plain "const" binding cannot be stripped.
+SCHEMA_CONTRACT_TOP = {
+    "type": "object",
+    "required": ["schema_version", "kind", "branding", "platform", "runtime",
+                 "steam", "cloverpit", "packaging", "release", "r5"],
+    "props": {
+        "schema_version": (1, "integer", None),
+        "kind": ("macsteam_public_product_truth", "string", None),
+    },
+}
+
+
+def _require_value(prop, expected_const, expected_native, expected_declared):
+    """Return None if prop keeps an exact native-typed const == expected_const,
+    keeps the required JSON const binding, and (when the reference schema
+    declares a type for this property) keeps that exact declared type.  Exact
+    identity matters: booleans never accept 0/1/"false"/"true", and a declared
+    type cannot be dropped or widened."""
     if not isinstance(prop, dict):
         return f"property block not an object: {prop!r}"
-    if prop.get("const") != expected:
-        return f"const removed or changed (expected {expected!r}, got {prop.get('const')!r})"
+    if "const" not in prop:
+        return f"const removed (expected {expected_const!r})"
+    const = prop.get("const")
+    if const != expected_const:
+        return f"const removed or changed (expected {expected_const!r}, got {const!r})"
+    # native type identity for the const value
+    if expected_native == "boolean" and not isinstance(const, bool):
+        return f"boolean const is not a native boolean: {const!r}"
+    if expected_native == "integer" and (not isinstance(const, int) or isinstance(const, bool)):
+        return f"integer const is not a native integer: {const!r}"
+    if expected_native == "string" and not isinstance(const, str):
+        return f"string const is not a native string: {const!r}"
+    # when the reference schema declares a type for this property, it must stay
+    if expected_declared is not None:
+        declared = prop.get("type")
+        if declared != expected_declared:
+            return f"type removed or changed (expected {expected_declared!r}, got {declared!r})"
     return None
 
 
-def _require_closed(obj, required, props):
-    """Return None if obj keeps required set, additionalProperties:false, and
-    every key in props is present.  props is {key: expected_const_or_None}."""
+def _require_closed(obj, required, props, expected_type):
+    """Return None if obj keeps type, required set, additionalProperties:false,
+    and every key in props is present with exact const+type.  props is
+    {key: (expected_const, expected_native, expected_declared)}."""
+    if obj.get("type") != expected_type:
+        return f"type is not {expected_type!r}: {obj.get('type')!r}"
     actual_required = obj.get("required")
     if not isinstance(actual_required, list):
         return "required is not an array"
@@ -205,155 +353,194 @@ def _require_closed(obj, required, props):
     properties = obj.get("properties")
     if not isinstance(properties, dict):
         return "properties is not an object"
-    for key, expected in props.items():
+    for key, (expected_const, expected_native, expected_declared) in props.items():
         if key not in properties:
             return f"property {key!r} removed"
-        if expected is not None:
-            err = _require_value(properties[key], expected)
-            if err:
-                return f"{key}: {err}"
+        err = _require_value(properties[key], expected_const, expected_native, expected_declared)
+        if err:
+            return f"{key}: {err}"
     return None
-
-
-# Full expected shape of the product truth schema contract.  Booleans are
-# represented as the Python values we require the const to equal.
-SCHEMA_CONTRACT_TOP = {
-    "required": ["schema_version", "kind", "branding", "platform", "runtime",
-                 "steam", "cloverpit", "packaging", "release", "r5"],
-    "props": {
-        "schema_version": 1,
-        "kind": "macsteam_public_product_truth",
-    },
-}
-
-SCHEMA_CONTRACT_SECTIONS = {
-    "branding": {
-        "required": ["product_display_name", "internal_module_name"],
-        "props": {"product_display_name": "MacsTeam",
-                  "internal_module_name": "MacSteam"},
-    },
-    "platform": {
-        "required": ["operating_system", "minimum_version", "architecture"],
-        "props": {"operating_system": "macOS", "minimum_version": "15.0",
-                  "architecture": "Apple Silicon"},
-    },
-    "runtime": {
-        "required": ["canonical_u1_runtime", "system_wine_discoverable",
-                     "system_wine_selected_by_default", "managed_wine_available",
-                     "crossover_canonical", "crossover_required",
-                     "crossover_default_enabled", "crossover_policy"],
-        "props": {
-            "canonical_u1_runtime": "imported-wine",
-            "system_wine_discoverable": True,
-            "system_wine_selected_by_default": False,
-            "managed_wine_available": False,
-            "crossover_canonical": False,
-            "crossover_required": False,
-            "crossover_default_enabled": False,
-            "crossover_policy": "disabled-by-default-explicit-opt-in-lowest-priority",
-        },
-    },
-    "steam": {
-        "required": ["installer_mode", "installer_bundled",
-                     "installer_downloaded_by_app", "credentials_accessed"],
-        "props": {"installer_mode": "user-selected-file",
-                  "installer_bundled": False,
-                  "installer_downloaded_by_app": False,
-                  "credentials_accessed": False},
-    },
-    "cloverpit": {
-        "required": ["steam_app_id", "implementation_status",
-                     "playability_claimed"],
-        "props": {"steam_app_id": "3314790",
-                  "implementation_status": "implemented-pending-local-acceptance",
-                  "playability_claimed": False},
-    },
-    "packaging": {
-        "required": ["current_distribution", "app_bundle_available",
-                     "codesigned", "notarized", "packaged_release_available"],
-        "props": {"current_distribution": "swift-package-development-build",
-                  "app_bundle_available": False, "codesigned": False,
-                  "notarized": False, "packaged_release_available": False},
-    },
-    "release": {
-        "required": ["pull_request_draft", "ready_authorized",
-                     "merge_authorized", "release_authorized"],
-        "props": {"pull_request_draft": True, "ready_authorized": False,
-                  "merge_authorized": False, "release_authorized": False},
-    },
-    "r5": {
-        "required": ["external_real_mac_proof_requirement_removed",
-                     "external_real_mac_proof_performed",
-                     "external_real_mac_proof_claimed"],
-        "props": {"external_real_mac_proof_requirement_removed": True,
-                  "external_real_mac_proof_performed": False,
-                  "external_real_mac_proof_claimed": False},
-    },
-}
 
 
 def schema_contract_violation(schema):
     """Return a human-readable violation if the schema is weakened, else None."""
     if not isinstance(schema, dict):
         return "schema root is not an object"
+    if schema.get("$schema") != SCHEMA_DRAFT_07:
+        return f"schema draft id removed or changed: {schema.get('$schema')!r}"
     top_err = _require_closed(schema, SCHEMA_CONTRACT_TOP["required"],
-                              SCHEMA_CONTRACT_TOP["props"])
+                              SCHEMA_CONTRACT_TOP["props"],
+                              SCHEMA_CONTRACT_TOP["type"])
     if top_err:
         return f"top-level: {top_err}"
     properties = schema.get("properties", {})
     for key, contract in SCHEMA_CONTRACT_SECTIONS.items():
         if key not in properties:
             return f"section {key!r} removed from schema"
-        err = _require_closed(properties[key], contract["required"], contract["props"])
+        err = _require_closed(properties[key], contract["required"], contract["props"],
+                              contract["type"])
         if err:
             return f"section {key!r}: {err}"
     return None
+
+SCHEMA_CONTRACT_SECTIONS = {
+    "branding": {
+        "type": "object",
+        "required": ["product_display_name", "internal_module_name"],
+        "props": {"product_display_name": ("MacsTeam", "string", "string"),
+                  "internal_module_name": ("MacSteam", "string", "string")},
+    },
+    "platform": {
+        "type": "object",
+        "required": ["operating_system", "minimum_version", "architecture"],
+        "props": {"operating_system": ("macOS", "string", "string"),
+                  "minimum_version": ("15.0", "string", "string"),
+                  "architecture": ("Apple Silicon", "string", "string")},
+    },
+    "runtime": {
+        "type": "object",
+        "required": ["canonical_u1_runtime", "system_wine_discoverable",
+                     "system_wine_selected_by_default", "managed_wine_available",
+                     "crossover_canonical", "crossover_required",
+                     "crossover_default_enabled", "crossover_policy"],
+        "props": {
+            "canonical_u1_runtime": ("imported-wine", "string", "string"),
+            "system_wine_discoverable": (True, "boolean", "boolean"),
+            "system_wine_selected_by_default": (False, "boolean", "boolean"),
+            "managed_wine_available": (False, "boolean", "boolean"),
+            "crossover_canonical": (False, "boolean", "boolean"),
+            "crossover_required": (False, "boolean", "boolean"),
+            "crossover_default_enabled": (False, "boolean", "boolean"),
+            "crossover_policy": ("disabled-by-default-explicit-opt-in-lowest-priority", "string", "string"),
+        },
+    },
+    "steam": {
+        "type": "object",
+        "required": ["installer_mode", "installer_bundled",
+                     "installer_downloaded_by_app", "credentials_accessed"],
+        "props": {"installer_mode": ("user-selected-file", "string", "string"),
+                  "installer_bundled": (False, "boolean", "boolean"),
+                  "installer_downloaded_by_app": (False, "boolean", "boolean"),
+                  "credentials_accessed": (False, "boolean", "boolean")},
+    },
+    "cloverpit": {
+        "type": "object",
+        "required": ["steam_app_id", "implementation_status",
+                     "playability_claimed"],
+        "props": {"steam_app_id": ("3314790", "string", "string"),
+                  "implementation_status": ("implemented-pending-local-acceptance", "string", "string"),
+                  "playability_claimed": (False, "boolean", "boolean")},
+    },
+    "packaging": {
+        "type": "object",
+        "required": ["current_distribution", "app_bundle_available",
+                     "codesigned", "notarized", "packaged_release_available"],
+        "props": {"current_distribution": ("swift-package-development-build", "string", "string"),
+                  "app_bundle_available": (False, "boolean", "boolean"),
+                  "codesigned": (False, "boolean", "boolean"),
+                  "notarized": (False, "boolean", "boolean"),
+                  "packaged_release_available": (False, "boolean", "boolean")},
+    },
+    "release": {
+        "type": "object",
+        "required": ["pull_request_draft", "ready_authorized",
+                     "merge_authorized", "release_authorized"],
+        "props": {"pull_request_draft": (True, "boolean", "boolean"),
+                  "ready_authorized": (False, "boolean", "boolean"),
+                  "merge_authorized": (False, "boolean", "boolean"),
+                  "release_authorized": (False, "boolean", "boolean")},
+    },
+    "r5": {
+        "type": "object",
+        "required": ["external_real_mac_proof_requirement_removed",
+                     "external_real_mac_proof_performed",
+                     "external_real_mac_proof_claimed"],
+        "props": {"external_real_mac_proof_requirement_removed": (True, "boolean", "boolean"),
+                  "external_real_mac_proof_performed": (False, "boolean", "boolean"),
+                  "external_real_mac_proof_claimed": (False, "boolean", "boolean")},
+    },
+}
 
 
 # --------------------------------------------------------------------------
 # product truth authority validation
 # --------------------------------------------------------------------------
 
+# Independent semantic contract: every fixed authority value, checked against
+# the manifest WITHOUT trusting the schema's const/type/required.  Each entry
+# is (section, key, expected_value, expected_py_type).  Exact type identity is
+# enforced for booleans so 0 / 1 / "false" / "true" are never accepted as bool.
+SEMANTIC_FIXED = [
+    # branding
+    ("branding", "product_display_name", "MacsTeam", str),
+    ("branding", "internal_module_name", "MacSteam", str),
+    # platform
+    ("platform", "operating_system", "macOS", str),
+    ("platform", "minimum_version", "15.0", str),
+    ("platform", "architecture", "Apple Silicon", str),
+    # runtime
+    ("runtime", "canonical_u1_runtime", "imported-wine", str),
+    ("runtime", "system_wine_discoverable", True, bool),
+    ("runtime", "system_wine_selected_by_default", False, bool),
+    ("runtime", "managed_wine_available", False, bool),
+    ("runtime", "crossover_canonical", False, bool),
+    ("runtime", "crossover_required", False, bool),
+    ("runtime", "crossover_default_enabled", False, bool),
+    ("runtime", "crossover_policy",
+     "disabled-by-default-explicit-opt-in-lowest-priority", str),
+    # steam
+    ("steam", "installer_mode", "user-selected-file", str),
+    ("steam", "installer_bundled", False, bool),
+    ("steam", "installer_downloaded_by_app", False, bool),
+    ("steam", "credentials_accessed", False, bool),
+    # cloverpit
+    ("cloverpit", "steam_app_id", "3314790", str),
+    ("cloverpit", "implementation_status",
+     "implemented-pending-local-acceptance", str),
+    ("cloverpit", "playability_claimed", False, bool),
+    # packaging
+    ("packaging", "current_distribution", "swift-package-development-build", str),
+    ("packaging", "app_bundle_available", False, bool),
+    ("packaging", "codesigned", False, bool),
+    ("packaging", "notarized", False, bool),
+    ("packaging", "packaged_release_available", False, bool),
+    # release
+    ("release", "pull_request_draft", True, bool),
+    ("release", "ready_authorized", False, bool),
+    ("release", "merge_authorized", False, bool),
+    ("release", "release_authorized", False, bool),
+    # r5
+    ("r5", "external_real_mac_proof_requirement_removed", True, bool),
+    ("r5", "external_real_mac_proof_performed", False, bool),
+    ("r5", "external_real_mac_proof_claimed", False, bool),
+]
+
+
+SEMANTIC_INVALID = "public_truth_semantic_invalid"
+_semantic_detail = None
+
+
 def semantic_validate(truth):
-    r = truth.get("runtime", {})
-    s = truth.get("steam", {})
-    c = truth.get("cloverpit", {})
-    p = truth.get("packaging", {})
-    rel = truth.get("release", {})
-
-    if r.get("canonical_u1_runtime") != "imported-wine":
-        return "public_truth_semantic_invalid"
-    if r.get("crossover_policy") != "disabled-by-default-explicit-opt-in-lowest-priority":
-        return "public_truth_semantic_invalid"
-
-    if s.get("installer_mode") != "user-selected-file":
-        return "public_truth_semantic_invalid"
-    if s.get("installer_bundled") or s.get("installer_downloaded_by_app"):
-        return "public_truth_semantic_invalid"
-
-    if c.get("playability_claimed") or c.get("implementation_status") != \
-            "implemented-pending-local-acceptance":
-        return "public_truth_semantic_invalid"
-    if c.get("steam_app_id") != "3314790":
-        return "public_truth_semantic_invalid"
-
-    if p.get("current_distribution") != "swift-package-development-build":
-        return "public_truth_semantic_invalid"
-    if p.get("packaged_release_available"):
-        return "public_truth_semantic_invalid"
-
-    if rel.get("ready_authorized") or rel.get("merge_authorized") or rel.get("release_authorized"):
-        return "public_truth_semantic_invalid"
-    if not rel.get("pull_request_draft"):
-        return "public_truth_semantic_invalid"
-
-    if not truth.get("r5", {}).get("external_real_mac_proof_requirement_removed"):
-        return "public_truth_semantic_invalid"
-    if truth.get("r5", {}).get("external_real_mac_proof_performed"):
-        return "public_truth_semantic_invalid"
-    if truth.get("r5", {}).get("external_real_mac_proof_claimed"):
-        return "public_truth_semantic_invalid"
-
+    global _semantic_detail
+    _semantic_detail = None
+    if not isinstance(truth, dict):
+        _semantic_detail = "authority root is not an object"
+        return SEMANTIC_INVALID
+    for section, key, expected, py_type in SEMANTIC_FIXED:
+        node = truth.get(section) if isinstance(truth, dict) else None
+        if not isinstance(node, dict) or key not in node:
+            _semantic_detail = f"{section}.{key} is missing"
+            return SEMANTIC_INVALID
+        value = node[key]
+        # exact type identity first (reject 0/1/"false"/"true" as bool)
+        if not isinstance(value, py_type):
+            _semantic_detail = (f"{section}.{key} has wrong type: "
+                                f"{value!r} ({type(value).__name__})")
+            return SEMANTIC_INVALID
+        if value != expected:
+            _semantic_detail = (f"{section}.{key} expected {expected!r}, "
+                                f"got {value!r}")
+            return SEMANTIC_INVALID
     return None
 
 
@@ -363,6 +550,37 @@ def semantic_validate(truth):
 
 def strip_html_comments(text):
     return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+
+def strip_fenced_blocks(text):
+    """Remove fenced code blocks (``` or ~~~ fences, with or without a
+    language tag).  Content inside a fence is invisible evidence: headings,
+    correct answer words, and claims inside a fence must never satisfy a
+    check on visible prose."""
+    out = []
+    in_fence = None
+    for line in text.splitlines():
+        m = re.match(r"^\s*((?:`{3,})|(?:~{3,}))\s*(.*)$", line)
+        if m:
+            marker = m.group(1)
+            char = marker[0]
+            if in_fence is None:
+                in_fence = char
+            elif in_fence == char:
+                in_fence = None
+            out.append("")
+            continue
+        if in_fence is not None:
+            out.append("")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def sanitize_markdown(text):
+    """Visible prose for evidence checks: HTML comments and fenced code blocks
+    are removed so comment/fence decoys cannot satisfy positive bindings."""
+    return strip_fenced_blocks(strip_html_comments(text))
 
 
 def sections(text):
@@ -382,11 +600,20 @@ def sections(text):
 
 
 def l2_sections(text):
-    """Return {heading: body} for every level-2 heading."""
+    """Return {heading: body} for every level-2 heading.
+
+    Nested subsections (level 3+) are folded into their owning level-2 body so
+    that per-section fact checks see the whole section including subsections.
+    """
     result = {}
+    current = None
     for lvl, heading, body in sections(text):
         if lvl == 2:
-            result[heading.strip()] = body
+            current = heading.strip()
+            result[current] = body
+        elif lvl > 2 and current is not None:
+            result[current] = result.get(current, "") + "\n" + "#" * lvl + " " + \
+                heading + "\n" + body
     return result
 
 
@@ -450,6 +677,8 @@ def run_overclaim(text):
 # --------------------------------------------------------------------------
 
 def check_readme(text, truth):
+    # Marker checks always run on the RAW README: the marker is an HTML
+    # comment and would be stripped by sanitization.
     if text.count(MARKER) == 0:
         die("public_truth_marker_missing", EXIT_POLICY,
             "README.md is missing the public product truth marker")
@@ -457,10 +686,8 @@ def check_readme(text, truth):
         die("public_truth_marker_duplicated", EXIT_POLICY,
             "README.md contains more than one public product truth marker")
 
-    body = strip_html_comments(text)
-
     # Marker placement: must sit in the leading intro, before the first level-2
-    # heading, not buried in an unrelated section.
+    # heading, not buried in an unrelated section (raw positioning).
     first_l2 = None
     for lvl, heading, _ in sections(text):
         if lvl == 2:
@@ -473,15 +700,19 @@ def check_readme(text, truth):
             die("public_truth_marker_missing", EXIT_POLICY,
                 "public product truth marker is placed in an unrelated section")
 
-    # --- comment-hidden truth ---
+    # All other evidence uses sanitized visible prose: HTML comments and
+    # fenced code blocks are stripped so decoys cannot satisfy bindings.
+    body = sanitize_markdown(text)
+
+    # --- comment/fence-hidden truth ---
     if "imported" in text.lower() and "imported" not in body.lower():
         die("public_truth_runtime_invalid", EXIT_POLICY,
-            "product truth is hidden inside HTML comments")
+            "product truth is hidden inside HTML comments or fenced blocks")
 
-    # --- mandatory L2 sections: each exactly once ($8) ---
-    l2 = l2_sections(text)
+    # --- mandatory L2 sections: each exactly once on visible prose ---
+    l2 = l2_sections(body)
     counts = {}
-    for lvl, heading, _ in sections(text):
+    for lvl, heading, _ in sections(body):
         if lvl == 2:
             counts[heading.strip()] = counts.get(heading.strip(), 0) + 1
     for name in REQUIRED_README_SECTIONS:
@@ -492,54 +723,68 @@ def check_readme(text, truth):
             die("public_truth_docs_drift", EXIT_POLICY,
                 f"README section is duplicated: {name!r}")
 
-    # --- branding ---
+    # --- branding (visible prose only) ---
     b = truth["branding"]
     disp = b["product_display_name"]
     internal = b["internal_module_name"]
-    if f"# {disp}" not in text and f"**{disp}" not in text and disp not in text:
+    if f"# {disp}" not in body and f"**{disp}" not in body and disp not in body:
         die("public_truth_branding_invalid", EXIT_POLICY,
             f"README does not name the product {disp}")
-    if not re.search(rf"\b{re.escape(internal)}\b", text):
+    if not re.search(rf"\b{re.escape(internal)}\b", body):
         die("public_truth_branding_invalid", EXIT_POLICY,
             f"README does not reference the internal module {internal}")
-    if re.search(rf"\bproduct name\b[^\n]{{0,40}}{re.escape(internal)}", text,
+    if re.search(rf"\bproduct name\b[^\n]{{0,40}}{re.escape(internal)}", body,
                  flags=re.IGNORECASE) and not \
             re.search(rf"\bproduct name\b[^\n]{{0,40}}{re.escape(disp)}",
-                      text, flags=re.IGNORECASE) and not \
+                      body, flags=re.IGNORECASE) and not \
             re.search(rf"\bproduct name\b[^\n]{{0,40}}\b(and|or)\b",
-                      text, flags=re.IGNORECASE):
+                      body, flags=re.IGNORECASE):
         die("public_truth_branding_invalid", EXIT_POLICY,
             "README asserts the internal module name as the product name")
 
-    # --- runtime / steam / acceptance / packaging / release stale scan ---
+    # --- stale / overclaiming scan on visible prose ---
     body_norm = re.sub(r"\*\*|`+|\*+", "", body)
     frag, guard = run_overclaim(body_norm)
     if frag:
         die(guard, EXIT_POLICY,
             f"README stale or overclaiming statement: {frag!r}")
 
-    # --- section-owned runtime truth: the Runtime Truth section must describe
-    # the imported-wine canonical runtime and qualify the CrossOver policy ---
-    rt_section = l2.get("Runtime Truth", "")
-    rt_norm = re.sub(r"\*\*|`+|\*+", "", rt_section)
-    if "imported" not in dedent(rt_norm).lower():
-        die("public_truth_runtime_invalid", EXIT_POLICY,
-            "Runtime Truth section does not describe the imported-wine runtime")
-    if "imported" not in l2.get("Run", "") and "imported" not in l2.get("How It Works", ""):
-        pass  # Run/How It Works are optional owners; the Runtime Truth section rules.
-    if not re.search(r"(not required|not canonical|disabled.by.default|opt.in)", rt_norm,
-                     flags=re.IGNORECASE):
-        die("public_truth_runtime_invalid", EXIT_POLICY,
-            "Runtime Truth section does not qualify the CrossOver policy")
+    # --- helper: every fact must live in its owning section ---
+    def require_facts(section_name, facts, guard):
+        sec_norm = re.sub(r"\*\*|`+|\*+", "", l2.get(section_name, ""))
+        for pat, label in facts:
+            if not re.search(pat, sec_norm, flags=re.IGNORECASE):
+                die(guard, EXIT_POLICY,
+                    f"{section_name} section missing fact: {label}")
 
-    # --- steam flow (Setup Flow / Distribution Truth / Safety and Privacy) ---
-    steam_blob = l2.get("Setup Flow", "") + " " + l2.get("Safety and Privacy", "") + \
-        " " + l2.get("Distribution Truth", "")
-    steam_flow = dedent(steam_blob).lower()
-    if not re.search(r"user[- .]selected|user[- .]obtained|user-provided|user decided|user chooses",
-                     steam_flow):
-        die("public_truth_steam_invalid", EXIT_POLICY,
-            "README does not describe the user-selected Steam installer flow")
+    # §7.1 Current Status
+    require_facts("Current Status", CURRENT_STATUS_FACTS, "public_truth_docs_drift")
+    # §7.2 Runtime Truth: all 10 runtime/CrossOver conditions in-section
+    require_facts("Runtime Truth", RUNTIME_TRUTH_FACTS, "public_truth_runtime_invalid")
+    # §7.4 How It Works: visible prose only
+    require_facts("How It Works", HOW_IT_WORKS_FACTS, "public_truth_docs_drift")
+    # §7.5 Distribution Truth
+    require_facts("Distribution Truth", DISTRIBUTION_TRUTH_FACTS, "public_truth_docs_drift")
+    # §7.6 Safety and Privacy
+    require_facts("Safety and Privacy", SAFETY_PRIVACY_FACTS, "public_truth_docs_drift")
+    # §7.7 Known Limitations
+    require_facts("Known Limitations", KNOWN_LIMITATIONS_FACTS, "public_truth_docs_drift")
+
+    # §7.3 Setup Flow: ordered coordinator steps (positions must increase)
+    def require_ordered(section_name, patterns, guard):
+        sec_norm = re.sub(r"\*\*|`+|\*+", "", l2.get(section_name, ""))
+        pos = -1
+        for pat in patterns:
+            m = re.search(pat, sec_norm, flags=re.IGNORECASE)
+            if not m:
+                die(guard, EXIT_POLICY,
+                    f"{section_name} section missing ordered step: {pat!r}")
+            if m.start() <= pos:
+                die(guard, EXIT_POLICY,
+                    f"{section_name} section steps out of order: {pat!r}")
+            pos = m.end()
+
+    require_ordered("Setup Flow", SETUP_FLOW_ORDER, "public_truth_steam_invalid")
 
     # --- r5 (R5 Note section must carry the exact sentence) ---
     r5_flat = re.sub(r"\s+", " ", R5_SENTENCE)
@@ -547,7 +792,7 @@ def check_readme(text, truth):
     if r5_flat not in r5_section_flat:
         die("public_truth_r5_invalid", EXIT_POLICY,
             "R5 Note section does not contain the exact R5 sentence")
-    # --- r5 claim negation check (scan the whole rendered body) ---
+    # --- r5 claim negation check (scan the whole visible body) ---
     r5_claim = False
     for ln in re.split(r"\n+", body):
         if re.search(r"[Pp]roof[^\n]*(performed|claimed)", ln) and \
@@ -557,19 +802,50 @@ def check_readme(text, truth):
         die("public_truth_r5_invalid", EXIT_POLICY,
             "README claims R5 proof was performed or claimed")
 
-    # --- roadmap §8: the Completion Roadmap section must carry both lanes and
-    # must present itself as planning-only ---
+    # --- §7.8 Completion Roadmap: planning-only, not authorized/complete, and
+    # the two lanes must keep their ordered steps inside the owning section ---
     roadmap = l2.get("Completion Roadmap", "")
-    if "planning" not in roadmap.lower():
+    if not re.search(r"planning[- ]?only|planning-only", roadmap, flags=re.IGNORECASE):
         die("public_truth_roadmap_invalid", EXIT_POLICY,
             "README roadmap does not present itself as planning-only")
-    if not re.search(r"\b[minimal]\b.*roadmap", roadmap, flags=re.IGNORECASE) and \
-            "Minimal" not in roadmap:
+    if not re.search(r"neither[^\n]*authorized", roadmap, flags=re.IGNORECASE):
         die("public_truth_roadmap_invalid", EXIT_POLICY,
-            "README roadmap is missing the Minimal lane")
-    if "General distribution" not in roadmap:
+            "README roadmap does not state neither lane is authorized")
+    if not re.search(r"neither[^\n]*complete", roadmap, flags=re.IGNORECASE):
         die("public_truth_roadmap_invalid", EXIT_POLICY,
-            "README roadmap is missing the General distribution lane")
+            "README roadmap does not state neither lane is complete")
+
+    def lane_scope(before, after=None):
+        m = re.search(before, roadmap)
+        if not m:
+            return ""
+        rest = roadmap[m.end():]
+        if after is not None:
+            n = re.search(after, rest)
+            if n:
+                rest = rest[:n.start()]
+        return rest
+
+    def require_lane(name, before, after, patterns, guard):
+        scope = re.sub(r"\*\*|`+|\*+", "", lane_scope(before, after))
+        if not scope.strip():
+            die(guard, EXIT_POLICY, f"README roadmap is missing the {name} lane")
+        pos = -1
+        for pat in patterns:
+            m = re.search(pat, scope, flags=re.IGNORECASE)
+            if not m:
+                die(guard, EXIT_POLICY,
+                    f"{name} lane missing ordered step: {pat!r}")
+            if m.start() <= pos:
+                die(guard, EXIT_POLICY,
+                    f"{name} lane steps out of order: {pat!r}")
+            pos = m.end()
+
+    require_lane("Minimal", r"\*\*Minimal:\*\*", r"\*\*General", MINIMAL_LANE_ORDER,
+                 "public_truth_roadmap_invalid")
+    require_lane("General distribution", r"\*\*General distribution:\*\*", None,
+                 GENERAL_LANE_ORDER, "public_truth_roadmap_invalid")
+
 
 
 # --------------------------------------------------------------------------
@@ -587,13 +863,38 @@ def _doc_section_body(text, section_regex):
     return None
 
 
+# §8 canonical-doc owner bindings.  Each (rel_path, section_regex, bindings)
+# entry is checked only against the sanitized visible prose of its OWNING
+# section: facts hidden in comments or fenced blocks, or moved to a different
+# section, must fail.
+DOC_ARCHITECTURE_OVERVIEW = [
+    (r"imported wine is the canonical u1 runtime|imported wine[^\n]*canonical",
+     "Imported Wine canonical"),
+    (r"user-selected installer", "user-selected Steam installer"),
+    (r"disabled[- ]by[- ]default", "CrossOver disabled-by-default"),
+    (r"explicit opt[- ]in", "CrossOver explicit opt-in"),
+    (r"lowest[- ]priority", "CrossOver lowest priority"),
+    (r"never a prerequisite", "CrossOver never a prerequisite"),
+    (r"commercial adapter", "CrossOver non-canonical optional commercial adapter"),
+]
+DOC_STEAM_2 = [
+    (r"user must obtain|user[- ]selected file|user-selected", "user-selected installer"),
+    (r"never bundles or downloads|never[^\n]*bundle", "installer not bundled"),
+    (r"never bundles or downloads|never[^\n]*download", "installer not downloaded"),
+]
+DOC_STEAM_3 = [
+    (r"reads, stores, or transmits|never[^\n]*reads|never[^\n]*stores|never[^\n]*transmits",
+     "no credential reads/storage/transmission"),
+    (r"steam's authentication api|authentication api", "no auth API interaction"),
+    (r"loginusers\.vdf|account-related files", "no account-file reads"),
+    (r"steam itself", "auth by Steam itself"),
+]
+
+
 def scan_docs(root, truth):
     # (rel_path, optional section regex, [(positive_regex, label)])
     bindings = [
-        ("docs/ARCHITECTURE.md", r"\bOverview\b", [
-            (r"imported wine[^\n]*canonical", "imported-wine canonical"),
-            (r"user-selected installer", "user-selected installer"),
-        ]),
+        ("docs/ARCHITECTURE.md", r"\bOverview\b", DOC_ARCHITECTURE_OVERVIEW),
         ("docs/CLOVERPIT_U1.md", r"Current Product Status", [
             (r"3314790", "exact Steam App ID"),
             (r"implemented-pending-local-acceptance", "implementation status"),
@@ -617,10 +918,9 @@ def scan_docs(root, truth):
             (r"crossover is not required", "crossover not required"),
             (r"crossover is not default-enabled|disabled by default", "crossover not default"),
         ]),
-        ("docs/STEAM_BOUNDARY.md", r"User-Selected File Only", [
-            (r"user[- ]selected|user must obtain|user-provided", "user-selected installer"),
-            (r"never bundles or downloads the steam installer", "installer not bundled/downloaded"),
-        ]),
+        ("docs/STEAM_BOUNDARY.md", r"^2\.\s*Steam Installer: User-Selected File Only",
+         DOC_STEAM_2),
+        ("docs/STEAM_BOUNDARY.md", r"^3\.\s*No Credential Access", DOC_STEAM_3),
         ("docs/ULTIMATE_ARCHITECTURE.md", r"Current Acceptance Status", [
             (r"imported wine remains the canonical u1 runtime", "imported-wine canonical"),
             (r"acceptance remain pending", "acceptance pending"),
@@ -644,14 +944,14 @@ def scan_docs(root, truth):
             die("public_truth_docs_drift", EXIT_POLICY,
                 f"designated canonical doc missing: {rel}")
         text = read_text(path)
-        body_norm = re.sub(r"\*\*|`+|\*+", "", strip_html_comments(text))
+        body_norm = re.sub(r"\*\*|`+|\*+", "", sanitize_markdown(text))
         frag, guard = run_overclaim(body_norm)
         if frag:
             die(guard, EXIT_POLICY,
                 f"{rel}: public doc drift from truth authority: {frag!r}")
         scope = text
         if section_regex is not None:
-            scope = _doc_section_body(strip_html_comments(text), section_regex)
+            scope = _doc_section_body(sanitize_markdown(text), section_regex)
         if section_regex is not None and scope is None:
             die("public_truth_docs_drift", EXIT_POLICY,
                 f"{rel}: missing owning section for positive binding "
@@ -689,7 +989,8 @@ def cmd_audit(args):
 
     se = semantic_validate(truth)
     if se:
-        die(se, EXIT_POLICY, f"authority semantic violation: {se}")
+        detail = _semantic_detail or se
+        die(se, EXIT_POLICY, f"authority semantic violation: {se}: {detail}")
 
     contract_err = schema_contract_violation(schema)
     if contract_err:
