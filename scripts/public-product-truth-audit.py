@@ -671,6 +671,11 @@ def _statements(sec):
     return stmts
 
 
+def _normalize_heading(text):
+    """Strip markdown emphasis and collapse whitespace for heading comparison."""
+    return re.sub(r"\s+", " ", re.sub(r"\*\*|\*+|`+", "", text)).strip()
+
+
 def visible_headings(text):
     """(level, heading, raw_offset) for headings on VISIBLE prose.
 
@@ -780,17 +785,30 @@ def check_readme(text, truth):
             "README.md contains more than one public product truth marker")
 
     # Marker placement (raw positioning): the marker must appear AFTER the
-    # visible product H1 and BEFORE the first visible H2. Only VISIBLE
+    # sole visible product H1 and BEFORE the first visible H2. Only VISIBLE
     # headings count: fenced-code or HTML-comment decoy headings can never
     # supply the H1/H2 that the marker must be positioned against.
+    #
+    # §5 (FIX3): README authority is bound to EXACTLY ONE visible level-1
+    # heading whose normalized text is exactly the product display name. A
+    # wrong, absent, or duplicate visible product H1 is public_truth_branding
+    # _invalid; general prose naming the product cannot substitute for the
+    # product H1; a product name supplied only in prose/comment/fence fails.
     vis = visible_headings(text)
-    vis_h1 = [o for (lv, h, o) in vis if lv == 1]
+    h1_offs = [o for (lv, h, o) in vis if lv == 1]
     vis_h2 = [o for (lv, h, o) in vis if lv == 2]
+    disp = truth["branding"]["product_display_name"]
+    if len(h1_offs) != 1:
+        die("public_truth_branding_invalid", EXIT_POLICY,
+            "README must have exactly one visible product H1, "
+            f"got {len(h1_offs)}")
+    sole_h1 = next(h for (lv, h, o) in vis if lv == 1)
+    if _normalize_heading(sole_h1) != disp:
+        die("public_truth_branding_invalid", EXIT_POLICY,
+            f"README visible product H1 must be exactly the product name "
+            f"{disp!r}, got {_normalize_heading(sole_h1)!r}")
     marker_pos = text.find(MARKER)
-    if not vis_h1:
-        die("public_truth_marker_missing", EXIT_POLICY,
-            "README has no visible product H1 for the marker to follow")
-    if marker_pos < vis_h1[0]:
+    if marker_pos < h1_offs[0]:
         die("public_truth_marker_missing", EXIT_POLICY,
             "public product truth marker must appear after the visible product H1")
     if vis_h2 and marker_pos > vis_h2[0]:
@@ -996,19 +1014,20 @@ def check_readme(text, truth):
 # --------------------------------------------------------------------------
 
 def _doc_section_body(text, section_regex):
-    """Return a LIST of every matching owner-section body.
+    """Return every matching owner-section occurrence, in document order.
 
-    §4.7: zero matching owner sections must fail (missing binding scope) and
-    MORE THAN ONE must also fail (duplicate decoy/correct pair must not be
-    trusted by "first match wins"). Exactly one matching section is required.
+    §4 (FIX3): occurrences are NEVER collapsed through a heading-keyed
+    dictionary. Repeated identical headings are all preserved and counted, so
+    the caller's exactly-one requirement detects exact duplicates even when
+    every duplicate carries the accepted bindings. No occurrence is trusted by
+    "first/last match wins", and no occurrence is deduplicated by heading text
+    or body digest. `text` must already be sanitized visible prose: fenced-code
+    and HTML-comment headings are invisible and cannot affect the count.
     """
-    body_map = {}
-    for lvl, heading, body in sections(text):
-        body_map[heading.strip()] = body
     matches = []
-    for heading, b in body_map.items():
+    for _lvl, heading, body in sections(text):
         if re.search(section_regex, heading, flags=re.IGNORECASE):
-            matches.append(b)
+            matches.append(body)
     return matches
 
 

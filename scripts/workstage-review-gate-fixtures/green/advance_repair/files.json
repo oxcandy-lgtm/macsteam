@@ -2,9 +2,10 @@
   ".github/workstage-review-gate-policy.json",
   "scripts/public-product-truth-audit.py",
   "scripts/test-public-product-truth-audit.sh",
-  "scripts/test-workstage-review-gate.sh",
-  "scripts/public-product-truth-fixtures/base/README.md",
-  "scripts/public-product-truth-fixtures/red/e1-runtime-generic-bound-imported-wine/README.md",
+  "scripts/workstage-review-gate-fixtures/apply-mutation.py",
   "scripts/workstage-review-gate-fixtures/generate-green.py",
-  "scripts/workstage-review-gate-fixtures/apply-mutation.py"
+  "scripts/public-product-truth-fixtures/red/f2-owner-two-complete-duplicates/docs/ARCHITECTURE.md",
+  "scripts/public-product-truth-fixtures/red/f6-h1-other-product-prose/README.md",
+  "scripts/public-product-truth-fixtures/green/g7-owner-hidden-duplicates/docs/ARCHITECTURE.md",
+  "scripts/public-product-truth-fixtures/green/g8-h1-decoys-green/README.md"
 ]

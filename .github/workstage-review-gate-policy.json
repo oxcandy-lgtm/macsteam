@@ -12,11 +12,11 @@
     "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
   },
     "repair_authorization": {
-        "parent_sha": "6549b7e102ae38e034cb0fcceb96baa69e171e93",
-        "review_id": 4861858468,
-        "classification": "RED_U1R18_R10_FIX1_SCOPE1_FIX1_RESIDUAL_AUDIT_AND_REPORT_WINDOW_FAILURE",
-        "required_commit_message": "ci: close R10 residual audit and report window (U1R18-R10-FIX1-SCOPE1-FIX2)",
-        "required_workstream": "U1R18-R10-FIX1-SCOPE1-FIX2",
+        "parent_sha": "f2b32a6bf9c0e52aa67905bf04ec0fede2a0b61a",
+        "review_id": 4862557986,
+        "classification": "RED_U1R18_R10_FIX1_SCOPE1_FIX2_EXACT_OWNER_DUPLICATE_AND_PRODUCT_H1_BINDING_INCOMPLETE",
+        "required_commit_message": "ci: enforce exact owner uniqueness and product H1 (U1R18-R10-FIX1-SCOPE1-FIX3)",
+        "required_workstream": "U1R18-R10-FIX1-SCOPE1-FIX3",
         "single_direct_child_only": true,
         "allowed_exact_paths": [
             ".github/workstage-review-gate-policy.json",

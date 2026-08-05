@@ -88,6 +88,21 @@ U1R18_R10_FIX2_COMMIT_MSG = ("ci: close R10 residual audit and report window "
                              "(U1R18-R10-FIX1-SCOPE1-FIX2)\n\n"
                              "Workstream: U1R18-R10-FIX1-SCOPE1-FIX2")
 
+# === U1R18-R10-FIX1-SCOPE1-FIX3 (current workstream) ===
+# Authorized parent f2b32a6b... (the FIX2 child). The rejected controller review
+# 4862557986 classifies the FIX2 exact-owner-duplicate / product-H1 binding gaps
+# and authorizes exactly one direct child. It references the FIX2 worker report
+# 5189373754 and its successful submission 30988741207 as historical evidence.
+U1R18_R10_FIX3_PARENT = "f2b32a6bf9c0e52aa67905bf04ec0fede2a0b61a"
+U1R18_R10_FIX3_HEAD = "0d0e0f101112131415161718191a1b1c1d1e1f20"
+U1R18_R10_FIX3_REVIEW_ID = 4862557986
+U1R18_R10_FIX3_CLASSIFICATION = \
+    "RED_U1R18_R10_FIX1_SCOPE1_FIX2_EXACT_OWNER_DUPLICATE_AND_PRODUCT_H1_BINDING_INCOMPLETE"
+U1R18_R10_FIX3_WORKSTREAM = "U1R18-R10-FIX1-SCOPE1-FIX3"
+U1R18_R10_FIX3_COMMIT_MSG = ("ci: enforce exact owner uniqueness and product H1 "
+                             "(U1R18-R10-FIX1-SCOPE1-FIX3)\n\n"
+                             "Workstream: U1R18-R10-FIX1-SCOPE1-FIX3")
+
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
 REPAIR_REVIEW_ID_CHILD = 4843792150
@@ -399,27 +414,28 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=U1R18_R10_FIX2_HEAD, parent_sha=U1R18_R10_FIX2_PARENT,
-          message=U1R18_R10_FIX2_COMMIT_MSG)
-    repair_body = (controller_review_json(U1R18_R10_FIX2_PARENT, decision="rejected",
-                                          wr_comment_id=5188520048,
-                                          sub_run_id=30982775940,
-                                          classification=U1R18_R10_FIX2_CLASSIFICATION)
+    _base(d, head_sha=U1R18_R10_FIX3_HEAD, parent_sha=U1R18_R10_FIX3_PARENT,
+          message=U1R18_R10_FIX3_COMMIT_MSG)
+    repair_body = (controller_review_json(U1R18_R10_FIX3_PARENT, decision="rejected",
+                                          wr_comment_id=5189373754,
+                                          sub_run_id=30988741207,
+                                          classification=U1R18_R10_FIX3_CLASSIFICATION)
                    + "\n\nRepair authorization granted for "
-                     "U1R18-R10-FIX1-SCOPE1-FIX2. This RED review authorizes a single "
+                     "U1R18-R10-FIX1-SCOPE1-FIX3. This RED review authorizes a single "
                      "direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(U1R18_R10_FIX2_PARENT, U1R18_R10_FIX2_REVIEW_ID,
+                  [review_json(U1R18_R10_FIX3_PARENT, U1R18_R10_FIX3_REVIEW_ID,
                                repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json",
                   [".github/workstage-review-gate-policy.json",
                    "scripts/public-product-truth-audit.py",
                    "scripts/test-public-product-truth-audit.sh",
-                   "scripts/test-workstage-review-gate.sh",
-                   "scripts/public-product-truth-fixtures/base/README.md",
-                   "scripts/public-product-truth-fixtures/red/e1-runtime-generic-bound-imported-wine/README.md",
+                   "scripts/workstage-review-gate-fixtures/apply-mutation.py",
                    "scripts/workstage-review-gate-fixtures/generate-green.py",
-                   "scripts/workstage-review-gate-fixtures/apply-mutation.py"])
+                   "scripts/public-product-truth-fixtures/red/f2-owner-two-complete-duplicates/docs/ARCHITECTURE.md",
+                   "scripts/public-product-truth-fixtures/red/f6-h1-other-product-prose/README.md",
+                   "scripts/public-product-truth-fixtures/green/g7-owner-hidden-duplicates/docs/ARCHITECTURE.md",
+                   "scripts/public-product-truth-fixtures/green/g8-h1-decoys-green/README.md"])
 
 
 def create_r9_truth_scope_admitted():

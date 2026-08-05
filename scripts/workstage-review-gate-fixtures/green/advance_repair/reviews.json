@@ -1,13 +1,13 @@
 [
   {
-    "id": 4861858468,
+    "id": 4862557986,
     "user": {
       "login": "sai-controller"
     },
-    "commit_id": "6549b7e102ae38e034cb0fcceb96baa69e171e93",
+    "commit_id": "f2b32a6bf9c0e52aa67905bf04ec0fede2a0b61a",
     "state": "COMMENTED",
-    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"6549b7e102ae38e034cb0fcceb96baa69e171e93\",\n  \"worker_report_comment_id\": 5188520048,\n  \"submission_run_id\": 30982775940,\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R10_FIX1_SCOPE1_FIX1_RESIDUAL_AUDIT_AND_REPORT_WINDOW_FAILURE\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n\n\nRepair authorization granted for U1R18-R10-FIX1-SCOPE1-FIX2. This RED review authorizes a single direct child commit.\n",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"f2b32a6bf9c0e52aa67905bf04ec0fede2a0b61a\",\n  \"worker_report_comment_id\": 5189373754,\n  \"submission_run_id\": 30988741207,\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R10_FIX1_SCOPE1_FIX2_EXACT_OWNER_DUPLICATE_AND_PRODUCT_H1_BINDING_INCOMPLETE\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n\n\nRepair authorization granted for U1R18-R10-FIX1-SCOPE1-FIX3. This RED review authorizes a single direct child commit.\n",
     "submitted_at": "2026-08-03T02:50:00Z",
-    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4861858468"
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4862557986"
   }
 ]
