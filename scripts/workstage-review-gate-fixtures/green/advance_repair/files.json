@@ -4,6 +4,7 @@
   "scripts/test-public-product-truth-audit.sh",
   "scripts/test-workstage-review-gate.sh",
   "scripts/public-product-truth-fixtures/base/README.md",
+  "scripts/public-product-truth-fixtures/red/e1-runtime-generic-bound-imported-wine/README.md",
   "scripts/workstage-review-gate-fixtures/generate-green.py",
   "scripts/workstage-review-gate-fixtures/apply-mutation.py"
 ]

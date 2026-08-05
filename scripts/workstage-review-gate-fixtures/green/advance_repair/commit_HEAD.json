@@ -1,12 +1,12 @@
 {
-  "sha": "fee5d4c3b2a1908f7e6d5c4b3a291807f6e5d4c3",
+  "sha": "a1b9c7d2e3f40518293a4b5c6d7e8f90a1b2c3d4",
   "parents": [
     {
-      "sha": "3c8432951e542879b437b8f7ed4ce2b27ae02429"
+      "sha": "6549b7e102ae38e034cb0fcceb96baa69e171e93"
     }
   ],
   "commit": {
-    "message": "ci: close R10 SCOPE1 audit gaps (U1R18-R10-FIX1-SCOPE1-FIX1)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1-FIX1",
+    "message": "ci: close R10 residual audit and report window (U1R18-R10-FIX1-SCOPE1-FIX2)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1-FIX2",
     "committer": {
       "date": "2026-08-03T03:00:00Z",
       "name": "Test",

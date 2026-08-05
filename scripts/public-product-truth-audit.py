@@ -97,21 +97,33 @@ CURRENT_STATUS_FACTS = [
     (r"3314790", "CloverPit Steam App ID"),
     (r"Implemented", "CloverPit implemented"),
     (r"acceptance\s*(Enhanced )?\|\s*Pending|acceptance\s*pending", "local acceptance pending"),
-    (r"Not yet available", "downloadable app unavailable"),
+    # §4.2: app-availability truth must be bound to the signed/notarized
+    # downloadable app. A generic "not yet available" attached to another
+    # feature must not satisfy it.
+    (r"(?:downloadable|signed|notarized)[^\n]*app[^\n]*not yet available"
+     r"|not yet available[^\n]*downloadable", "downloadable app unavailable"),
 ]
 
-# §7.2 Runtime Truth - all 10 runtime/CrossOver conditions, in-section only.
+# §7.2 Runtime Truth - all conditions, in-section only AND bound to their
+# subject. Each tuple is (subject_pattern, fact_pattern, label): a generic
+# phrase ("not required"/"not canonical"/"future") that is NOT attached to its
+# intended subject (e.g. attached to Imported Wine, system Wine, another
+# adapter, or unrelated prose) must not satisfy the fact. A fact is present
+# only when SOME statement in the section carries both the subject and the fact.
 RUNTIME_TRUTH_FACTS = [
-    (r"imported wine[^\n]*canonical", "Imported Wine canonical"),
-    (r"system wine may be discovered", "System Wine discoverable"),
-    (r"excluded from the default", "System Wine not default"),
-    (r"future/unavailable|future[^\n]*unavailable", "Managed Wine unavailable"),
-    (r"cross[Oo]ver is not required|not required", "CrossOver not required"),
-    (r"cross[Oo]ver is not canonical|not canonical", "CrossOver not canonical"),
-    (r"disabled-by-default|disabled by default", "CrossOver disabled by default"),
-    (r"explicit opt-in|explicit opt in", "CrossOver explicit opt-in"),
-    (r"lowest-priority|lowest priority", "CrossOver lowest priority"),
-    (r"never a prerequisite", "CrossOver never prerequisite"),
+    ("imported wine", r"canonical", "Imported Wine canonical"),
+    ("system wine", r"may be discovered|discovered", "System Wine discoverable"),
+    ("system wine", r"excluded from the default|not[^\n]*(selected )?by default",
+     "System Wine not default"),
+    ("managed wine", r"future|unavailable", "Managed Wine unavailable"),
+    ("cross[Oo]ver", r"not required", "CrossOver not required"),
+    ("cross[Oo]ver", r"not canonical", "CrossOver not canonical"),
+    ("cross[Oo]ver", r"disabled[- ]by[- ]default|not default[- ]enabled",
+     "CrossOver disabled by default"),
+    ("cross[Oo]ver", r"explicit opt[- ]in", "CrossOver explicit opt-in"),
+    ("cross[Oo]ver", r"lowest[- ]priority", "CrossOver lowest priority"),
+    ("cross[Oo]ver", r"never a prerequisite|not a prerequisite",
+     "CrossOver never prerequisite"),
 ]
 
 # §7.3 Setup Flow - ordered coordinator steps (positions must increase).
@@ -124,9 +136,13 @@ SETUP_FLOW_ORDER = [
 ]
 
 # §7.4 How It Works - visible prose only (fenced diagram alone fails).
+# §4.3: runtime resolution must bind to the imported / user-selected Wine
+# runtime. Generic "runtime detection" prose without that binding must fail.
 HOW_IT_WORKS_FACTS = [
     (r"recipe loading", "recipe loading"),
-    (r"user-selected/imported runtime|imported runtime|runtime detection", "runtime resolution"),
+    (r"(?:imported|user[-]?selected)[^\n]*runtime"
+     r"|runtime[^\n]*(?:detection|selection)[^\n]{0,60}(?:imported|user[-]?selected)",
+     "runtime resolution bound to imported/user-selected Wine"),
     (r"windows steam", "Windows Steam detection"),
     (r"game inspection", "game installation inspection"),
     (r"app id", "game launch with app ID"),
@@ -165,7 +181,12 @@ KNOWN_LIMITATIONS_FACTS = [
     (r"no clean-install", "no clean-install claim"),
     (r"no[^\n]*gatekeeper", "no Gatekeeper claim"),
     (r"only cloverpit", "CloverPit only current target"),
-    (r"no game.*metadata|no game.*save|no cloud sync", "no metadata/save/cloud"),
+    # §4.4: each limitation fact is independent - removal of ANY one of them
+    # fails even when the other two remain present (no OR pattern).
+    (r"no game[^\n]*metadata|no[^\n]{0,60}metadata display", "no game metadata display"),
+    (r"no[^\n]{0,90}save management|save management[^\n]*(not|yet)",
+     "no save management"),
+    (r"no[^\n]{0,90}cloud sync|cloud sync[^\n]*(not|yet)", "no cloud sync"),
 ]
 
 # §7.8 Completion Roadmap - ordered lanes.  Each lane lists the ordered steps;
@@ -621,6 +642,78 @@ def dedent(text):
     return re.sub(r"[ \t]+", " ", text).replace(" ", "")
 
 
+def _statements(sec):
+    """Split a section into logical statements.
+
+    A statement is one bullet (a line starting with a list marker) together
+    with its wrapped continuation lines, or a bare paragraph. Subject-bound
+    fact checks operate on these statements so a fact is only satisfied when
+    its subject appears in the same statement as the fact phrase.
+    """
+    stmts = []
+    cur = None
+    for line in sec.splitlines():
+        if re.match(r"^\s*[-*]\s+", line):
+            if cur is not None:
+                stmts.append(" ".join(cur))
+            cur = [line]
+        elif line.strip():
+            if cur is not None:
+                cur.append(line)
+            else:
+                stmts.append(line)
+        else:
+            if cur is not None:
+                stmts.append(" ".join(cur))
+                cur = None
+    if cur is not None:
+        stmts.append(" ".join(cur))
+    return stmts
+
+
+def visible_headings(text):
+    """(level, heading, raw_offset) for headings on VISIBLE prose.
+
+    Lines inside fenced code blocks or HTML comments are invisible: a fenced or
+    commented `# Fake H1` can never supply the product H1 that the marker must
+    follow, and a fenced `## Fake` can never be the "first H2".
+    """
+    out = []
+    in_fence = None
+    html_comment = False
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if html_comment:
+            if "-->" in line:
+                html_comment = False
+            offset += len(line)
+            continue
+        if "<!--" in line:
+            html_comment = True
+            if "-->" in line:
+                html_comment = False
+            offset += len(line)
+            continue
+        m = re.match(r"^\s*((?:`{3,})|(?:~{3,}))\s*(.*)$", line)
+        if m:
+            marker = m.group(1)
+            char = marker[0]
+            if in_fence is None:
+                in_fence = char
+            elif in_fence == char:
+                in_fence = None
+            offset += len(line)
+            continue
+        if in_fence is not None:
+            offset += len(line)
+            continue
+        hm = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if hm:
+            out.append((len(hm.group(1)), hm.group(2), offset))
+        offset += len(line)
+    return out
+
+
 # Stale / overclaiming statement patterns mapped to their guards.  Each match
 # is window-negated by default (a "not/no/never/..." within a small window of
 # the match is treated as a negation, not an overclaim).  Patterns whose claim
@@ -686,19 +779,23 @@ def check_readme(text, truth):
         die("public_truth_marker_duplicated", EXIT_POLICY,
             "README.md contains more than one public product truth marker")
 
-    # Marker placement: must sit in the leading intro, before the first level-2
-    # heading, not buried in an unrelated section (raw positioning).
-    first_l2 = None
-    for lvl, heading, _ in sections(text):
-        if lvl == 2:
-            first_l2 = (lvl, heading)
-            break
+    # Marker placement (raw positioning): the marker must appear AFTER the
+    # visible product H1 and BEFORE the first visible H2. Only VISIBLE
+    # headings count: fenced-code or HTML-comment decoy headings can never
+    # supply the H1/H2 that the marker must be positioned against.
+    vis = visible_headings(text)
+    vis_h1 = [o for (lv, h, o) in vis if lv == 1]
+    vis_h2 = [o for (lv, h, o) in vis if lv == 2]
     marker_pos = text.find(MARKER)
-    if first_l2 is not None:
-        head_start = text.find("#" * first_l2[0] + " " + first_l2[1])
-        if marker_pos > head_start:
-            die("public_truth_marker_missing", EXIT_POLICY,
-                "public product truth marker is placed in an unrelated section")
+    if not vis_h1:
+        die("public_truth_marker_missing", EXIT_POLICY,
+            "README has no visible product H1 for the marker to follow")
+    if marker_pos < vis_h1[0]:
+        die("public_truth_marker_missing", EXIT_POLICY,
+            "public product truth marker must appear after the visible product H1")
+    if vis_h2 and marker_pos > vis_h2[0]:
+        die("public_truth_marker_missing", EXIT_POLICY,
+            "public product truth marker is placed in an unrelated section")
 
     # All other evidence uses sanitized visible prose: HTML comments and
     # fenced code blocks are stripped so decoys cannot satisfy bindings.
@@ -757,10 +854,30 @@ def check_readme(text, truth):
                 die(guard, EXIT_POLICY,
                     f"{section_name} section missing fact: {label}")
 
+    # --- helper: subject-bound facts (§4.1) ---
+    # A fact is present only when a statement in the owning section carries
+    # BOTH the intended subject and the fact phrase. Generic wording ("not
+    # required", "not canonical", "future") attached to a different subject
+    # must not satisfy the fact.
+    def require_subject_facts(section_name, facts, guard):
+        sec_norm = re.sub(r"\*\*|`+|\*+", "", l2.get(section_name, ""))
+        stmts = _statements(sec_norm)
+        for subject, fact, label in facts:
+            present = False
+            for stmt in stmts:
+                if re.search(subject, stmt, flags=re.IGNORECASE) and \
+                        re.search(fact, stmt, flags=re.IGNORECASE):
+                    present = True
+                    break
+            if not present:
+                die(guard, EXIT_POLICY,
+                    f"{section_name} section missing fact bound to "
+                    f"{subject!r}: {label}")
+
     # §7.1 Current Status
     require_facts("Current Status", CURRENT_STATUS_FACTS, "public_truth_docs_drift")
-    # §7.2 Runtime Truth: all 10 runtime/CrossOver conditions in-section
-    require_facts("Runtime Truth", RUNTIME_TRUTH_FACTS, "public_truth_runtime_invalid")
+    # §7.2 Runtime Truth: all runtime/CrossOver conditions subject-bound
+    require_subject_facts("Runtime Truth", RUNTIME_TRUTH_FACTS, "public_truth_runtime_invalid")
     # §7.4 How It Works: visible prose only
     require_facts("How It Works", HOW_IT_WORKS_FACTS, "public_truth_docs_drift")
     # §7.5 Distribution Truth
@@ -846,6 +963,31 @@ def check_readme(text, truth):
     require_lane("General distribution", r"\*\*General distribution:\*\*", None,
                  GENERAL_LANE_ORDER, "public_truth_roadmap_invalid")
 
+    # --- §4.5 roadmap contradiction rejection ---
+    # The planning-only / "neither authorized nor complete" statements are
+    # necessary but not sufficient: a contradictory POSITIVE claim that a lane
+    # is authorized or complete must be rejected anywhere in the section.
+    # Negation is judged ONLY inside the matched claim span, so a correct
+    # negative statement elsewhere cannot mask a contradictory positive claim.
+    def reject_positive(sec, pat, guard, label):
+        for m in re.finditer(pat, sec, flags=re.IGNORECASE):
+            claim = m.group(0)
+            if not re.search(r"\b(neither|not|never|no|without|unavailable|absent)\b",
+                             claim, flags=re.IGNORECASE):
+                die(guard, EXIT_POLICY,
+                    f"roadmap contradictory positive claim: {label}")
+
+    roadmap_norm = re.sub(r"\*\*|`+|\*+", "", roadmap)
+    reject_positive(roadmap_norm,
+                    r"\bminimal\b[^\n]{0,120}\b(authorized|complete)\b",
+                    "public_truth_roadmap_invalid",
+                    "Minimal lane authorized or complete")
+    reject_positive(roadmap_norm,
+                    r"\bgeneral\b[^\n]{0,40}\bdistribution\b[^\n]{0,80}"
+                    r"\b(authorized|complete)\b",
+                    "public_truth_roadmap_invalid",
+                    "General distribution lane authorized or complete")
+
 
 
 # --------------------------------------------------------------------------
@@ -854,13 +996,20 @@ def check_readme(text, truth):
 # --------------------------------------------------------------------------
 
 def _doc_section_body(text, section_regex):
+    """Return a LIST of every matching owner-section body.
+
+    §4.7: zero matching owner sections must fail (missing binding scope) and
+    MORE THAN ONE must also fail (duplicate decoy/correct pair must not be
+    trusted by "first match wins"). Exactly one matching section is required.
+    """
     body_map = {}
     for lvl, heading, body in sections(text):
         body_map[heading.strip()] = body
+    matches = []
     for heading, b in body_map.items():
         if re.search(section_regex, heading, flags=re.IGNORECASE):
-            return b
-    return None
+            matches.append(b)
+    return matches
 
 
 # §8 canonical-doc owner bindings.  Each (rel_path, section_regex, bindings)
@@ -951,11 +1100,12 @@ def scan_docs(root, truth):
                 f"{rel}: public doc drift from truth authority: {frag!r}")
         scope = text
         if section_regex is not None:
-            scope = _doc_section_body(sanitize_markdown(text), section_regex)
-        if section_regex is not None and scope is None:
-            die("public_truth_docs_drift", EXIT_POLICY,
-                f"{rel}: missing owning section for positive binding "
-                f"({section_regex!r})")
+            owners = _doc_section_body(sanitize_markdown(text), section_regex)
+            if len(owners) != 1:
+                die("public_truth_docs_drift", EXIT_POLICY,
+                    f"{rel}: expected exactly one owning section for "
+                    f"({section_regex!r}), got {len(owners)}")
+            scope = owners[0]
         scope_norm = re.sub(r"\*\*|`+|\*+", "", scope or text)
         for pat, label in positive:
             if not re.search(pat, scope_norm, flags=re.IGNORECASE):
