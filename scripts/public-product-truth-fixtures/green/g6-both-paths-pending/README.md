@@ -151,3 +151,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+## Roadmap Detail
+
+Both completion paths — minimal and general distribution — are planning-only and pending. Neither is authorized, in progress, or complete.

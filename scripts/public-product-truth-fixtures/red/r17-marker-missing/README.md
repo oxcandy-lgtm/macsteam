@@ -1,7 +1,5 @@
 # MacsTeam
 
-<!-- macsteam-public-product-truth:v1 -->
-
 **An independent GPL-3.0-or-later macOS compatibility launcher for Windows
 Steam games — starting with CloverPit.**
 

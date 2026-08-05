@@ -1,7 +1,5 @@
 # MacsTeam
 
-<!-- macsteam-public-product-truth:v1 -->
-
 **An independent GPL-3.0-or-later macOS compatibility launcher for Windows
 Steam games — starting with CloverPit.**
 
@@ -140,6 +138,8 @@ local runtime acceptance → clean-install / Gatekeeper acceptance →
 final audit / Ready / Merge / Release
 
 ## R5 Note
+
+<!-- macsteam-public-product-truth:v1 -->
 
 R5 external real-Mac proof requirement was removed by product-owner
 decision. No external proof was performed or claimed.

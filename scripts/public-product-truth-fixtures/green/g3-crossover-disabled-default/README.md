@@ -151,3 +151,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+## CrossOver Policy Detail
+
+CrossOver is a disabled-by-default, explicit opt-in, lowest-priority commercial adapter. It is not canonical, not required, and never a prerequisite for the setup flow.

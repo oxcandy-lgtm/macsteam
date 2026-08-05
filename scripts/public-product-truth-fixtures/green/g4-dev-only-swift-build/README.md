@@ -151,3 +151,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+## Build Distribution Detail
+
+The only current run path is the Swift Package development build via `swift run` or Xcode. The `.app` bundle, codesign, and notarization stages are not yet started; there is no packaged release download.

@@ -220,6 +220,14 @@ else
     check "Test U1R18 canonical PR truth authority" "fail"
 fi
 
+# ––– U1R18 public product truth authority –––
+echo "--- Public Product Truth Authority ---"
+if bash scripts/test-public-product-truth-audit.sh >/dev/null 2>&1; then
+    check "Public product truth authority" "pass"
+else
+    check "Public product truth authority" "fail"
+fi
+
 # ––– Summary –––
 echo ""
 echo "=== Summary ==="

@@ -141,8 +141,8 @@ final audit / Ready / Merge / Release
 
 ## R5 Note
 
-R5 external real-Mac proof requirement was removed by product-owner
-decision. No external proof was performed or claimed.
+R5 external real-Mac proof was performed on a real Mac.
+
 
 ## Contributing
 

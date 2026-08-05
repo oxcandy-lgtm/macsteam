@@ -1,21 +1,21 @@
-# MacsTeam
+# MacSteam
 
 <!-- macsteam-public-product-truth:v1 -->
 
 **An independent GPL-3.0-or-later macOS compatibility launcher for Windows
 Steam games — starting with CloverPit.**
 
-MacsTeam is the public display name. The internal Swift module and the
+MacSteam is the public display name. The internal Swift module and the
 repository history use `MacSteam`. This README describes the product that
 exists at this repository HEAD; see [docs/public-product-truth.json](docs/public-product-truth.json)
 for the machine-readable authority and the [public product truth audit](scripts/public-product-truth-audit.py)
 for the fail-closed checks that keep this documentation honest.
 
-> MacsTeam is not affiliated with, endorsed by, sponsored by, or licensed by
+> MacSteam is not affiliated with, endorsed by, sponsored by, or licensed by
 > Valve Corporation, CodeWeavers, Apple, or any supported game developer
 > or publisher.
 >
-> MacsTeam does not include or distribute Steam, CrossOver, Wine, Apple Game
+> MacSteam does not include or distribute Steam, CrossOver, Wine, Apple Game
 > Porting Toolkit, or any supported game.
 >
 > Steam is a trademark and/or registered trademark of Valve Corporation.
@@ -44,17 +44,17 @@ for the fail-closed checks that keep this documentation honest.
 ## Runtime Truth
 
 - **Imported Wine** is the canonical U1 runtime. The user selects a Wine
-  directory; MacsTeam validates and uses it.
+  directory; MacSteam validates and uses it.
 - System Wine may be discovered, but it is excluded from the default U1 Steam
   runtime selection.
-- Managed Wine (downloaded and managed by MacsTeam) is future/unavailable.
+- Managed Wine (downloaded and managed by MacSteam) is future/unavailable.
 - **CrossOver is not required and is not canonical.** CrossOver may exist only
   as a disabled-by-default, explicit opt-in, lowest-priority commercial
   compatibility option. It is never a prerequisite.
 
 ## Setup Flow
 
-MacsTeam walks through a coordinator-driven setup:
+MacSteam walks through a coordinator-driven setup:
 
 1. Select/import a runtime.
 2. Inspect/create a canonical Wine prefix.
@@ -90,7 +90,7 @@ Tests cover the core components with zero external dependencies.
 ## How It Works
 
 ```
-MacsTeam → GameManager → RuntimeLocator → ImportedWineRuntime
+MacSteam → GameManager → RuntimeLocator → ImportedWineRuntime
                         → SteamDetector  → Windows Steam
                         → ProcessRunner  → Game launch
 ```

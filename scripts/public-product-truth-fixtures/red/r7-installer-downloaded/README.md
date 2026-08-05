@@ -151,3 +151,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+The Steam installer is downloaded by the app.

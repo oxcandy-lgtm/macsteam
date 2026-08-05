@@ -151,3 +151,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+Release is available now.

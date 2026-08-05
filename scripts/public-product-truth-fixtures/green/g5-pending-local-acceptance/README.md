@@ -151,3 +151,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+## Acceptance Detail
+
+CloverPit integration is implemented but local end-to-end playability acceptance remains pending. No performance, FPS, audio, or input claim is made.
