@@ -1,12 +1,12 @@
 {
-  "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+  "sha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
   "parents": [
     {
-      "sha": "97a3c57daa6f8218a3768b6830e2818b674c9bf6"
+      "sha": "37cee09d1b1e2c607269308a89180b143bad0c6c"
     }
   ],
   "commit": {
-    "message": "ci: close R10 markdown visibility boundaries (U1R18-R10-FIX1-SCOPE1-FIX5)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1-FIX5",
+    "message": "ci: preserve FIX5 evidence chain (U1R18-R10-FIX1-SCOPE1-FIX6)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1-FIX6",
     "committer": {
       "date": "2026-08-03T03:00:00Z",
       "name": "Test",

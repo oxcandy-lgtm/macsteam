@@ -88,21 +88,20 @@ U1R18_R10_FIX2_COMMIT_MSG = ("ci: close R10 residual audit and report window "
                              "(U1R18-R10-FIX1-SCOPE1-FIX2)\n\n"
                              "Workstream: U1R18-R10-FIX1-SCOPE1-FIX2")
 
-# === U1R18-R10-FIX1-SCOPE1-FIX5 (current workstream) ===
-# Authorized parent 97a3c57... (the FIX4 child). The rejected controller review
-# 4870229665 classifies the FIX4 shared-lexer markdown-visibility / fail-closed
-# gaps and authorizes exactly one direct child. It references the FIX4 worker
-# report 5189373754 and its successful submission 30988741207 as historical
-# evidence.
-U1R18_R10_FIX5_PARENT = "97a3c57daa6f8218a3768b6830e2818b674c9bf6"
-U1R18_R10_FIX5_HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
-U1R18_R10_FIX5_REVIEW_ID = 4870229665
-U1R18_R10_FIX5_CLASSIFICATION = \
-    "RED_U1R18_R10_FIX1_SCOPE1_FIX4_MARKDOWN_VISIBILITY_FAIL_CLOSED_INCOMPLETE"
-U1R18_R10_FIX5_WORKSTREAM = "U1R18-R10-FIX1-SCOPE1-FIX5"
-U1R18_R10_FIX5_COMMIT_MSG = ("ci: close R10 markdown visibility boundaries "
-                             "(U1R18-R10-FIX1-SCOPE1-FIX5)\n\n"
-                             "Workstream: U1R18-R10-FIX1-SCOPE1-FIX5")
+# === U1R18-R10-FIX1-SCOPE1-FIX6 (current workstream) ===
+# Authorized parent 37cee09... (the FIX5 child). The rejected controller review
+# 4873335284 classifies the FIX5 evidence-chain deletion incident and
+# authorizes exactly one direct child. It references the FIX5 worker report
+# 5202688697 and its accepted submission 31088220327 as historical evidence.
+U1R18_R10_FIX6_PARENT = "37cee09d1b1e2c607269308a89180b143bad0c6c"
+U1R18_R10_FIX6_HEAD = "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5"
+U1R18_R10_FIX6_REVIEW_ID = 4873335284
+U1R18_R10_FIX6_CLASSIFICATION = \
+    "RED_U1R18_R10_FIX1_SCOPE1_FIX5_TECHNICAL_GREEN_HISTORICAL_EVIDENCE_DELETION"
+U1R18_R10_FIX6_WORKSTREAM = "U1R18-R10-FIX1-SCOPE1-FIX6"
+U1R18_R10_FIX6_COMMIT_MSG = ("ci: preserve FIX5 evidence chain "
+                             "(U1R18-R10-FIX1-SCOPE1-FIX6)\n\n"
+                             "Workstream: U1R18-R10-FIX1-SCOPE1-FIX6")
 
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
@@ -415,60 +414,27 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=U1R18_R10_FIX5_HEAD, parent_sha=U1R18_R10_FIX5_PARENT,
-          message=U1R18_R10_FIX5_COMMIT_MSG)
-    repair_body = (controller_review_json(U1R18_R10_FIX5_PARENT, decision="rejected",
-                                          wr_comment_id=5189373754,
-                                          sub_run_id=30988741207,
-                                          classification=U1R18_R10_FIX5_CLASSIFICATION)
+    _base(d, head_sha=U1R18_R10_FIX6_HEAD, parent_sha=U1R18_R10_FIX6_PARENT,
+          message=U1R18_R10_FIX6_COMMIT_MSG)
+    repair_body = (controller_review_json(U1R18_R10_FIX6_PARENT, decision="rejected",
+                                          wr_comment_id=5202688697,
+                                          sub_run_id=31088220327,
+                                          classification=U1R18_R10_FIX6_CLASSIFICATION)
                    + "\n\nRepair authorization granted for "
-                     "U1R18-R10-FIX1-SCOPE1-FIX5. This RED review authorizes a single "
+                     "U1R18-R10-FIX1-SCOPE1-FIX6. This RED review authorizes a single "
                      "direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(U1R18_R10_FIX5_PARENT, U1R18_R10_FIX5_REVIEW_ID,
+                  [review_json(U1R18_R10_FIX6_PARENT, U1R18_R10_FIX6_REVIEW_ID,
                                repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json",
                   [".github/workstage-review-gate-policy.json",
-                   "scripts/public-product-truth-audit.py",
-                   "scripts/test-public-product-truth-audit.sh",
                    "scripts/workstage-review-gate-fixtures/apply-mutation.py",
                    "scripts/workstage-review-gate-fixtures/generate-green.py",
-                   "scripts/public-product-truth-fixtures/green/g9-readme-setext-product-h1/README.md",
-                   "scripts/public-product-truth-fixtures/green/g10-owner-setext-with-hidden-decoys/docs/ARCHITECTURE.md",
-                   "scripts/public-product-truth-fixtures/red/h1-readme-atx-plus-setext-h1/README.md",
-                   "scripts/public-product-truth-fixtures/red/h2-readme-two-setext-product-h1/README.md",
-                   "scripts/public-product-truth-fixtures/red/h3-readme-other-setext-h1-with-macsteam-prose/README.md",
-                   "scripts/public-product-truth-fixtures/red/h4-readme-marker-before-setext-product-h1/README.md",
-                   "scripts/public-product-truth-fixtures/red/h5-readme-product-h1-embedded-asterisk/README.md",
-                   "scripts/public-product-truth-fixtures/red/h6-readme-product-h1-unmatched-backtick/README.md",
-                   "scripts/public-product-truth-fixtures/red/h7-readme-product-h1-balanced-emphasis-forbidden/README.md",
-                   "scripts/public-product-truth-fixtures/red/h8-readme-visible-raw-html-h1/README.md",
-                   "scripts/public-product-truth-fixtures/red/h9-canonical-owner-atx-plus-setext-both-complete/docs/STEAM_BOUNDARY.md",
-                   "scripts/public-product-truth-fixtures/red/h10-canonical-owner-two-setext-both-complete/docs/STEAM_BOUNDARY.md",
-                   "scripts/public-product-truth-fixtures/red/h11-canonical-owner-two-different-setext-regex-matches/docs/ARCHITECTURE.md",
-                   "scripts/public-product-truth-fixtures/red/h12-canonical-visible-raw-html-h2-owner/docs/STEAM_BOUNDARY.md",
-                   "scripts/public-product-truth-fixtures/red/h13-readme-visible-raw-html-h2/README.md",
-                   "scripts/public-product-truth-fixtures/green/g11-readme-tab-indented-atx-code-not-heading/README.md",
-                   "scripts/public-product-truth-fixtures/green/g12-readme-tab-indented-setext-code-not-heading/README.md",
-                   "scripts/public-product-truth-fixtures/green/g13-readme-tab-indented-fact-decoy/README.md",
-                   "scripts/public-product-truth-fixtures/green/g14-canonical-owner-heading-with-trailing-closed-comment/docs/ARCHITECTURE.md",
-                   "scripts/public-product-truth-fixtures/red/h14-readme-unclosed-html-comment/README.md",
-                   "scripts/public-product-truth-fixtures/red/h15-readme-unclosed-backtick-fence/README.md",
-                   "scripts/public-product-truth-fixtures/red/h16-readme-unclosed-tilde-fence/README.md",
-                   "scripts/public-product-truth-fixtures/red/h17-canonical-unclosed-html-comment/docs/RUNTIME_CONTRACT.md",
-                   "scripts/public-product-truth-fixtures/red/h18-canonical-unclosed-fence/docs/STEAM_BOUNDARY.md",
-                   "scripts/public-product-truth-fixtures/red/h19-readme-second-h1-inline-closed-comment/README.md",
-                   "scripts/public-product-truth-fixtures/red/h20-readme-second-h1-leading-closed-comment/README.md",
-                   "scripts/public-product-truth-fixtures/red/h21-readme-second-h2-inline-closed-comment/README.md",
-                   "scripts/public-product-truth-fixtures/red/h22-readme-second-h2-leading-closed-comment/README.md",
-                   "scripts/public-product-truth-fixtures/red/h23-canonical-owner-duplicate-inline-comment/docs/RUNTIME_CONTRACT.md",
-                   "scripts/public-product-truth-fixtures/red/h24-canonical-owner-duplicate-leading-comment/docs/RUNTIME_CONTRACT.md",
-                   "scripts/public-product-truth-fixtures/red/h25-readme-runtime-fact-tab-code-only/README.md",
-                   "scripts/public-product-truth-fixtures/red/h26-canonical-binding-tab-code-only/docs/RUNTIME_CONTRACT.md",
-                   "scripts/public-product-truth-fixtures/red/h27-readme-shorter-closer-not-closure/README.md",
-                   "scripts/public-product-truth-fixtures/red/h28-readme-trailing-text-closer-not-closure/README.md",
-                   "scripts/public-product-truth-fixtures/red/h29-canonical-unclosed-tilde-fence/docs/ULTIMATE_ARCHITECTURE.md",
-                   "scripts/public-product-truth-fixtures/red/h30-readme-product-h1-indented-code-tab/README.md"])
+                   "scripts/workstage-review-gate-fixtures/green/advance_repair/commit_HEAD.json",
+                   "scripts/workstage-review-gate-fixtures/green/advance_repair/commit_PARENT.json",
+                   "scripts/workstage-review-gate-fixtures/green/advance_repair/files.json",
+                   "scripts/workstage-review-gate-fixtures/green/advance_repair/pr.json",
+                   "scripts/workstage-review-gate-fixtures/green/advance_repair/reviews.json"])
 
 
 def create_r9_truth_scope_admitted():
