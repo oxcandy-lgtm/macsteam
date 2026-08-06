@@ -569,39 +569,178 @@ def semantic_validate(truth):
 # markdown helpers
 # --------------------------------------------------------------------------
 
-def strip_html_comments(text):
-    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+# ---------------------------------------------------------------------------
+# Shared Markdown lexical authority (FIX5)
+#
+# Exactly ONE lexical pass drives every heading / body / binding decision for
+# BOTH the README and every canonical doc. It yields, per source line:
+#   - the raw span (line start offset + length) in the source text,
+#   - a visible projection keeping ONLY the content OUTSIDE HTML comments
+#     (inline and multi-line comment fragments are preserved, never a whole
+#     line dropped),
+#   - leading-indentation measured in columns (a tab advances to the next
+#     4-column tab stop),
+#   - fenced-block and HTML-comment state,
+#   - an unclosed-construct flag.
+#
+# Fenced blocks and indented code (>= 4 effective columns) are excluded from
+# headings AND from evidence. The same projection feeds heading detection,
+# marker-placement checks, section-body extraction, positive-fact evidence and
+# raw-HTML <h1>/<h2> rejection, so a construct hidden from headings is never
+# promoted into fact evidence and vice versa. A construct left unclosed at EOF
+# fails closed (public_truth_docs_drift) for the README and every canonical
+# doc.
+# ---------------------------------------------------------------------------
 
 
-def strip_fenced_blocks(text):
-    """Remove fenced code blocks (``` or ~~~ fences, with or without a
-    language tag).  Content inside a fence is invisible evidence: headings,
-    correct answer words, and claims inside a fence must never satisfy a
-    check on visible prose."""
-    out = []
-    in_fence = None
-    for line in text.splitlines():
-        m = re.match(r"^\s*((?:`{3,})|(?:~{3,}))\s*(.*)$", line)
-        if m:
-            marker = m.group(1)
-            char = marker[0]
-            if in_fence is None:
-                in_fence = char
-            elif in_fence == char:
-                in_fence = None
-            out.append("")
-            continue
+class _LexLine:
+    """One source line under the shared lexical model."""
+
+    __slots__ = ("abs", "raw", "vis")
+
+    def __init__(self, abs, raw, vis):
+        self.abs = abs      # byte offset of the line start in the source
+        self.raw = raw      # raw line INCLUDING trailing newline
+        self.vis = vis      # visible projection (comment fragments removed);
+                            # "" for blank, fenced, or indented-code lines
+
+    @property
+    def raw_len(self):
+        return len(self.raw)
+
+
+class _LexDoc:
+    __slots__ = ("text", "lines", "unclosed")
+
+    def __init__(self, text):
+        self.text = text
+        self.lines, self.unclosed = _lex_lines(text)
+
+    def evidence(self, start=0, end=None):
+        """Visible prose of the raw byte span [start, end). Comment/fence/
+        indented-code content is invisible; visible fragments are joined with
+        newlines."""
+        if end is None:
+            end = len(self.text)
+        body = []
+        for ln in self.lines:
+            if start <= ln.abs < end:
+                body.append(ln.vis)
+        return "\n".join(body)
+
+
+def _indent_cols(s):
+    """Leading-whitespace column count. A tab advances the column to the next
+    4-column tab stop (e.g. col 0 -> 4, 3 spaces then tab -> 4)."""
+    col = 0
+    for ch in s:
+        if ch == " ":
+            col += 1
+        elif ch == "\t":
+            col = (col // 4) * 4 + 4
+        else:
+            break
+    return col
+
+
+def _comment_outside(line, start_open):
+    """Project `line` keeping only fragments OUTSIDE HTML comment spans.
+
+    Returns (visible_text, open). `start_open` is True when a comment from a
+    previous line is still open as this line begins. `open` is True if a
+    comment is still unclosed as this line ends (spans to the next line).
+    """
+    frags = []
+    i = 0
+    n = len(line)
+    open_c = start_open
+    while i < n:
+        if open_c:
+            j = line.find("-->", i)
+            if j < 0:
+                i = n
+            else:
+                i = j + 3
+                open_c = False
+        else:
+            j = line.find("<!--", i)
+            if j < 0:
+                frags.append(line[i:])
+                i = n
+            else:
+                frags.append(line[i:j])
+                i = j + 4
+                open_c = True
+    return "".join(frags), open_c
+
+
+FENCE_OPEN_RE = re.compile(r"^(?:[ \t]{0,3})(`{3,}|~{3,})")
+
+# Nearest comment/fence state machine: an HTML comment or a fenced block may
+# span many physical lines. Fenced content is opaque: outside a fence, HTML
+# comment markers inline; inside a fence, comment/heading syntax is ignored.
+def _lex_lines(text):
+    lines = []
+    in_fence = None        # (marker_char, opener_len) while inside a fence
+    comment_open = False
+    off = 0
+    for bite in text.splitlines(keepends=True):
+        line = bite.rstrip("\r\n")
+        start = off
+        off += len(bite)
+
+        # Inside an open fenced block: the whole line is hidden; only a valid
+        # closer ends the block (same marker char, length >= opener, only
+        # trailing whitespace).
         if in_fence is not None:
-            out.append("")
+            char, mlen = in_fence
+            closer = re.compile(
+                rf"^[ \t]{{0,3}}{re.escape(char)}{{{mlen},}}[ \t]*$")
+            if closer.match(line):
+                in_fence = None
+            lines.append(_LexLine(start, bite, ""))
             continue
-        out.append(line)
-    return "\n".join(out)
+
+        if comment_open:
+            close_idx = line.find("-->")
+            if close_idx < 0:
+                lines.append(_LexLine(start, bite, ""))
+                continue
+            remainder = line[close_idx + 3:]
+            comment_open = False
+        else:
+            remainder = line
+
+        vis, open_c = _comment_outside(remainder, comment_open)
+        comment_open = open_c
+
+        # Fences and indented code are recognized only outside an HTML
+        # comment that is still open (a closing line's tail can still hold a
+        # heading / fence opener).
+        if not comment_open:
+            if _indent_cols(line) >= 4:
+                vis = ""   # indented code: excluded from headings and evidence
+            else:
+                fm = FENCE_OPEN_RE.match(vis)
+                if fm:
+                    vis = ""
+                    marker = fm.group(1)
+                    in_fence = (marker[0], len(marker))
+
+        lines.append(_LexLine(start, bite, vis))
+
+    return lines, (in_fence is not None or comment_open)
+
+
+def _lex(text):
+    return _LexDoc(text)
 
 
 def sanitize_markdown(text):
-    """Visible prose for evidence checks: HTML comments and fenced code blocks
-    are removed so comment/fence decoys cannot satisfy positive bindings."""
-    return strip_fenced_blocks(strip_html_comments(text))
+    """Visible evidence prose for the whole document, using the SAME shared
+    lexical model as heading detection: HTML-comment fragments kept, fenced
+    blocks and indented code removed. Decoys cannot satisfy positive bindings."""
+    return _lex(text).evidence()
 
 
 def _heading_body_span(text, headings, h):
@@ -616,11 +755,12 @@ def _heading_body_span(text, headings, h):
 
 
 def _heading_body(text, headings, h):
-    """Sanitized visible prose body of one heading: comments and fenced blocks
-    in the span are stripped so a decoy inside them cannot satisfy a binding.
-    Nested subsections fold into their owning level-2 body naturally."""
+    """Shared-model visible prose body of one heading: HTML-comment fragments
+    outside the span's comments are kept, fenced blocks and indented code are
+    removed, so a decoy inside them cannot satisfy a binding. Nested
+    subsections fold into their owning level-2 body naturally."""
     start, end = _heading_body_span(text, headings, h)
-    return sanitize_markdown(text[start:end]).strip()
+    return _lex(text).evidence(start, end).strip()
 
 
 def l2_inventory(text):
@@ -705,104 +845,66 @@ def _is_setext_title(line):
     return True
 
 
-def _visible_lines(text):
-    """Per-line (start_offset, raw, no_eol_line, visible). A line is invisible
-    inside a fenced code block, an HTML comment, or 4-space-indented code; an
-    unclosed fence or comment keeps everything after it invisible (fail closed,
-    never exposing a hidden heading as visible). `visible` only governs heading
-    DETECTION — body prose is sliced from raw offsets, so invisibility here
-    never strips content."""
-    lines = []
-    offset = 0
-    in_fence = None
-    in_comment = False
-    for raw in text.splitlines(keepends=True):
-        line = raw.rstrip("\r\n")
-        if in_comment:
-            visible = False
-            if "-->" in line:
-                in_comment = False
-        elif in_fence is not None:
-            visible = False
-            fm = FENCE_RE.match(line)
-            if fm and fm.group(1)[0] == in_fence:
-                in_fence = None
-        elif "<!--" in line:
-            visible = False
-            in_comment = "-->" not in line.split("<!--", 1)[1]
-        else:
-            fm = FENCE_RE.match(line)
-            if fm:
-                visible = False
-                in_fence = fm.group(1)[0]
-            elif re.match(r"[ \t]{4,}", line):
-                # 4-space-indented code: never a heading, never an HTML
-                # heading violation (content still reaches body spans).
-                visible = False
-            else:
-                visible = True
-        lines.append((offset, raw, line, visible))
-        offset += len(raw)
-    return lines, (in_fence is not None or in_comment)
-
-
 def parse_headings(text):
-    """Return (headings, html, unclosed).
+    """Return (headings, html, unclosed) from the ONE shared lexical pass.
 
     headings: ordered, never-collapsed list of _Heading for every VISIBLE
-    Markdown heading (ATX or Setext), with raw offsets. Setext records span
-    title + underline; their body starts at the underline's next line.
+    Markdown heading (ATX or Setext), with raw line offsets. Setext records
+    span title + underline; their body begins on the line after the underline.
 
     html: ordered _Heading records (syntax="html") for every VISIBLE raw-HTML
     <h1>/<h2> heading tag. raw-HTML headings are NOT adopted as section
     authority: the caller must fail closed on them per document type.
 
-    Fenced-code lines, HTML comments, and 4-space-indented code are invisible:
-    a `# Fake H1` or `<h2>Fake</h2>` inside them can never supply the product
-    H1, a required section, or a marker-placement boundary. Titles are exact
-    parsed text (trailing ATX hashes stripped, edges trimmed) with NO Markdown
-    emphasis stripping, so a misprinted or emphasized product name is never
-    masked.
+    Fenced-code lines, HTML comments, and indented code (>= 4 columns, with a
+    tab advancing to the next 4-column stop) are excluded from headings AND
+    evidence by the shared projection: a `# Fake H1` or `<h2>Fake</h2>` inside
+    them can never supply the product H1, a required section, or a marker
+    boundary. Titles are exact parsed text (trailing ATX hashes stripped,
+    edges trimmed) with NO Markdown emphasis stripping.
     """
-    lines, unclosed = _visible_lines(text)
+    doc = _lex(text)
+    lines = doc.lines
     headings = []
     html = []
     n = len(lines)
     i = 0
     while i < n:
-        start, raw, line, vis = lines[i]
-        if not vis:
+        ln = lines[i]
+        vis = ln.vis
+        if not vis.strip():
             i += 1
             continue
-        am = ATX_HEADING_RE.match(line)
+        am = ATX_HEADING_RE.match(vis)
         if am:
             level = len(am.group(2))
             title = re.sub(r"[ \t]+#+[ \t]*$", "", (am.group(3) or "")).strip()
-            headings.append(_Heading(level, title, "atx", start, start + len(raw)))
+            headings.append(_Heading(level, title, "atx",
+                                     ln.abs, ln.abs + ln.raw_len))
             i += 1
             continue
-        hm = HTML_H_RE.search(line)
+        hm = HTML_H_RE.search(vis)
         if hm:
             level = int(hm.group(1))
-            pair = HTML_H_PAIR_RE.search(line)
+            pair = HTML_H_PAIR_RE.search(vis)
             title = pair.group(2).strip() if pair else ""
-            html.append(_Heading(level, title, "html", start, start + len(raw)))
+            html.append(_Heading(level, title, "html",
+                                 ln.abs, ln.abs + ln.raw_len))
             i += 1
             continue
-        # Setext: this visible line is a title when the next line is an
-        # underline. A blank, indented-code, or underline line is not a title.
-        if i + 1 < n and lines[i + 1][3]:
+        # Setext: this visible line is a title when the next visible,
+        # non-indented, non-underline line is an underline.
+        if i + 1 < n:
             nxt = lines[i + 1]
-            su = SETEXT_H1_RE.match(nxt[2]) or SETEXT_H2_RE.match(nxt[2])
-            if su and _is_setext_title(line):
+            su = SETEXT_H1_RE.match(nxt.vis) or SETEXT_H2_RE.match(nxt.vis)
+            if su and _is_setext_title(vis):
                 level = 1 if su.group(0).lstrip().startswith("=") else 2
-                headings.append(_Heading(
-                    level, line.strip(), "setext",
-                    start, nxt[0] + len(nxt[1])))
+                headings.append(_Heading(level, vis.strip(), "setext",
+                                         ln.abs, nxt.abs + nxt.raw_len))
                 i += 2
                 continue
         i += 1
-    return headings, html, unclosed
+    return headings, html, doc.unclosed
 
 
 # Stale / overclaiming statement patterns mapped to their guards.  Each match
@@ -861,6 +963,14 @@ def run_overclaim(text):
 # --------------------------------------------------------------------------
 
 def check_readme(text, truth):
+    # An unclosed construct (HTML comment or fenced block) fails closed as
+    # docs drift before any claim check: an unclosed fence could be hiding the
+    # product H1, a required section, or a marker boundary.
+    _pre_doc = _lex(text)
+    if _pre_doc.unclosed:
+        die("public_truth_docs_drift", EXIT_POLICY,
+            "README.md has an unclosed HTML comment or fenced block")
+
     # Marker checks always run on the RAW README: the marker is an HTML
     # comment and would be stripped by sanitization.
     if text.count(MARKER) == 0:
@@ -1218,6 +1328,10 @@ def scan_docs(root, truth):
             die("public_truth_docs_drift", EXIT_POLICY,
                 f"designated canonical doc missing: {rel}")
         text = read_text(path)
+        _lexdoc = _lex(text)
+        if _lexdoc.unclosed:
+            die("public_truth_docs_drift", EXIT_POLICY,
+                f"{rel}: unclosed HTML comment or fenced block")
         # raw-HTML headings are never canonical-doc section authority: a
         # visible <h1>/<h2> in a canonical doc fails closed as docs drift.
         _heads, html_viol, _ = parse_headings(text)

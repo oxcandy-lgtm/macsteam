@@ -1,21 +1,21 @@
 {
-    "sha": "35c8f6ffc0777c76728c99b625eaad8f6d3291b4",
-    "parents": [
-        {
-            "sha": "8888888888888888888888888888888888888888"
-        }
-    ],
-    "commit": {
-        "message": "test commit\n\nWorkstream: U1R18-R10-FIX1-SCOPE1-FIX3\n",
-        "committer": {
-            "date": "2026-08-03T03:00:00Z",
-            "name": "Test",
-            "email": "test@example.com"
-        },
-        "author": {
-            "date": "2026-08-03T03:00:00Z",
-            "name": "Test",
-            "email": "test@example.com"
-        }
+  "sha": "97a3c57daa6f8218a3768b6830e2818b674c9bf6",
+  "parents": [
+    {
+      "sha": "8888888888888888888888888888888888888888"
     }
+  ],
+  "commit": {
+    "message": "test commit\n\nWorkstream: U1R18-R7-FIX3\n",
+    "committer": {
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    },
+    "author": {
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    }
+  }
 }

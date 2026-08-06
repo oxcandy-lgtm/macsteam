@@ -12,11 +12,11 @@
     "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
   },
     "repair_authorization": {
-        "parent_sha": "35c8f6ffc0777c76728c99b625eaad8f6d3291b4",
-        "review_id": 4863401644,
-        "classification": "RED_U1R18_R10_FIX1_SCOPE1_FIX3_VISIBLE_HEADING_GRAMMAR_AND_EXACT_NORMALIZATION_INCOMPLETE",
-        "required_commit_message": "ci: close visible heading grammar gaps (U1R18-R10-FIX1-SCOPE1-FIX4)",
-        "required_workstream": "U1R18-R10-FIX1-SCOPE1-FIX4",
+        "parent_sha": "97a3c57daa6f8218a3768b6830e2818b674c9bf6",
+        "review_id": 4870229665,
+        "classification": "RED_U1R18_R10_FIX1_SCOPE1_FIX4_MARKDOWN_VISIBILITY_FAIL_CLOSED_INCOMPLETE",
+        "required_commit_message": "ci: close R10 markdown visibility boundaries (U1R18-R10-FIX1-SCOPE1-FIX5)",
+        "required_workstream": "U1R18-R10-FIX1-SCOPE1-FIX5",
         "single_direct_child_only": true,
         "allowed_exact_paths": [
             ".github/workstage-review-gate-policy.json",

@@ -1,13 +1,13 @@
 [
-    {
-        "id": 4863401644,
-        "user": {
-            "login": "sai-controller"
-        },
-        "commit_id": "35c8f6ffc0777c76728c99b625eaad8f6d3291b4",
-        "state": "COMMENTED",
-        "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"35c8f6ffc0777c76728c99b625eaad8f6d3291b4\",\n  \"worker_report_comment_id\": 5189373754,\n  \"submission_run_id\": 30988741207,\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R10_FIX1_SCOPE1_FIX3_VISIBLE_HEADING_GRAMMAR_AND_EXACT_NORMALIZATION_INCOMPLETE\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n\n\nRepair authorization granted for U1R18-R10-FIX1-SCOPE1-FIX4. This RED review authorizes a single direct child commit.\n",
-        "submitted_at": "2026-08-03T02:50:00Z",
-        "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4863401644"
-    }
+  {
+    "id": 4870229665,
+    "user": {
+      "login": "sai-controller"
+    },
+    "commit_id": "97a3c57daa6f8218a3768b6830e2818b674c9bf6",
+    "state": "COMMENTED",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"97a3c57daa6f8218a3768b6830e2818b674c9bf6\",\n  \"worker_report_comment_id\": 5189373754,\n  \"submission_run_id\": 30988741207,\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R10_FIX1_SCOPE1_FIX4_MARKDOWN_VISIBILITY_FAIL_CLOSED_INCOMPLETE\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n\n\nRepair authorization granted for U1R18-R10-FIX1-SCOPE1-FIX5. This RED review authorizes a single direct child commit.\n",
+    "submitted_at": "2026-08-03T02:50:00Z",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4870229665"
+  }
 ]

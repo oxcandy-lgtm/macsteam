@@ -1,21 +1,21 @@
 {
-    "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
-    "parents": [
-        {
-            "sha": "35c8f6ffc0777c76728c99b625eaad8f6d3291b4"
-        }
-    ],
-    "commit": {
-        "message": "ci: close visible heading grammar gaps (U1R18-R10-FIX1-SCOPE1-FIX4)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1-FIX4",
-        "committer": {
-            "date": "2026-08-03T03:00:00Z",
-            "name": "Test",
-            "email": "test@example.com"
-        },
-        "author": {
-            "date": "2026-08-03T03:00:00Z",
-            "name": "Test",
-            "email": "test@example.com"
-        }
+  "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+  "parents": [
+    {
+      "sha": "97a3c57daa6f8218a3768b6830e2818b674c9bf6"
     }
+  ],
+  "commit": {
+    "message": "ci: close R10 markdown visibility boundaries (U1R18-R10-FIX1-SCOPE1-FIX5)\n\nWorkstream: U1R18-R10-FIX1-SCOPE1-FIX5",
+    "committer": {
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    },
+    "author": {
+      "date": "2026-08-03T03:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    }
+  }
 }
