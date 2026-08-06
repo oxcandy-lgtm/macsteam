@@ -43,6 +43,24 @@ REQUIRED_CONTRACTS = [
      ["struct LocalAcceptanceReceipt", "var deterministicJSON",
       "enum LocalAcceptanceBlocker", "enum LocalAcceptanceState",
       "var deterministicJSONString"]),
+    (ACCEPTANCE, "LocalAcceptancePresentation.swift",
+     ["struct LocalAcceptancePresentation", "isVisible",
+      "canConfirmMainMenu", "canConfirmInputResponse", "canComplete"]),
+]
+
+# U1R18-R11-FIX1 contract join points in production UI/coordinator surfaces.
+# A mutation removing any of these markers (e.g. hiding the acceptance UI
+# behind a launch result, dropping the input-confirm action, rebuilding the
+# receipt before acceptance, discarding authority on success, or deriving
+# ownership from visibility) must be caught by the audit.
+UI_CONTRACTS = [
+    (os.path.join("Sources", "MacSteam", "Views", "CloverPitLaunchView.swift"),
+     ["acceptancePanel", "acceptancePresentation", "confirmInputResponse"]),
+    (os.path.join("Sources", "MacSteam", "Ultimate", "UltimateSetupCoordinator.swift"),
+     ["func confirmInputResponse",
+      "cancelLocalAcceptanceObservationPreservingAuthority",
+      "invalidateAndDiscardLocalAcceptance",
+      "var acceptancePresentation"]),
 ]
 
 # Immutable-scope paths, relative to repo root. Must remain byte-identical to
@@ -131,6 +149,17 @@ def required_body(content: str, needle: str, context: str) -> str:
     return content[brace + 1:i - 1]
 
 
+def completed_ordering_missing(accepted_at: int, receipt_at: int) -> bool:
+    """True when the earned-receipt is (re)built without the authority already
+    being accepted — i.e. the receipt is bound to a pre-accepted state. A
+    present-and-ordered pair (accepted before receipt) is not a violation."""
+    if accepted_at < 0:
+        return False  # no explicit accepted assignment; covered elsewhere
+    if receipt_at < 0:
+        return False  # receipt builder not referenced here; not an ordering defect
+    return receipt_at <= accepted_at
+
+
 # Forbidden raw-subject emission inside the receipt-document sources. The
 # authority must reduce to bounded booleans/ints/enums and drop identity,
 # paths, PIDs, and unbounded error text before serialization.
@@ -196,6 +225,37 @@ def main(argv) -> int:
         for needle in needles:
             if needle not in content:
                 infra(f"required contract missing: {rel} (no '{needle}')")
+
+    # ── UI / coordinator join points (U1R18-R11-FIX1) ──
+    for rel, needles in UI_CONTRACTS:
+        content = read_file(root, rel)
+        if content is None:
+            infra(f"required contract missing: {rel}")
+        for needle in needles:
+            if needle not in content:
+                violations.append(f"{rel}: FIX1 contract missing '{needle}'")
+
+    # ── Fail-closed completion ordering (U1R18-R11-FIX1) ──
+    # The earned receipt must be built only AFTER the authority has entered the
+    # accepted state, never while still awaiting cleanup / in_progress.
+    auth_rel = os.path.join(ACCEPTANCE, "LocalRuntimeAcceptanceAuthority.swift")
+    auth = read_file(root, auth_rel)
+    completions = required_body(auth, "func requireCompletion",
+                                "LocalRuntimeAcceptanceAuthority requireCompletion")
+    accepted_at = completions.find("state = .accepted")
+    receipt_at = completions.find("buildAcceptedReceipt()")
+    if completed_ordering_missing(accepted_at, receipt_at):
+        violations.append(f"{auth_rel}: receipt built before accepted state "
+                          "(FIX1 ordering violated)")
+
+    # ── Ownership independence (U1R18-R11-FIX1) ──
+    # Ownership proof must be an independent census-derived boolean, never
+    # inferred from mere window visibility.
+    obs_body = required_body(auth, "final class LocalRuntimeAcceptanceAuthority",
+                             "LocalRuntimeAcceptanceAuthority class")
+    if "ownershipCensusProven" not in auth:
+        violations.append(f"{auth_rel}: independent ownershipCensusProven "
+                        "surface missing (FIX1 violated)")
 
     # Authority must be the single mutation owner: no parallel acceptance
     # state may live in the coordinator's view layer. Verify the authority

@@ -106,6 +106,13 @@ run "red-authority-begin-absent" "authority begin removed" 2 "required contract 
 run "red-authority-stability-absent" "authority stability removed" 2 "required contract missing"
 run "red-authority-current-absent" "authority currentReceipt removed" 2 "required contract missing"
 
+echo "--- RED: FIX1 invariant (rc=1) ---"
+run "red-view-input-action-missing" "input-confirm action removed" 1 "confirmInputResponse"
+run "red-view-panel-hidden-after-launch-result" "acceptance UI hides after launch result" 1 "acceptancePanel"
+run "red-receipt-built-before-accepted-state" "receipt built before accepted state" 1 "ordering"
+run "red-success-discards-authority" "success invalidates/discards authority" 1 "cancelLocalAcceptanceObservationPreservingAuthority"
+run "red-ownership-derived-from-visibility" "ownership derived from visibility" 1 "ownershipCensusProven"
+
 echo "--- GREEN variants ---"
 run "green-variant-space" "green space variant" 0
 run "green-variant-comment" "green comment variant" 0

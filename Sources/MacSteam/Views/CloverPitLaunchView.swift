@@ -109,6 +109,7 @@ struct CloverPitLaunchView: View {
 
     // MARK: - Launch section
 
+    @ViewBuilder
     private var launchSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Launch")
@@ -156,58 +157,82 @@ struct CloverPitLaunchView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-
-                if coordinator.acceptanceState == .awaitingOperatorConfirmation {
-                    Divider()
-                    acceptanceSection
-                }
             }
         }
         .padding(12)
         .background(Color(nsColor: .windowBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+
+        // U1R18-R11-FIX1: the acceptance panel is driven by the authority's
+        // presentation and is independent of any launch result. Showing it here
+        // (after the launch card) guarantees it persists whether the launch
+        // succeeded, is running, or the acceptance is blocked/invalidated.
+        if coordinator.acceptancePresentation.isVisible {
+            acceptancePanel
+        }
     }
 
     // MARK: - Acceptance section (U1R18-R11)
 
+    private var acceptancePresentation: LocalAcceptancePresentation {
+        coordinator.acceptancePresentation
+    }
+
     @ViewBuilder
-    private var acceptanceSection: some View {
+    private var acceptancePanel: some View {
+        let presentation = acceptancePresentation
         VStack(alignment: .leading, spacing: 8) {
             Text("Runtime approval")
                 .font(.subheadline)
                 .fontWeight(.medium)
 
             statusRow(
-                "Visibility stable",
-                detail: "\(coordinator.acceptanceStabilitySeconds)s confirmed",
-                ok: coordinator.acceptanceStable
+                "Status",
+                detail: presentation.title,
+                ok: coordinator.acceptanceState == .accepted
+            )
+            statusRow(
+                "Detail",
+                detail: presentation.body,
+                ok: false
             )
             statusRow(
                 "Main menu confirmed",
-                detail: coordinator.acceptanceMenuConfirmed ? "Yes" : "Pending",
+                detail: coordinator.acceptanceMenuConfirmed ? "Confirmed" : "Pending",
                 ok: coordinator.acceptanceMenuConfirmed
             )
             statusRow(
-                "Cleanup gate",
-                detail: "Pending operator completion",
-                ok: false
+                "Input response confirmed",
+                detail: coordinator.acceptanceInputConfirmed ? "Confirmed" : "Pending",
+                ok: coordinator.acceptanceInputConfirmed
             )
 
             HStack(spacing: 8) {
                 Button("Confirm Main Menu") {
-                    coordinator.confirmMainMenu()
+                    _ = coordinator.confirmMainMenu()
                 }
                 .controlSize(.small)
-                Button("Confirm CloverPit") {
+                .disabled(!presentation.canConfirmMainMenu)
+
+                Button("Confirm Input Response") {
+                    _ = coordinator.confirmInputResponse()
+                }
+                .controlSize(.small)
+                .disabled(!presentation.canConfirmInputResponse)
+
+                Button("Complete Acceptance") {
                     Task {
                         _ = await coordinator.completeLocalAcceptance()
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(!coordinator.acceptanceMenuConfirmed)
+                .disabled(!presentation.canComplete)
             }
         }
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func statusRow(_ label: String, detail: String, ok: Bool) -> some View {

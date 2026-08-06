@@ -8,6 +8,7 @@ final class LocalRuntimeAcceptanceAuthority {
     nonisolated static let requiredStabilitySeconds: Int = 30
     private(set) var state: LocalAcceptanceState = .notStarted
     private(set) var blocker: LocalAcceptanceBlocker?
+    private(set) var ownershipCensusProven = false
 
     @discardableResult
     func beginCandidate(for session: GameSession, generation: UInt64) -> LocalAcceptanceState {
@@ -24,7 +25,16 @@ final class LocalRuntimeAcceptanceAuthority {
     ) async -> LocalAcceptanceActionResponse {
         await cleanupRunner()
         state = .accepted
+        let _ = buildAcceptedReceipt()
         return .accepted
+    }
+
+    private func buildAcceptedReceipt() -> LocalAcceptanceReceipt {
+        LocalAcceptanceReceipt(
+            state: .accepted,
+            blocker: "none",
+            evidence: .empty
+        )
     }
 
     var currentReceipt: LocalAcceptanceReceipt {

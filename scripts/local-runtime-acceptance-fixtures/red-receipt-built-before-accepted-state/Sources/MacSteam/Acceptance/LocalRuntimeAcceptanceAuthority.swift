@@ -2,9 +2,11 @@
 
 import Foundation
 
-/// Fixture authority (GREEN baseline for the acceptance audit harness).
+/// FAILING fixture: header receipts are built before the authority enters the
+/// accepted state (regression of FIX1 receipt-ordering).
 @MainActor
 final class LocalRuntimeAcceptanceAuthority {
+    nonisolated static let requiredStabilitySeconds: Int = 30
     private(set) var state: LocalAcceptanceState = .notStarted
     private(set) var blocker: LocalAcceptanceBlocker?
     private(set) var ownershipCensusProven = false
@@ -23,8 +25,18 @@ final class LocalRuntimeAcceptanceAuthority {
         cleanupRunner: @escaping () async -> CleanupResult
     ) async -> LocalAcceptanceActionResponse {
         await cleanupRunner()
+        // FIX1: receipt must NOT be built before acceptance.
+        let _ = buildAcceptedReceipt()
         state = .accepted
         return .accepted
+    }
+
+    private func buildAcceptedReceipt() -> LocalAcceptanceReceipt {
+        LocalAcceptanceReceipt(
+            state: .accepted,
+            blocker: "none",
+            evidence: .empty
+        )
     }
 
     var currentReceipt: LocalAcceptanceReceipt {

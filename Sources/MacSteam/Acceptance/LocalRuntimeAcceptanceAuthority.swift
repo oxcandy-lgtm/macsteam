@@ -75,6 +75,11 @@ final class LocalRuntimeAcceptanceAuthority {
     private var operatorInputConfirmed = false
     private(set) var visibilityStableSeconds: Int = 0
 
+    /// Independent ownership evidence. This is bound to the latest census result,
+    /// never derived from visibility. It is latched as historical evidence before
+    /// cleanup and frozen in the accepted receipt.
+    private(set) var ownershipCensusProven = false
+
     init(
         nowProvider: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 }
     ) {
@@ -119,6 +124,7 @@ final class LocalRuntimeAcceptanceAuthority {
     /// a committed launch).
     private func resetOperationalEvidence() {
         visibleSince = nil
+        ownershipCensusProven = false
         operatorMainMenuConfirmed = false
         operatorInputConfirmed = false
         visibilityStableSeconds = 0
@@ -130,6 +136,21 @@ final class LocalRuntimeAcceptanceAuthority {
 
     func observe(_ snapshot: LocalAcceptanceMachineSnapshot) {
         guard let candidate = candidate else { return }
+
+        // Fail-closed terminality: a bounded terminal state is never mutated by
+        // a later (even favourable) snapshot. Only a fresh candidate or an
+        // explicit reset may start again.
+        switch state {
+        case .blocked, .invalidated, .accepted:
+            return
+        case .awaitingCleanup:
+            // During cleanup the session stopping/stopped transitions are the
+            // expected result of cleanup, not a monitor cancellation.
+            return
+        case .notStarted, .inProgress,
+             .awaitingStableVisibility, .awaitingOperatorConfirmation:
+            break
+        }
 
         guard snapshot.sessionID == candidate.sessionID else {
             invalidate(.sessionIdentityChanged)
@@ -144,9 +165,12 @@ final class LocalRuntimeAcceptanceAuthority {
             return
         }
         guard snapshot.censusState == .proven else {
-            block(.ownershipNotProven)
+            ownershipCensusProven = false
+            resetOperationalEvidenceFields()
+            enterBlocked(.ownershipNotProven)
             return
         }
+        ownershipCensusProven = true
 
         switch snapshot.sessionState {
         case .runningVisible:
@@ -231,15 +255,23 @@ final class LocalRuntimeAcceptanceAuthority {
             return .rejected(.inputResponseUnconfirmed)
         }
         completionAttempted = true
+        // Explicit transition into the cleanup phase: the session stopping/
+        // stopped transitions during cleanup are expected and must not be read
+        // by the observer as a monitor cancellation.
+        state = .awaitingCleanup
 
         let result = await cleanupRunner()
         cleanupWasClean = (result == .clean)
         guard cleanupWasClean else {
-            block(.cleanupIncomplete)
+            blocker = .cleanupIncomplete
+            state = .blocked
             return .rejected(.cleanupIncomplete)
         }
-        earnedReceipt = buildAcceptedReceipt()
+        blocker = nil
+        // Mark accepted BEFORE freezing the receipt so the earned receipt records
+        // the accepted status, not the in-progress status of the cleanup window.
         state = .accepted
+        earnedReceipt = buildAcceptedReceipt()
         return .accepted
     }
 
@@ -265,7 +297,7 @@ final class LocalRuntimeAcceptanceAuthority {
             steamInstallVerified: machine.steamInstallVerified,
             cloverpitInstallReady: machine.cloverpitInstallReady,
             supervisedGameSessionStarted: candidate != nil,
-            ownershipCensusProven: visibleSince != nil,
+            ownershipCensusProven: ownershipCensusProven,
             targetWindowVisible: state == .accepted || state == .awaitingOperatorConfirmation,
             visibilityStableSeconds: visibilityStableSeconds,
             mainMenuConfirmedByOperator: operatorMainMenuConfirmed,
@@ -275,11 +307,14 @@ final class LocalRuntimeAcceptanceAuthority {
     }
 
     private func buildAcceptedReceipt() -> LocalAcceptanceReceipt {
-        let evidence = buildCurrentEvidence()
-        let accepted = state == .accepted
+        // Accepted receipts are always emitted as accepted. The accepted status
+        // is constructed explicitly rather than derived from the live state so a
+        // receipt can never silently degrade to in_progress due to ordering.
+        var evidence = buildCurrentEvidence()
+        evidence.cleanupComplete = true
         return LocalAcceptanceReceipt(
-            state: accepted ? .accepted : state.receiptStatus,
-            blocker: blocker?.rawValue ?? "none",
+            state: .accepted,
+            blocker: "none",
             evidence: evidence
         )
     }
@@ -298,13 +333,9 @@ final class LocalRuntimeAcceptanceAuthority {
         resetOperationalEvidenceFields()
     }
 
-    private func block(_ reason: LocalAcceptanceBlocker) {
-        state = .blocked
-        blocker = reason
-    }
-
     private func resetOperationalEvidenceFields() {
         visibleSince = nil
+        ownershipCensusProven = false
         operatorMainMenuConfirmed = false
         operatorInputConfirmed = false
         visibilityStableSeconds = 0
@@ -316,4 +347,5 @@ final class LocalRuntimeAcceptanceAuthority {
     var isBlocked: Bool { state == .blocked }
     var menuConfirmed: Bool { operatorMainMenuConfirmed }
     var inputConfirmed: Bool { operatorInputConfirmed }
+    var isOwnershipProven: Bool { ownershipCensusProven }
 }

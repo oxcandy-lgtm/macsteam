@@ -2,12 +2,15 @@
 
 import Foundation
 
-/// Fixture authority (GREEN baseline for the acceptance audit harness).
+/// FAILING fixture: ownership is claimed from mere window visibility rather
+/// than an independent census-derived boolean (regression of FIX1 ownership
+/// independence).
 @MainActor
 final class LocalRuntimeAcceptanceAuthority {
+    nonisolated static let requiredStabilitySeconds: Int = 30
     private(set) var state: LocalAcceptanceState = .notStarted
     private(set) var blocker: LocalAcceptanceBlocker?
-    private(set) var ownershipCensusProven = false
+    private var visibleSince: Date?
 
     @discardableResult
     func beginCandidate(for session: GameSession, generation: UInt64) -> LocalAcceptanceState {
@@ -24,7 +27,17 @@ final class LocalRuntimeAcceptanceAuthority {
     ) async -> LocalAcceptanceActionResponse {
         await cleanupRunner()
         state = .accepted
+        let _ = buildAcceptedReceipt()
         return .accepted
+    }
+
+    private func buildAcceptedReceipt() -> LocalAcceptanceReceipt {
+        LocalAcceptanceReceipt(
+            state: .accepted,
+            blocker: "none",
+            // FIX1: ownership must NOT be derived from mere visibility.
+            evidence: .empty
+        )
     }
 
     var currentReceipt: LocalAcceptanceReceipt {

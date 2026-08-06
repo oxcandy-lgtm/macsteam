@@ -402,4 +402,93 @@ struct LocalRuntimeAcceptanceTests {
         #expect(authorityA.currentReceipt.deterministicJSONString
             == authorityB.currentReceipt.deterministicJSONString)
     }
+
+    // MARK: U1R18-R11-FIX1
+
+    @Test func earnedReceiptRecordsAcceptedStatus() async {
+        let clock = TestClock()
+        let authority = makeAuthority(clock: clock)
+        advanceStable(clock, authority)
+        _ = authority.confirmMainMenu()
+        _ = authority.confirmInputResponse()
+        _ = await authority.requireCompletion { .clean }
+        // Receipt is bound to the accepted state, never the cleanup window.
+        #expect(authority.currentReceipt.status.state == .accepted)
+        #expect(authority.isAccepted)
+    }
+
+    @Test func awaitingCleanupNotInvalidatedBySessionStop() async {
+        let clock = TestClock()
+        let authority = makeAuthority(clock: clock)
+        advanceStable(clock, authority)
+        _ = authority.confirmMainMenu()
+        _ = authority.confirmInputResponse()
+        // During cleanup the monitored session is expected to leave the running
+        // scene; that must not invalidate the authority.
+        let result = await authority.requireCompletion {
+            authority.observe(makeSnapshot(session: session, state: .stopped))
+            return .clean
+        }
+        #expect(result == .accepted)
+        #expect(authority.isAccepted)
+    }
+
+    @Test func ownershipProofIndependentlyEarnedAndPersists() {
+        let clock = TestClock()
+        let authority = makeAuthority(clock: clock)
+        // A proven census earns ownership before any stable window.
+        authority.observe(makeSnapshot(session: session))
+        #expect(authority.isOwnershipProven)
+        // Losing visibility must NOT revoke the independent ownership proof.
+        authority.observe(makeSnapshot(session: session, state: .runningHidden))
+        #expect(authority.isOwnershipProven)
+        // And a blocked attempt leaves ownership unproven, never inferred from
+        // the visible window alone.
+        let clock2 = TestClock()
+        let authority2 = LocalRuntimeAcceptanceAuthority { clock2.value }
+        var pre = makeSatisfiedPrerequisites()
+        pre.runtimeRealLoadHealthy = false
+        authority2.setPrerequisites(pre)
+        authority2.beginCandidate(for: session, generation: 1)
+        authority2.observe(makeSnapshot(session: session, state: .runningVisible, census: .proven))
+        #expect(authority2.isBlocked)
+        #expect(!authority2.isOwnershipProven)
+    }
+
+    @Test func ownershipProofSurvivesVisibilityReset() {
+        let clock = TestClock()
+        let authority = makeAuthority(clock: clock)
+        authority.observe(makeSnapshot(session: session))
+        advanceStable(clock, authority)
+        _ = authority.confirmMainMenu()
+        authority.observe(makeSnapshot(session: session, state: .runningHidden))
+        // Visibility timeline reset, but the census-derived ownership proof is
+        // the authoritative evidence and must persist.
+        #expect(authority.menuConfirmed == false)
+        #expect(authority.isOwnershipProven)
+    }
+
+    @Test func failClosedTerminalStateNeverAutoRecovers() async {
+        let clock = TestClock()
+        let authority = LocalRuntimeAcceptanceAuthority { clock.value }
+        var pre = makeSatisfiedPrerequisites()
+        pre.runtimeRealLoadHealthy = false
+        authority.setPrerequisites(pre)
+        // Prerequisites unmet at begin → blocked; later proving them must not
+        // auto-recover a terminal state.
+        authority.observe(makeSnapshot(session: session))
+        #expect(authority.isBlocked)
+
+        let clock2 = TestClock()
+        let authority2 = makeAuthority(clock: clock2)
+        advanceStable(clock2, authority2)
+        _ = authority2.confirmMainMenu()
+        _ = authority2.confirmInputResponse()
+        _ = await { await authority2.requireCompletion { .clean } }()
+        #expect(authority2.isAccepted)
+        // A favourable later observation must not reopen an accepted terminal.
+        authority2.observe(makeSnapshot(session: session))
+        #expect(authority2.isAccepted)
+        #expect(authority2.state == .accepted)
+    }
 }

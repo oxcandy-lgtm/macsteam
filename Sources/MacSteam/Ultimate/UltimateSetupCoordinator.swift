@@ -89,6 +89,54 @@ final class UltimateSetupCoordinator {
         localAcceptanceAuthority?.currentReceipt.deterministicJSONString ?? "{}"
     }
 
+    /// U1R18-R11-FIX1: presentation model consumed by the CloverPit acceptance
+    /// UI. Derived from the authority's read-only surface and never mutated
+    /// here.
+    var acceptancePresentation: LocalAcceptancePresentation {
+        let state = acceptanceState
+        let blocked = state == .blocked
+        let invalidated = state == .invalidated
+        let accepted = state == .accepted
+
+        let inOperatorPhase = state == .awaitingOperatorConfirmation
+        let canConfirmMainMenu = inOperatorPhase && !acceptanceMenuConfirmed
+        let canConfirmInputResponse = inOperatorPhase
+            && acceptanceMenuConfirmed
+            && !acceptanceInputConfirmed
+        let canComplete = inOperatorPhase && acceptanceMenuConfirmed && acceptanceInputConfirmed
+
+        let title: String
+        let body: String
+        if accepted {
+            title = "Runtime acceptance complete"
+            body = "Cleanup complete, receipt available."
+        } else if blocked {
+            title = "Runtime acceptance blocked"
+            body = acceptanceBlocker.map { String(describing: $0) } ?? "Unknown blocker."
+        } else if invalidated {
+            title = "Runtime acceptance cannot complete"
+            body = "The session ended before acceptance completed."
+        } else if state == .awaitingStableVisibility {
+            title = "Confirming CloverPit window"
+            body = "Keep the window visible \(acceptanceStabilitySeconds)/30 seconds."
+        } else if inOperatorPhase {
+            title = "Confirm the CloverPit session"
+            body = "Confirm the main menu, then the input response."
+        } else {
+            title = "Local runtime acceptance"
+            body = "Preparing acceptance."
+        }
+
+        return LocalAcceptancePresentation(
+            isVisible: state != .notStarted && state != .inProgress,
+            canConfirmMainMenu: canConfirmMainMenu,
+            canConfirmInputResponse: canConfirmInputResponse,
+            canComplete: canComplete,
+            title: title,
+            body: body
+        )
+    }
+
     /// Independent Steam client process state.
     var steamClientState: SteamClientState = .stopped
 
@@ -1366,7 +1414,7 @@ final class UltimateSetupCoordinator {
         } catch {
             self.error = .launchFailed(error.localizedDescription)
             state = .cloverPitReady
-            stopLocalAcceptanceMonitor(reason: .monitorCancelled)
+            invalidateAndDiscardLocalAcceptance(reason: .monitorCancelled)
         }
     }
 
@@ -1432,7 +1480,17 @@ final class UltimateSetupCoordinator {
         )
     }
 
-    private func stopLocalAcceptanceMonitor(reason: LocalAcceptanceBlocker) {
+    /// Cancels the observation task while preserving the authority and its
+    /// earned/receipt state. Used after a successful acceptance so the terminal
+    /// accepted state is not clobbered.
+    private func cancelLocalAcceptanceObservationPreservingAuthority() {
+        localAcceptanceMonitorTask?.cancel()
+        localAcceptanceMonitorTask = nil
+    }
+
+    /// Invalidates and discards the authority outright. Used to abandon an
+    /// acceptance (e.g. failed launch).
+    private func invalidateAndDiscardLocalAcceptance(reason: LocalAcceptanceBlocker) {
         localAcceptanceMonitorTask?.cancel()
         localAcceptanceMonitorTask = nil
         localAcceptanceAuthority?.invalidate(reason)
@@ -1459,9 +1517,22 @@ final class UltimateSetupCoordinator {
             await self.stopAllForApplicationTermination()
         }
         if response == .accepted {
-            stopLocalAcceptanceMonitor(reason: .monitorCancelled)
+            // Preserve the authority (and earned receipt); only the observation
+            // task is stopped. The authority now sits in a terminal accepted
+            // state and is never mutated again.
+            cancelLocalAcceptanceObservationPreservingAuthority()
         }
         return response
+    }
+
+    /// User confirmed the input response (production API; previously only the
+    /// menu was confirmable from the production UI).
+    @discardableResult
+    func confirmInputResponse() -> LocalAcceptanceActionResponse {
+        guard let authority = localAcceptanceAuthority else {
+            return .rejected(.monitorCancelled)
+        }
+        return authority.confirmInputResponse()
     }
 
     private func localReceiptSourceType(from string: String?) -> LocalReceiptSourceType {
