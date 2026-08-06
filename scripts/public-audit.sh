@@ -228,6 +228,21 @@ else
     check "Public product truth authority" "fail"
 fi
 
+# ––– U1R18-R11 local runtime acceptance authority –––
+echo "--- Local Runtime Acceptance Audit ---"
+if python3 scripts/local-runtime-acceptance-audit.py >/dev/null 2>&1; then
+    check "Local runtime acceptance audit" "pass"
+else
+    check "Local runtime acceptance audit" "fail"
+fi
+
+echo "--- Local Runtime Acceptance Mutation Harness ---"
+if bash scripts/test-local-runtime-acceptance-audit.sh >/dev/null 2>&1; then
+    check "Local runtime acceptance mutation harness" "pass"
+else
+    check "Local runtime acceptance mutation harness" "fail"
+fi
+
 # ––– Summary –––
 echo ""
 echo "=== Summary ==="

@@ -156,11 +156,71 @@ struct CloverPitLaunchView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+
+                if coordinator.acceptanceState == .awaitingOperatorConfirmation {
+                    Divider()
+                    acceptanceSection
+                }
             }
         }
         .padding(12)
         .background(Color(nsColor: .windowBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    // MARK: - Acceptance section (U1R18-R11)
+
+    @ViewBuilder
+    private var acceptanceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Runtime approval")
+                .font(.subheadline)
+                .fontWeight(.medium)
+
+            statusRow(
+                "Visibility stable",
+                detail: "\(coordinator.acceptanceStabilitySeconds)s confirmed",
+                ok: coordinator.acceptanceStable
+            )
+            statusRow(
+                "Main menu confirmed",
+                detail: coordinator.acceptanceMenuConfirmed ? "Yes" : "Pending",
+                ok: coordinator.acceptanceMenuConfirmed
+            )
+            statusRow(
+                "Cleanup gate",
+                detail: "Pending operator completion",
+                ok: false
+            )
+
+            HStack(spacing: 8) {
+                Button("Confirm Main Menu") {
+                    coordinator.confirmMainMenu()
+                }
+                .controlSize(.small)
+                Button("Confirm CloverPit") {
+                    Task {
+                        _ = await coordinator.completeLocalAcceptance()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!coordinator.acceptanceMenuConfirmed)
+            }
+        }
+    }
+
+    private func statusRow(_ label: String, detail: String, ok: Bool) -> some View {
+        HStack {
+            Image(systemName: ok ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(ok ? Color.green : Color.secondary)
+            Text(label)
+                .font(.caption)
+            Spacer()
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     // MARK: - Navigation

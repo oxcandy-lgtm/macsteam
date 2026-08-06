@@ -70,6 +70,25 @@ final class UltimateSetupCoordinator {
     /// Guard against concurrent Steam launch.
     var isLaunchingSteam = false
 
+    /// U1R18-R11: fail-closed local runtime acceptance (single mutation owner).
+    /// Read-only surface below; the authority itself is the sole mutator.
+    private var localAcceptanceAuthority: LocalRuntimeAcceptanceAuthority?
+
+    /// Task that feeds reduced machine snapshots to the acceptance authority.
+    private var localAcceptanceMonitorTask: Task<Void, Never>?
+
+    var acceptanceState: LocalAcceptanceState { localAcceptanceAuthority?.state ?? .notStarted }
+    var acceptanceBlocker: LocalAcceptanceBlocker? { localAcceptanceAuthority?.blocker }
+    var acceptanceStabilitySeconds: Int { localAcceptanceAuthority?.visibilityStableSeconds ?? 0 }
+    var acceptanceStable: Bool {
+        acceptanceState == .awaitingOperatorConfirmation || acceptanceState == .accepted
+    }
+    var acceptanceMenuConfirmed: Bool { localAcceptanceAuthority?.menuConfirmed ?? false }
+    var acceptanceInputConfirmed: Bool { localAcceptanceAuthority?.inputConfirmed ?? false }
+    var acceptanceReceiptJSON: String {
+        localAcceptanceAuthority?.currentReceipt.deterministicJSONString ?? "{}"
+    }
+
     /// Independent Steam client process state.
     var steamClientState: SteamClientState = .stopped
 
@@ -1343,13 +1362,84 @@ final class UltimateSetupCoordinator {
             launchPhase = .processObserved
             state = .processObserved
             // activeSession is exposed via sessionSupervisor.activeSession
+            beginLocalAcceptance(for: session)
         } catch {
             self.error = .launchFailed(error.localizedDescription)
             state = .cloverPitReady
+            stopLocalAcceptanceMonitor(reason: .monitorCancelled)
         }
     }
 
-    /// User confirmed seeing CloverPit window.
+    // MARK: - U1R18-R11 Local acceptance
+
+    /// Seed and start the fail-closed acceptance authority for a committed game
+    /// session. Prerequisites are reconstructed from current derived state; the
+    /// deadline clock is injectable but production uses wall-clock time.
+    private func beginLocalAcceptance(for session: GameSession) {
+        // Prerequisite gate: only imported Wine admitted as the runtime source.
+        let source = localReceiptSourceType(from: runtimeSourceType)
+        var prerequisites = LocalAcceptancePrerequisites()
+        prerequisites.runtimeSourceType = source
+        prerequisites.runtimeRealLoadHealthy = realLoadHealthy
+        prerequisites.canonicalPrefixBound = canonicalPrefixEvidenceValid
+        prerequisites.steamInstallVerified = steamInstallationReady
+        prerequisites.cloverpitInstallReady = cloverPitInspection?.isReady ?? false
+        prerequisites.supervisedGameSessionStarted = true
+
+        let authority = LocalRuntimeAcceptanceAuthority()
+        authority.setPrerequisites(prerequisites)
+        acceptanceGenerationCounter &+= 1
+        authority.beginCandidate(for: session, generation: acceptanceGenerationCounter)
+        localAcceptanceAuthority = authority
+        startLocalAcceptanceMonitor()
+    }
+
+    private var steamInstallationReady: Bool {
+        steamInstallLifecycle == .verifiedComplete || steamInspection?.steamInstalled == true
+    }
+
+    private var acceptanceGenerationCounter: UInt64 = 0
+
+    private func startLocalAcceptanceMonitor() {
+        localAcceptanceMonitorTask?.cancel()
+        localAcceptanceMonitorTask = Task { @MainActor [weak self] in
+            await self?.feedLocalAcceptanceLoop()
+        }
+    }
+
+    /// Dedicated observation loop. Reduced to a plain machine snapshot before
+    /// handing to the authority, so the authority stays decision-only.
+    private func feedLocalAcceptanceLoop() async {
+        guard let authority = localAcceptanceAuthority else { return }
+        while !Task.isCancelled {
+            let snapshot = await makeLocalAcceptanceSnapshot()
+            authority.observe(snapshot)
+            if authority.isAccepted || authority.isInvalidated || authority.isBlocked {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
+    private func makeLocalAcceptanceSnapshot() async -> LocalAcceptanceMachineSnapshot {
+        let census = await sessionSupervisor.processCensus()
+        return LocalAcceptanceMachineSnapshot(
+            sessionID: sessionSupervisor.activeSession?.sessionID,
+            sessionPurpose: sessionSupervisor.activeSession?.purpose,
+            recipeID: sessionSupervisor.activeSession?.recipeID,
+            sessionState: sessionSupervisor.state,
+            censusState: census.state
+        )
+    }
+
+    private func stopLocalAcceptanceMonitor(reason: LocalAcceptanceBlocker) {
+        localAcceptanceMonitorTask?.cancel()
+        localAcceptanceMonitorTask = nil
+        localAcceptanceAuthority?.invalidate(reason)
+        localAcceptanceAuthority = nil
+    }
+
+    /// User confirmed seeing the CloverPit window.
     func confirmWindow() {
         launchPhase = .windowConfirmed
     }
@@ -1357,6 +1447,36 @@ final class UltimateSetupCoordinator {
     /// User confirmed seeing main menu.
     func confirmMainMenu() {
         launchPhase = .mainMenuConfirmed
+        _ = localAcceptanceAuthority?.confirmMainMenu()
+    }
+
+    /// Run the cleanup gate and finalize acceptance only on a clean cleanup.
+    func completeLocalAcceptance() async -> LocalAcceptanceActionResponse {
+        guard let authority = localAcceptanceAuthority else {
+            return .rejected(.monitorCancelled)
+        }
+        let response = await authority.requireCompletion {
+            await self.stopAllForApplicationTermination()
+        }
+        if response == .accepted {
+            stopLocalAcceptanceMonitor(reason: .monitorCancelled)
+        }
+        return response
+    }
+
+    private func localReceiptSourceType(from string: String?) -> LocalReceiptSourceType {
+        switch string {
+        case "managed_wine": return .managedWine
+        case "imported_wine": return .importedWine
+        case "system_wine": return .systemWine
+        case "crossover": return .crossover
+        default: return .runtime
+        }
+    }
+
+    /// User confirmed seeing CloverPit window.
+    func confirmWindowOriginal() {
+        launchPhase = .windowConfirmed
     }
 
     // MARK: - Cleanup orchestrator
