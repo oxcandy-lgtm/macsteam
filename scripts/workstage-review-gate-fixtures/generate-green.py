@@ -88,20 +88,21 @@ U1R18_R10_FIX2_COMMIT_MSG = ("ci: close R10 residual audit and report window "
                              "(U1R18-R10-FIX1-SCOPE1-FIX2)\n\n"
                              "Workstream: U1R18-R10-FIX1-SCOPE1-FIX2")
 
-# === U1R18-R10-FIX1-SCOPE1-FIX3 (current workstream) ===
-# Authorized parent f2b32a6b... (the FIX2 child). The rejected controller review
-# 4862557986 classifies the FIX2 exact-owner-duplicate / product-H1 binding gaps
-# and authorizes exactly one direct child. It references the FIX2 worker report
-# 5189373754 and its successful submission 30988741207 as historical evidence.
-U1R18_R10_FIX3_PARENT = "f2b32a6bf9c0e52aa67905bf04ec0fede2a0b61a"
-U1R18_R10_FIX3_HEAD = "0d0e0f101112131415161718191a1b1c1d1e1f20"
-U1R18_R10_FIX3_REVIEW_ID = 4862557986
-U1R18_R10_FIX3_CLASSIFICATION = \
-    "RED_U1R18_R10_FIX1_SCOPE1_FIX2_EXACT_OWNER_DUPLICATE_AND_PRODUCT_H1_BINDING_INCOMPLETE"
-U1R18_R10_FIX3_WORKSTREAM = "U1R18-R10-FIX1-SCOPE1-FIX3"
-U1R18_R10_FIX3_COMMIT_MSG = ("ci: enforce exact owner uniqueness and product H1 "
-                             "(U1R18-R10-FIX1-SCOPE1-FIX3)\n\n"
-                             "Workstream: U1R18-R10-FIX1-SCOPE1-FIX3")
+# === U1R18-R10-FIX1-SCOPE1-FIX4 (current workstream) ===
+# Authorized parent 35c8f6ff... (the FIX3 child). The rejected controller review
+# 4863401644 classifies the FIX3 visible-heading-grammar / exact-normalization
+# gaps and authorizes exactly one direct child. It references the FIX3 worker
+# report 5189373754 and its successful submission 30988741207 as historical
+# evidence.
+U1R18_R10_FIX4_PARENT = "35c8f6ffc0777c76728c99b625eaad8f6d3291b4"
+U1R18_R10_FIX4_HEAD = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+U1R18_R10_FIX4_REVIEW_ID = 4863401644
+U1R18_R10_FIX4_CLASSIFICATION = \
+    "RED_U1R18_R10_FIX1_SCOPE1_FIX3_VISIBLE_HEADING_GRAMMAR_AND_EXACT_NORMALIZATION_INCOMPLETE"
+U1R18_R10_FIX4_WORKSTREAM = "U1R18-R10-FIX1-SCOPE1-FIX4"
+U1R18_R10_FIX4_COMMIT_MSG = ("ci: close visible heading grammar gaps "
+                             "(U1R18-R10-FIX1-SCOPE1-FIX4)\n\n"
+                             "Workstream: U1R18-R10-FIX1-SCOPE1-FIX4")
 
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
@@ -414,17 +415,17 @@ def create_advance_repair():
     d = os.path.join(FIXTURE_DIR, "advance_repair")
     if os.path.exists(d):
         shutil.rmtree(d)
-    _base(d, head_sha=U1R18_R10_FIX3_HEAD, parent_sha=U1R18_R10_FIX3_PARENT,
-          message=U1R18_R10_FIX3_COMMIT_MSG)
-    repair_body = (controller_review_json(U1R18_R10_FIX3_PARENT, decision="rejected",
+    _base(d, head_sha=U1R18_R10_FIX4_HEAD, parent_sha=U1R18_R10_FIX4_PARENT,
+          message=U1R18_R10_FIX4_COMMIT_MSG)
+    repair_body = (controller_review_json(U1R18_R10_FIX4_PARENT, decision="rejected",
                                           wr_comment_id=5189373754,
                                           sub_run_id=30988741207,
-                                          classification=U1R18_R10_FIX3_CLASSIFICATION)
+                                          classification=U1R18_R10_FIX4_CLASSIFICATION)
                    + "\n\nRepair authorization granted for "
-                     "U1R18-R10-FIX1-SCOPE1-FIX3. This RED review authorizes a single "
+                     "U1R18-R10-FIX1-SCOPE1-FIX4. This RED review authorizes a single "
                      "direct child commit.\n")
     write_fixture(d, "reviews.json",
-                  [review_json(U1R18_R10_FIX3_PARENT, U1R18_R10_FIX3_REVIEW_ID,
+                  [review_json(U1R18_R10_FIX4_PARENT, U1R18_R10_FIX4_REVIEW_ID,
                                repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json",
                   [".github/workstage-review-gate-policy.json",
@@ -432,10 +433,21 @@ def create_advance_repair():
                    "scripts/test-public-product-truth-audit.sh",
                    "scripts/workstage-review-gate-fixtures/apply-mutation.py",
                    "scripts/workstage-review-gate-fixtures/generate-green.py",
-                   "scripts/public-product-truth-fixtures/red/f2-owner-two-complete-duplicates/docs/ARCHITECTURE.md",
-                   "scripts/public-product-truth-fixtures/red/f6-h1-other-product-prose/README.md",
-                   "scripts/public-product-truth-fixtures/green/g7-owner-hidden-duplicates/docs/ARCHITECTURE.md",
-                   "scripts/public-product-truth-fixtures/green/g8-h1-decoys-green/README.md"])
+                   "scripts/public-product-truth-fixtures/green/g9-readme-setext-product-h1/README.md",
+                   "scripts/public-product-truth-fixtures/green/g10-owner-setext-with-hidden-decoys/docs/ARCHITECTURE.md",
+                   "scripts/public-product-truth-fixtures/red/h1-readme-atx-plus-setext-h1/README.md",
+                   "scripts/public-product-truth-fixtures/red/h2-readme-two-setext-product-h1/README.md",
+                   "scripts/public-product-truth-fixtures/red/h3-readme-other-setext-h1-with-macsteam-prose/README.md",
+                   "scripts/public-product-truth-fixtures/red/h4-readme-marker-before-setext-product-h1/README.md",
+                   "scripts/public-product-truth-fixtures/red/h5-readme-product-h1-embedded-asterisk/README.md",
+                   "scripts/public-product-truth-fixtures/red/h6-readme-product-h1-unmatched-backtick/README.md",
+                   "scripts/public-product-truth-fixtures/red/h7-readme-product-h1-balanced-emphasis-forbidden/README.md",
+                   "scripts/public-product-truth-fixtures/red/h8-readme-visible-raw-html-h1/README.md",
+                   "scripts/public-product-truth-fixtures/red/h9-canonical-owner-atx-plus-setext-both-complete/docs/STEAM_BOUNDARY.md",
+                   "scripts/public-product-truth-fixtures/red/h10-canonical-owner-two-setext-both-complete/docs/STEAM_BOUNDARY.md",
+                   "scripts/public-product-truth-fixtures/red/h11-canonical-owner-two-different-setext-regex-matches/docs/ARCHITECTURE.md",
+                   "scripts/public-product-truth-fixtures/red/h12-canonical-visible-raw-html-h2-owner/docs/STEAM_BOUNDARY.md",
+                   "scripts/public-product-truth-fixtures/red/h13-readme-visible-raw-html-h2/README.md"])
 
 
 def create_r9_truth_scope_admitted():

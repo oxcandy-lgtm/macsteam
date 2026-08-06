@@ -604,38 +604,40 @@ def sanitize_markdown(text):
     return strip_fenced_blocks(strip_html_comments(text))
 
 
-def sections(text):
-    """Return a list of (heading_level, heading, body) tuples."""
-    out = []
-    lines = text.splitlines()
-    current = (0, "", [])
-    for line in lines:
-        m = re.match(r"^(#{1,6})\s+(.*)$", line)
-        if m:
-            out.append((current[0], current[1], "\n".join(current[2])))
-            current = (len(m.group(1)), m.group(2), [])
-        else:
-            current[2].append(line)
-    out.append((current[0], current[1], "\n".join(current[2])))
-    return out
+def _heading_body_span(text, headings, h):
+    """(start, end) raw character offsets spanning heading h's body: from the
+    end of h up to the next heading of level <= h.level, else EOF."""
+    end = len(text)
+    for nxt in headings:
+        if nxt.start > h.start and nxt.level <= h.level:
+            end = nxt.start
+            break
+    return h.end, end
 
 
-def l2_sections(text):
-    """Return {heading: body} for every level-2 heading.
+def _heading_body(text, headings, h):
+    """Sanitized visible prose body of one heading: comments and fenced blocks
+    in the span are stripped so a decoy inside them cannot satisfy a binding.
+    Nested subsections fold into their owning level-2 body naturally."""
+    start, end = _heading_body_span(text, headings, h)
+    return sanitize_markdown(text[start:end]).strip()
 
-    Nested subsections (level 3+) are folded into their owning level-2 body so
-    that per-section fact checks see the whole section including subsections.
+
+def l2_inventory(text):
+    """Ordered list of (title, body) for every VISIBLE level-2 Markdown
+    heading (ATX or Setext), never collapsed by title. raw-HTML <h2> headings
+    are NOT adopted as sections (they must be rejected before this point).
+
+    The list is never collapsed by title and occurrences are never trusted by
+    "first/last match wins": the caller enforces the exactly-once requirement,
+    so exact duplicates (even when every duplicate carries the accepted
+    bindings) are always counted. Each body is the sanitized visible prose of
+    the owner span, so a fact hidden in a comment or fenced block cannot
+    satisfy a binding.
     """
-    result = {}
-    current = None
-    for lvl, heading, body in sections(text):
-        if lvl == 2:
-            current = heading.strip()
-            result[current] = body
-        elif lvl > 2 and current is not None:
-            result[current] = result.get(current, "") + "\n" + "#" * lvl + " " + \
-                heading + "\n" + body
-    return result
+    headings, _html, _unclosed = parse_headings(text)
+    return [(h.title, _heading_body(text, headings, h))
+            for h in headings if h.level == 2]
 
 
 def dedent(text):
@@ -671,52 +673,136 @@ def _statements(sec):
     return stmts
 
 
-def _normalize_heading(text):
-    """Strip markdown emphasis and collapse whitespace for heading comparison."""
-    return re.sub(r"\s+", " ", re.sub(r"\*\*|\*+|`+", "", text)).strip()
+SETEXT_H1_RE = re.compile(r"^[ \t]{0,3}=+[ \t]*$")
+SETEXT_H2_RE = re.compile(r"^[ \t]{0,3}-+[ \t]*$")
+ATX_HEADING_RE = re.compile(r"^( {0,3})(#{1,6})(?:[ \t]+(.*))?[ \t]*$")
+FENCE_RE = re.compile(r"^[ \t]{0,3}((?:`{3,})|(?:~{3,}))")
+HTML_H_RE = re.compile(r"<(?!\s*/)\s*h([12])\b[^>]*>", re.IGNORECASE)
+HTML_H_PAIR_RE = re.compile(r"<(?!\s*/)\s*h([12])\b[^>]*>(.*?)</\s*h\1\s*>",
+                            re.IGNORECASE | re.DOTALL)
 
 
-def visible_headings(text):
-    """(level, heading, raw_offset) for headings on VISIBLE prose.
+class _Heading:
+    __slots__ = ("level", "title", "syntax", "start", "end")
 
-    Lines inside fenced code blocks or HTML comments are invisible: a fenced or
-    commented `# Fake H1` can never supply the product H1 that the marker must
-    follow, and a fenced `## Fake` can never be the "first H2".
-    """
-    out = []
-    in_fence = None
-    html_comment = False
+    def __init__(self, level, title, syntax, start, end):
+        self.level = level
+        self.title = title
+        self.syntax = syntax
+        self.start = start
+        self.end = end
+
+
+def _is_setext_title(line):
+    """A visible text line is a setext title unless blank, 4+-indented code,
+    or itself an underline."""
+    if not line.strip():
+        return False
+    if re.match(r"^[ \t]{4,}", line):
+        return False
+    if SETEXT_H1_RE.match(line) or SETEXT_H2_RE.match(line):
+        return False
+    return True
+
+
+def _visible_lines(text):
+    """Per-line (start_offset, raw, no_eol_line, visible). A line is invisible
+    inside a fenced code block, an HTML comment, or 4-space-indented code; an
+    unclosed fence or comment keeps everything after it invisible (fail closed,
+    never exposing a hidden heading as visible). `visible` only governs heading
+    DETECTION — body prose is sliced from raw offsets, so invisibility here
+    never strips content."""
+    lines = []
     offset = 0
-    for line in text.splitlines(keepends=True):
-        if html_comment:
+    in_fence = None
+    in_comment = False
+    for raw in text.splitlines(keepends=True):
+        line = raw.rstrip("\r\n")
+        if in_comment:
+            visible = False
             if "-->" in line:
-                html_comment = False
-            offset += len(line)
-            continue
-        if "<!--" in line:
-            html_comment = True
-            if "-->" in line:
-                html_comment = False
-            offset += len(line)
-            continue
-        m = re.match(r"^\s*((?:`{3,})|(?:~{3,}))\s*(.*)$", line)
-        if m:
-            marker = m.group(1)
-            char = marker[0]
-            if in_fence is None:
-                in_fence = char
-            elif in_fence == char:
+                in_comment = False
+        elif in_fence is not None:
+            visible = False
+            fm = FENCE_RE.match(line)
+            if fm and fm.group(1)[0] == in_fence:
                 in_fence = None
-            offset += len(line)
+        elif "<!--" in line:
+            visible = False
+            in_comment = "-->" not in line.split("<!--", 1)[1]
+        else:
+            fm = FENCE_RE.match(line)
+            if fm:
+                visible = False
+                in_fence = fm.group(1)[0]
+            elif re.match(r"[ \t]{4,}", line):
+                # 4-space-indented code: never a heading, never an HTML
+                # heading violation (content still reaches body spans).
+                visible = False
+            else:
+                visible = True
+        lines.append((offset, raw, line, visible))
+        offset += len(raw)
+    return lines, (in_fence is not None or in_comment)
+
+
+def parse_headings(text):
+    """Return (headings, html, unclosed).
+
+    headings: ordered, never-collapsed list of _Heading for every VISIBLE
+    Markdown heading (ATX or Setext), with raw offsets. Setext records span
+    title + underline; their body starts at the underline's next line.
+
+    html: ordered _Heading records (syntax="html") for every VISIBLE raw-HTML
+    <h1>/<h2> heading tag. raw-HTML headings are NOT adopted as section
+    authority: the caller must fail closed on them per document type.
+
+    Fenced-code lines, HTML comments, and 4-space-indented code are invisible:
+    a `# Fake H1` or `<h2>Fake</h2>` inside them can never supply the product
+    H1, a required section, or a marker-placement boundary. Titles are exact
+    parsed text (trailing ATX hashes stripped, edges trimmed) with NO Markdown
+    emphasis stripping, so a misprinted or emphasized product name is never
+    masked.
+    """
+    lines, unclosed = _visible_lines(text)
+    headings = []
+    html = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        start, raw, line, vis = lines[i]
+        if not vis:
+            i += 1
             continue
-        if in_fence is not None:
-            offset += len(line)
+        am = ATX_HEADING_RE.match(line)
+        if am:
+            level = len(am.group(2))
+            title = re.sub(r"[ \t]+#+[ \t]*$", "", (am.group(3) or "")).strip()
+            headings.append(_Heading(level, title, "atx", start, start + len(raw)))
+            i += 1
             continue
-        hm = re.match(r"^(#{1,6})\s+(.*)$", line)
+        hm = HTML_H_RE.search(line)
         if hm:
-            out.append((len(hm.group(1)), hm.group(2), offset))
-        offset += len(line)
-    return out
+            level = int(hm.group(1))
+            pair = HTML_H_PAIR_RE.search(line)
+            title = pair.group(2).strip() if pair else ""
+            html.append(_Heading(level, title, "html", start, start + len(raw)))
+            i += 1
+            continue
+        # Setext: this visible line is a title when the next line is an
+        # underline. A blank, indented-code, or underline line is not a title.
+        if i + 1 < n and lines[i + 1][3]:
+            nxt = lines[i + 1]
+            su = SETEXT_H1_RE.match(nxt[2]) or SETEXT_H2_RE.match(nxt[2])
+            if su and _is_setext_title(line):
+                level = 1 if su.group(0).lstrip().startswith("=") else 2
+                headings.append(_Heading(
+                    level, line.strip(), "setext",
+                    start, nxt[0] + len(nxt[1])))
+                i += 2
+                continue
+        i += 1
+    return headings, html, unclosed
 
 
 # Stale / overclaiming statement patterns mapped to their guards.  Each match
@@ -785,33 +871,48 @@ def check_readme(text, truth):
             "README.md contains more than one public product truth marker")
 
     # Marker placement (raw positioning): the marker must appear AFTER the
-    # sole visible product H1 and BEFORE the first visible H2. Only VISIBLE
-    # headings count: fenced-code or HTML-comment decoy headings can never
-    # supply the H1/H2 that the marker must be positioned against.
+    # sole visible product H1 (for a Setext H1 this means the title AND its
+    # underline) and BEFORE the first visible H2. Only VISIBLE Markdown
+    # headings (ATX or Setext) count: fenced-code or HTML-comment decoy
+    # headings, and 4-space-indented code, can never supply the H1/H2 that the
+    # marker must be positioned against.
     #
     # §5 (FIX3): README authority is bound to EXACTLY ONE visible level-1
-    # heading whose normalized text is exactly the product display name. A
-    # wrong, absent, or duplicate visible product H1 is public_truth_branding
-    # _invalid; general prose naming the product cannot substitute for the
-    # product H1; a product name supplied only in prose/comment/fence fails.
-    vis = visible_headings(text)
-    h1_offs = [o for (lv, h, o) in vis if lv == 1]
-    vis_h2 = [o for (lv, h, o) in vis if lv == 2]
+    # heading whose parsed title is exactly the product display name. A wrong,
+    # absent, or duplicate visible product H1 is public_truth_branding_invalid;
+    # general prose naming the product cannot substitute for the product H1;
+    # a product name supplied only in prose/comment/fence fails.
     disp = truth["branding"]["product_display_name"]
-    if len(h1_offs) != 1:
+    headings, html_viol, _ = parse_headings(text)
+
+    # raw-HTML headings are NOT section authority: a visible <h1>/<h2> is a
+    # heading-syntax violation and must fail closed, never be adopted.
+    if any(h.level == 1 for h in html_viol):
+        die("public_truth_branding_invalid", EXIT_POLICY,
+            "README visible raw-HTML <h1> is not a valid product H1")
+    if any(h.level == 2 for h in html_viol):
+        die("public_truth_docs_drift", EXIT_POLICY,
+            "README visible raw-HTML <h2> is not a valid L2 section")
+
+    h1 = [h for h in headings if h.level == 1]
+    if len(h1) != 1:
         die("public_truth_branding_invalid", EXIT_POLICY,
             "README must have exactly one visible product H1, "
-            f"got {len(h1_offs)}")
-    sole_h1 = next(h for (lv, h, o) in vis if lv == 1)
-    if _normalize_heading(sole_h1) != disp:
+            f"got {len(h1)}")
+    # §5 (FIX3): README authority is bound to ONE visible product H1 whose
+    # parsed title is EXACTLY the product display name. Parsing is exact (no
+    # emphasis stripping): an emphasized or misprinted product name cannot be
+    # masked, and general prose naming the product cannot substitute for it.
+    if h1[0].title != disp:
         die("public_truth_branding_invalid", EXIT_POLICY,
             f"README visible product H1 must be exactly the product name "
-            f"{disp!r}, got {_normalize_heading(sole_h1)!r}")
+            f"{disp!r}, got {h1[0].title!r}")
     marker_pos = text.find(MARKER)
-    if marker_pos < h1_offs[0]:
+    if marker_pos < h1[0].end:
         die("public_truth_marker_missing", EXIT_POLICY,
             "public product truth marker must appear after the visible product H1")
-    if vis_h2 and marker_pos > vis_h2[0]:
+    first_h2 = next((h for h in headings if h.level == 2), None)
+    if first_h2 is not None and marker_pos > first_h2.start:
         die("public_truth_marker_missing", EXIT_POLICY,
             "public product truth marker is placed in an unrelated section")
 
@@ -825,16 +926,22 @@ def check_readme(text, truth):
             "product truth is hidden inside HTML comments or fenced blocks")
 
     # --- mandatory L2 sections: each exactly once on visible prose ---
-    l2 = l2_sections(body)
+    # The inventory is ORDERED and never collapsed by title, so exact
+    # duplicates are always counted; ATX and Setext headings feed the same
+    # exactly-once gate. Section bodies are the sanitized visible prose of each
+    # owner span (nested subsections folded in). raw-HTML <h2> already failed
+    # closed above, so it never reaches here as a section.
+    l2 = {}
     counts = {}
-    for lvl, heading, _ in sections(body):
-        if lvl == 2:
-            counts[heading.strip()] = counts.get(heading.strip(), 0) + 1
+    for title, sbuf in l2_inventory(text):
+        counts[title] = counts.get(title, 0) + 1
+        l2.setdefault(title, sbuf)
     for name in REQUIRED_README_SECTIONS:
-        if counts.get(name, 0) == 0:
+        c = counts.get(name, 0)
+        if c == 0:
             die("public_truth_docs_drift", EXIT_POLICY,
                 f"README is missing required section: {name!r}")
-        if counts.get(name, 0) > 1:
+        if c > 1:
             die("public_truth_docs_drift", EXIT_POLICY,
                 f"README section is duplicated: {name!r}")
 
@@ -1014,21 +1121,20 @@ def check_readme(text, truth):
 # --------------------------------------------------------------------------
 
 def _doc_section_body(text, section_regex):
-    """Return every matching owner-section occurrence, in document order.
+    """Return every matching owner-section body, in document order.
 
     §4 (FIX3): occurrences are NEVER collapsed through a heading-keyed
     dictionary. Repeated identical headings are all preserved and counted, so
     the caller's exactly-one requirement detects exact duplicates even when
     every duplicate carries the accepted bindings. No occurrence is trusted by
     "first/last match wins", and no occurrence is deduplicated by heading text
-    or body digest. `text` must already be sanitized visible prose: fenced-code
-    and HTML-comment headings are invisible and cannot affect the count.
+    or body digest. Only VISIBLE level-2 headings (ATX, Setext, or raw HTML
+    <h2>) own a section: a fenced or commented heading is invisible and cannot
+    affect the count. Each body is sanitized visible prose, so a fact hidden in
+    a comment or fenced block cannot satisfy a binding.
     """
-    matches = []
-    for _lvl, heading, body in sections(text):
-        if re.search(section_regex, heading, flags=re.IGNORECASE):
-            matches.append(body)
-    return matches
+    return [sbuf for (title, sbuf) in l2_inventory(text)
+            if re.search(section_regex, title, flags=re.IGNORECASE)]
 
 
 # §8 canonical-doc owner bindings.  Each (rel_path, section_regex, bindings)
@@ -1112,6 +1218,13 @@ def scan_docs(root, truth):
             die("public_truth_docs_drift", EXIT_POLICY,
                 f"designated canonical doc missing: {rel}")
         text = read_text(path)
+        # raw-HTML headings are never canonical-doc section authority: a
+        # visible <h1>/<h2> in a canonical doc fails closed as docs drift.
+        _heads, html_viol, _ = parse_headings(text)
+        if html_viol:
+            die("public_truth_docs_drift", EXIT_POLICY,
+                f"{rel}: visible raw-HTML <h{html_viol[0].level}> is not a "
+                f"valid section owner")
         body_norm = re.sub(r"\*\*|`+|\*+", "", sanitize_markdown(text))
         frag, guard = run_overclaim(body_norm)
         if frag:
@@ -1119,7 +1232,7 @@ def scan_docs(root, truth):
                 f"{rel}: public doc drift from truth authority: {frag!r}")
         scope = text
         if section_regex is not None:
-            owners = _doc_section_body(sanitize_markdown(text), section_regex)
+            owners = _doc_section_body(text, section_regex)
             if len(owners) != 1:
                 die("public_truth_docs_drift", EXIT_POLICY,
                     f"{rel}: expected exactly one owning section for "
