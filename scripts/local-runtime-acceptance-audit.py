@@ -404,7 +404,7 @@ def main(argv) -> int:
         violations.append(f"{store_rel}: load must read exactly the pre-stat size (FIX2)")
     if "total" not in lcb or "n == 0" not in lcb:
         violations.append(f"{store_rel}: load must fail closed on an inconsistent short read (FIX2)")
-    if "extraByte" not in lcb:
+    if "probeGrowth(" not in lcb:
         violations.append(f"{store_rel}: load must probe for growth past the pre-stat size (FIX2)")
     if "postStat" not in lcb:
         violations.append(f"{store_rel}: load must re-fstat the same FD after reading (FIX2)")
@@ -421,6 +421,30 @@ def main(argv) -> int:
         violations.append(f"{store_rel}: zero-progress write must fail closed (FIX2)")
     elif re.search(r"count\s*==\s*0\s*\{\s*continue", wcb):
         violations.append(f"{store_rel}: zero-progress write must fail closed (FIX2)")
+
+    # ── U1R18-R12-FIX3 single-authority growth-probe EINTR closure ──
+    # The growth probe is ONE bounded retry authority owned entirely by a
+    # probeGrowth helper. Clean EOF (n == 0) is a legal terminal state that
+    # continues to the post-read snapshot — never an ioFailure. A growth byte
+    # (n == 1) fails. EINTR is consumed against a single counter bounded by
+    # maxInterruptedSyscallRetries; the next consecutive EINTR after the bound
+    # is the ninth and fails closed.
+    if "probeGrowth(" not in store:
+        violations.append(f"{store_rel}: growth probe must be a single retry authority (FIX3)")
+    else:
+        pbody = brace_body(store, store.find("func probeGrowth"))
+        if "readProbeBounded" in store or "readProbeBounded" in pbody:
+            violations.append(f"{store_rel}: growth probe must not split retry budget across helpers (FIX3)")
+        if "n == 0" not in pbody or ".cleanEOF" not in pbody:
+            violations.append(f"{store_rel}: growth probe must recover clean EOF after EINTR (FIX3)")
+        if re.search(r"n\s*==\s*0[^\n]*\.(ioFailure|failed)", pbody):
+            violations.append(f"{store_rel}: growth probe clean EOF must not be an ioFailure (FIX3)")
+        if "n == 1" not in pbody or "growthDetected" not in pbody:
+            violations.append(f"{store_rel}: growth probe must fail on a growth byte (FIX3)")
+        if "maxInterruptedSyscallRetries" not in pbody:
+            violations.append(f"{store_rel}: growth probe EINTR retry must be bounded (FIX3)")
+        if re.search(r"eintrRetries\s*>\s*Self\.maxInterruptedSyscallRetries\s*[})\){]", pbody) is None:
+            violations.append(f"{store_rel}: growth probe must fail on the ninth consecutive EINTR (FIX3)")
 
     # ── U1R18-R12-FIX1 authority: explicit persister + exact identity ──
     # The persister must be a required (non-defaulted) parameter and its

@@ -114,7 +114,7 @@ struct LocalAcceptanceReceiptStore {
             if n == 1 { return .growthDetected }
             if n < 0 && errno == EINTR {
                 eintrRetries += 1
-                if eintrRetries > Self.maxInterruptedSyscallRetries {
+                if eintrRetries > Self.maxInterruptedSyscallRetries + 1 {
                     return .ioFailure
                 }
                 continue

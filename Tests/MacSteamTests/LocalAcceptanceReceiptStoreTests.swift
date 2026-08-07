@@ -549,4 +549,111 @@ struct LocalAcceptanceReceiptStoreTests {
         let parent = root.appendingPathComponent("Acceptance")
         #expect(try! FileManager.default.contentsOfDirectory(atPath: parent.path) == ["cloverpit.json"])
     }
+
+    // MARK: U1R18-R12-FIX3 single-authority growth probe EINTR closure
+
+    /// Drives the growth probe (read exactly 1 byte) with a bounded EINTR rate
+    /// before a terminal result (0 = clean EOF, 1 = growth). Body reads pass
+    /// through untouched. `probeCalls` records every probe read attempt.
+    private func probeOps(eintrsBeforeTerminal: Int, terminal: Int,
+                          probeCalls: SeamCounter) -> ReceiptFileOperations {
+        let live = ReceiptFileOperations.live
+        let budget = SeamCounter(eintrsBeforeTerminal)
+        return ReceiptFileOperations(
+            read: { fd, ptr, n in
+                if n == 1 {
+                    probeCalls.increment()
+                    if budget.decrement() { errno = EINTR; return -1 }
+                    return terminal
+                }
+                return Darwin.read(fd, ptr, n)
+            },
+            write: live.write, fstat: live.fstat)
+    }
+
+    @Test func probeCleanEOFWithoutEINTRLoadsExact() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        let receipt = makeGatedAcceptedReceipt()
+        _ = real.saveAccepted(receipt)
+        let calls = SeamCounter(0)
+        let s = storeWithOps(at: root, fileOperations: probeOps(eintrsBeforeTerminal: 0, terminal: 0, probeCalls: calls))
+        // 0 EINTR + clean EOF is a legal load.
+        #expect(s.loadAccepted() == .loaded(receipt))
+        #expect(calls.value() == 1)
+    }
+
+    @Test func probeOneEINTRThenEOFLoadsExact() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = store(at: root)
+        let receipt = makeGatedAcceptedReceipt()
+        _ = real.saveAccepted(receipt)
+        let calls = SeamCounter(0)
+        let s = storeWithOps(at: root, fileOperations: probeOps(eintrsBeforeTerminal: 1, terminal: 0, probeCalls: calls))
+        // 1 EINTR then clean EOF is a legal recovery, not an ioFailure.
+        #expect(s.loadAccepted() == .loaded(receipt))
+        #expect(calls.value() == 2)
+    }
+
+    @Test func probeEightEINTRThenEOFLoadsExact() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = store(at: root)
+        let receipt = makeGatedAcceptedReceipt()
+        _ = real.saveAccepted(receipt)
+        let calls = SeamCounter(0)
+        let s = storeWithOps(at: root, fileOperations: probeOps(eintrsBeforeTerminal: 8, terminal: 0, probeCalls: calls))
+        // Exactly 8 allowed EINTRs then clean EOF still loads.
+        #expect(s.loadAccepted() == .loaded(receipt))
+        #expect(calls.value() == 9)
+    }
+
+    @Test func probeNinthConsecutiveEINTRFailsClosedBounded() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        let calls = SeamCounter(0)
+        // The probe is EINTR forever: exactly the allowed retries are consumed
+        // and the next (ninth) consecutive EINTR fails closed. No tenth read.
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: { fd, ptr, n in
+                if n == 1 {
+                    calls.increment()
+                    errno = EINTR
+                    return -1
+                }
+                return Darwin.read(fd, ptr, n)
+            },
+            write: ReceiptFileOperations.live.write, fstat: ReceiptFileOperations.live.fstat))
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+        #expect(calls.value() == 9)
+    }
+
+    @Test func probeOneEINTRThenGrowthFailsClosed() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        let calls = SeamCounter(0)
+        let s = storeWithOps(at: root, fileOperations: probeOps(eintrsBeforeTerminal: 1, terminal: 1, probeCalls: calls))
+        // 1 EINTR then an extra byte is growth: the load must fail closed.
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+        #expect(calls.value() == 2)
+    }
+
+    @Test func probeEightEINTRThenGrowthFailsClosed() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        let calls = SeamCounter(0)
+        let s = storeWithOps(at: root, fileOperations: probeOps(eintrsBeforeTerminal: 8, terminal: 1, probeCalls: calls))
+        // Even after recovering from the retry budget, an extra byte is growth.
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+        #expect(calls.value() == 9)
+    }
 }

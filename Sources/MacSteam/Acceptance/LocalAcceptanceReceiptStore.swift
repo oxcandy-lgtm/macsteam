@@ -48,6 +48,15 @@ struct ReceiptFileOperations {
     )
 }
 
+/// Outcome of the single-byte growth probe after the exact body read. Internal
+/// only — never exposed through the public store API. Clean EOF is a distinct
+/// legal terminal state, not an ioFailure.
+enum GrowthProbeResult {
+    case cleanEOF
+    case growthDetected
+    case ioFailure
+}
+
 /// Persists only __accepted__ local acceptance receipts as the exact
 /// ``LocalAcceptanceReceipt.deterministicJSON`` bytes, and loads them back only
 /// through a strict canonical-byte + semantic gate.
@@ -248,21 +257,16 @@ struct LocalAcceptanceReceiptStore {
             eintrRetries = 0
         }
         // A single probe byte confirms the file did not grow beyond the pre-stat
-        // size while we were reading. Reading it is still bounded.
-        var extraByte: UInt8 = 0
-        let extraCount = ops.read(fileFD, &extraByte, 1)
-        if extraCount < 0 {
-            if errno == EINTR {
-                // Bounded probe retry: the probe is at most one retry sequence.
-                eintrRetries += 1
-                if eintrRetries > Self.maxInterruptedSyscallRetries {
-                    return .failed(.ioFailure)
-                }
-                return readProbeBounded(fileFD: fileFD, extraByte: &extraByte)
-            }
+        // size while we were reading. One bounded retry authority owns the probe
+        // from the first attempt through the final result.
+        switch probeGrowth(fileFD: fileFD) {
+        case .cleanEOF:
+            break
+        case .growthDetected:
+            return .failed(.ioFailure)
+        case .ioFailure:
             return .failed(.ioFailure)
         }
-        if extraCount > 0 { return .failed(.ioFailure) }
 
         // Post-read snapshot on the same FD. Any change to identity, size, or
         // the most precise available timestamps fails closed.
@@ -285,18 +289,28 @@ struct LocalAcceptanceReceiptStore {
         return .loaded(decoded)
     }
 
-    /// One bounded retry for the extra-byte probe (EINTR only).
-    private func readProbeBounded(fileFD: Int32, extraByte: inout UInt8) -> LocalAcceptanceReceiptStoreResult {
-        for _ in 0..<Self.maxInterruptedSyscallRetries {
-            let n = ops.read(fileFD, &extraByte, 1)
-            if n < 0 {
-                if errno == EINTR { continue }
-                return .failed(.ioFailure)
+    /// The single-byte growth probe reads EXACTLY one byte after the exact body
+    /// read. A single bounded retry authority owns the probe from the first
+    /// attempt through the final result: up to ``maxInterruptedSyscallRetries``
+    /// consecutive EINTRs are consumed, and the next consecutive EINTR is a
+    /// bounded ioFailure. Clean EOF is a legal terminal state — it is NOT an
+    /// ioFailure.
+    private func probeGrowth(fileFD: Int32) -> GrowthProbeResult {
+        var eintrRetries = 0
+        while true {
+            var byte: UInt8 = 0
+            let n = ops.read(fileFD, &byte, 1)
+            if n == 0 { return .cleanEOF }
+            if n == 1 { return .growthDetected }
+            if n < 0, errno == EINTR {
+                eintrRetries += 1
+                if eintrRetries > Self.maxInterruptedSyscallRetries {
+                    return .ioFailure
+                }
+                continue
             }
-            if n > 0 { return .failed(.ioFailure) }
-            return .failed(.ioFailure)
+            return .ioFailure
         }
-        return .failed(.ioFailure)
     }
 
     /// Strict decode against the schema's fixed CodingKeys. Carries no

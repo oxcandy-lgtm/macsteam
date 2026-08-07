@@ -110,13 +110,8 @@ struct LocalAcceptanceReceiptStore {
         while true {
             var byte: UInt8 = 0
             let n = read(fileFD, &byte, 1)
-            if n == 0 { return .cleanEOF }
-            if n == 1 { return .growthDetected }
-            if n < 0 && errno == EINTR {
+            if n < 0 && errno == EINTR && eintrRetries < Self.maxInterruptedSyscallRetries {
                 eintrRetries += 1
-                if eintrRetries > Self.maxInterruptedSyscallRetries {
-                    return .ioFailure
-                }
                 continue
             }
             return .ioFailure

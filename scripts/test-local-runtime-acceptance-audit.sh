@@ -147,6 +147,11 @@ run "red-load-unbounded-eintr-read" "load EINTR retry unbounded" 1 "load EINTR r
 run "red-write-unbounded-eintr" "write EINTR retry unbounded" 1 "write EINTR retry must be bounded"
 run "red-write-zero-progress-loops" "zero-progress write spins" 1 "zero-progress write must fail closed"
 
+echo "--- RED: U1R18-R12-FIX3 growth-probe EINTR closure (rc=1) ---"
+run "red-probe-eintr-then-eof-rejected" "probe retry clean EOF rejected" 1 "must recover clean EOF"
+run "red-probe-eintr-off-by-one" "probe allows ninth EINTR" 1 "must fail on the ninth consecutive EINTR"
+run "red-probe-eintr-growth-accepted" "probe treats growth as clean EOF" 1 "must fail on a growth byte"
+
 echo "--- GREEN variants ---"
 run "green-variant-space" "green space variant" 0
 run "green-variant-comment" "green comment variant" 0
