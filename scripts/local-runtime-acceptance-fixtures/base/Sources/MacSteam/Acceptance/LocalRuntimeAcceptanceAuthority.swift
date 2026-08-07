@@ -8,6 +8,7 @@ final class LocalRuntimeAcceptanceAuthority {
     nonisolated static let requiredStabilitySeconds: Int = 30
     private(set) var state: LocalAcceptanceState = .notStarted
     private(set) var blocker: LocalAcceptanceBlocker?
+    private(set) var earnedReceipt: LocalAcceptanceReceipt?
     private(set) var ownershipCensusProven = false
 
     @discardableResult
@@ -23,9 +24,23 @@ final class LocalRuntimeAcceptanceAuthority {
     func requireCompletion(
         cleanupRunner: @escaping () async -> CleanupResult
     ) async -> LocalAcceptanceActionResponse {
-        await cleanupRunner()
+        let result = await cleanupRunner()
+        guard result == .clean else {
+            blocker = .cleanupIncomplete
+            state = .blocked
+            return .rejected(.cleanupIncomplete)
+        }
+        // The accepted candidate is constructed, then durably persisted BEFORE
+        // the authority may enter the accepted state (R12).
+        let candidate = buildAcceptedReceipt()
+        let outcome = await receiptPersister(candidate)
+        if outcome == .failed {
+            blocker = .receiptPersistenceFailed
+            state = .blocked
+            return .rejected(.receiptPersistenceFailed)
+        }
         state = .accepted
-        let _ = buildAcceptedReceipt()
+        earnedReceipt = candidate
         return .accepted
     }
 
@@ -35,6 +50,12 @@ final class LocalRuntimeAcceptanceAuthority {
             blocker: "none",
             evidence: .empty
         )
+    }
+
+    private func receiptPersister(
+        _ receipt: LocalAcceptanceReceipt
+    ) async -> LocalAcceptancePersistenceOutcome {
+        .persisted(receipt)
     }
 
     var currentReceipt: LocalAcceptanceReceipt {
@@ -56,4 +77,9 @@ enum LocalAcceptanceActionResponse: Sendable, Equatable {
     case accepted
     case rejected(LocalAcceptanceBlocker)
     case alreadyRunning
+}
+
+enum LocalAcceptancePersistenceOutcome: Sendable, Equatable {
+    case persisted(LocalAcceptanceReceipt)
+    case failed
 }

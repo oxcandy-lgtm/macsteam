@@ -23,6 +23,7 @@ enum LocalAcceptanceBlocker: String, Codable, Sendable, Equatable, CaseIterable 
     case inputResponseUnconfirmed = "input_response_unconfirmed"
     case cleanupIncomplete = "cleanup_incomplete"
     case monitorCancelled = "monitor_cancelled"
+    case receiptPersistenceFailed = "receipt_persistence_failed"
 }
 
 /// Top-level state of a single acceptance candidate.

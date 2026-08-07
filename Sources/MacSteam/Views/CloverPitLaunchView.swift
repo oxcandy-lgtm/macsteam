@@ -229,6 +229,16 @@ struct CloverPitLaunchView: View {
                 .controlSize(.small)
                 .disabled(!presentation.canComplete)
             }
+
+            if let savedStatus = coordinator.savedLocalAcceptanceReceiptStatus {
+                // U1R18-R12: historical evidence only. The saved receipt never
+                // promotes the current run or satisfies this transaction.
+                statusRow(
+                    "Saved local receipt",
+                    detail: "Saved: \(savedStatus). Historical evidence only — current run is not automatically accepted.",
+                    ok: false
+                )
+            }
         }
         .padding(12)
         .background(Color(nsColor: .windowBackgroundColor))

@@ -21,10 +21,24 @@ struct CloverPitLaunchViewFixture: View {
             Button(action: { _ = confirmInputResponse() }) {
                 Text("Confirm Input Response")
             }
+            if let savedStatus = savedLocalAcceptanceReceiptStatus {
+                // U1R18-R12: historical evidence only, never promotes current run.
+                Row(detail: "Saved: \(savedStatus). Historical evidence only")
+            }
         }
+    }
+
+    /// Bounded historical-evidence signal. Loading never promotes current state.
+    var savedLocalAcceptanceReceiptStatus: String? {
+        nil
     }
 
     func confirmInputResponse() -> Bool {
         false
     }
+}
+
+struct Row: View {
+    let detail: String
+    var body: some View { Text(detail) }
 }

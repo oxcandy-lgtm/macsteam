@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""U1R18-R11 Local Runtime Acceptance Audit.
+"""U1R18-R12 Local Runtime Acceptance Audit.
 
 Verifies the fail-closed local runtime acceptance authority contract:
 
@@ -8,6 +8,15 @@ Verifies the fail-closed local runtime acceptance authority contract:
   * The authoritative receipt is deterministic and redacted (never emits raw
     PIDs, PPIDs, UUIDs, absolute paths, usernames, window identities, argv, or
     raw error text).
+  * U1R18-R12 durability: the accepted candidate is constructed, then durably
+    persisted exactly once AFTER a clean cleanup and STRICTLY BEFORE the
+    authority may enter the accepted state. A persistence failure blocks the
+    transaction; it is never presented as acceptance.
+  * The durable store persists only accepted receipts as the exact canonical
+    bytes through a symlink-fail-closed, atomic, private (0700/0600) namespace,
+    and loads only through a size → canonical-decode → semantic → canonical
+    re-encode gate. A historical load never promotes the current acceptance
+    state.
   * The immutable scope (Sessions/*, .github/**, Package.swift, README,
     docs/**, Resources/**, script gates) is byte-identical to the parent HEAD
     commit — a semantic production mutation there is a violation.
@@ -35,7 +44,8 @@ REQUIRED_CONTRACTS = [
      ["final class LocalRuntimeAcceptanceAuthority",
       "@MainActor", "func beginCandidate", "func observe",
       "func requireCompletion", "requiredStabilitySeconds",
-      "var state", "var blocker", "func observe", "currentReceipt"]),
+      "var state", "var blocker", "func observe", "currentReceipt",
+      "receiptPersister", "LocalAcceptancePersistenceOutcome"]),
     (ACCEPTANCE, "LocalAcceptancePrerequisites.swift",
      ["struct LocalAcceptancePrerequisites", "var firstBlocker",
       "LocalReceiptSourceType"]),
@@ -46,21 +56,52 @@ REQUIRED_CONTRACTS = [
     (ACCEPTANCE, "LocalAcceptancePresentation.swift",
      ["struct LocalAcceptancePresentation", "isVisible",
       "canConfirmMainMenu", "canConfirmInputResponse", "canComplete"]),
+    (ACCEPTANCE, "LocalAcceptanceReceiptStore.swift",
+     ["struct LocalAcceptanceReceiptStore", "func saveAccepted",
+      "func loadAccepted", "func acceptedSemanticGate",
+      "relativeReceiptPath", "maxReceiptBytes"]),
 ]
 
-# U1R18-R11-FIX1 contract join points in production UI/coordinator surfaces.
+# U1R18-R12 contract join points in production UI/coordinator surfaces.
 # A mutation removing any of these markers (e.g. hiding the acceptance UI
 # behind a launch result, dropping the input-confirm action, rebuilding the
-# receipt before acceptance, discarding authority on success, or deriving
-# ownership from visibility) must be caught by the audit.
+# receipt before acceptance, discarding authority on success, deriving
+# ownership from visibility, or promoting a historical saved receipt into the
+# current run) must be caught by the audit.
 UI_CONTRACTS = [
     (os.path.join("Sources", "MacSteam", "Views", "CloverPitLaunchView.swift"),
-     ["acceptancePanel", "acceptancePresentation", "confirmInputResponse"]),
+     ["acceptancePanel", "acceptancePresentation", "confirmInputResponse",
+      "savedLocalAcceptanceReceiptStatus"]),
     (os.path.join("Sources", "MacSteam", "Ultimate", "UltimateSetupCoordinator.swift"),
      ["func confirmInputResponse",
       "cancelLocalAcceptanceObservationPreservingAuthority",
       "invalidateAndDiscardLocalAcceptance",
-      "var acceptancePresentation"]),
+      "var acceptancePresentation",
+      "hasSavedLocalAcceptanceReceipt",
+      "savedLocalAcceptanceReceiptStatus",
+      "localAcceptanceReceiptStore"]),
+]
+
+# Store contract tokens whose absence is a semantic durability violation
+# (exit 1): full independent accepted-only gate, symlink fail-closed, atomic
+# canonical write, private perms, size-bounded canonical load.
+STORE_CONTRACTS = [
+    "acceptedSemanticGate",
+    "status.state != .accepted",
+    "blockerNotNone",
+    "evidenceIncomplete",
+    "visibilityBelowMinimum",
+    "securityFlagSet",
+    "targetMismatch",
+    "malformedJSON",
+    "nonCanonicalBytes",
+    "oversized",
+    "nonRegularFile",
+    "symlinkDestinationRejected",
+    "symlinkParentEscapeRejected",
+    "replaceItemAt",
+    "receiptFilePermissions = 0o600",
+    "parentDirectoryPermissions = 0o700",
 ]
 
 # Immutable-scope paths, relative to repo root. Must remain byte-identical to
@@ -160,6 +201,25 @@ def completed_ordering_missing(accepted_at: int, receipt_at: int) -> bool:
     return receipt_at <= accepted_at
 
 
+def brace_body(content: str, start: int) -> str:
+    """Balanced-brace body starting at `start` (which must precede a '{')."""
+    brace = content.find("{", start)
+    if brace < 0:
+        return ""
+    depth = 1
+    i = brace + 1
+    n = len(content)
+    while depth > 0 and i < n:
+        if content[i] == "{":
+            depth += 1
+        elif content[i] == "}":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        return ""
+    return content[brace + 1:i - 1]
+
+
 # Forbidden raw-subject emission inside the receipt-document sources. The
 # authority must reduce to bounded booleans/ints/enums and drop identity,
 # paths, PIDs, and unbounded error text before serialization.
@@ -178,6 +238,11 @@ def check_redaction(rel: str, content: str, violations: list[str]) -> None:
     """Only the deterministic-receipt serialization body may not emit raw
     identity/path/PID/error tokens. Internal candidate-identity comparison in
     the observer is legitimate observation logic, not receipt emission."""
+    # Only the file that DECLARES the serialization participates. Other sources
+    # reference deterministicJSON (e.g. the durable store's temp-file naming)
+    # without serializing the receipt, and must not be scanned.
+    if re.search(r"\bvar deterministicJSON\b", content) is None:
+        return
     m = re.search(r"\bdeterministicJSON\b", content)
     if not m:
         return
@@ -235,18 +300,73 @@ def main(argv) -> int:
             if needle not in content:
                 violations.append(f"{rel}: FIX1 contract missing '{needle}'")
 
-    # ── Fail-closed completion ordering (U1R18-R11-FIX1) ──
-    # The earned receipt must be built only AFTER the authority has entered the
-    # accepted state, never while still awaiting cleanup / in_progress.
+    # ── Fail-closed completion ordering (U1R18-R12) ──
+    # The accepted candidate must be durably persisted exactly once AFTER a
+    # clean cleanup and STRICTLY BEFORE the authority enters the accepted state.
+    # A persistence failure blocks the transaction; it is never accepted.
     auth_rel = os.path.join(ACCEPTANCE, "LocalRuntimeAcceptanceAuthority.swift")
     auth = read_file(root, auth_rel)
     completions = required_body(auth, "func requireCompletion",
                                 "LocalRuntimeAcceptanceAuthority requireCompletion")
     accepted_at = completions.find("state = .accepted")
-    receipt_at = completions.find("buildAcceptedReceipt()")
-    if completed_ordering_missing(accepted_at, receipt_at):
-        violations.append(f"{auth_rel}: receipt built before accepted state "
-                          "(FIX1 ordering violated)")
+    persist_at = completions.find("receiptPersister(")
+    persist_count = completions.count("receiptPersister(")
+    cleanup_at = completions.find("await cleanupRunner()")
+    if accepted_at < 0:
+        violations.append(f"{auth_rel}: completion never enters the accepted state (R12)")
+    if persist_at < 0 or persist_count == 0:
+        violations.append(f"{auth_rel}: completion never persists the accepted candidate (R12)")
+    if persist_count > 1:
+        violations.append(f"{auth_rel}: persistence invoked more than once (R12)")
+    if persist_at >= 0 and cleanup_at >= 0 and persist_at < cleanup_at:
+        violations.append(f"{auth_rel}: persistence runs before cleanup (R12)")
+    if persist_at >= 0 and accepted_at >= 0 and persist_at >= accepted_at:
+        violations.append(f"{auth_rel}: accepted state before successful persistence (R12)")
+    # Acceptance must be bound to a persisted outcome — never to an unguarded
+    # unconditional assignment after the persist call.
+    if "case .persisted" not in completions and "receiptPersistenceFailed" not in completions:
+        violations.append(f"{auth_rel}: acceptance not gated on persistence outcome (R12)")
+
+    # ── Store durable contract (U1R18-R12) ──
+    store_rel = os.path.join(ACCEPTANCE, "LocalAcceptanceReceiptStore.swift")
+    store = read_file(root, store_rel)
+    if store is None:
+        infra(f"required contract missing: {store_rel}")
+    for needle in STORE_CONTRACTS:
+        if needle not in store:
+            violations.append(f"{store_rel}: store contract missing '{needle}' (R12)")
+    if "0o644" in store:
+        violations.append(f"{store_rel}: store must not use world-readable perms (R12)")
+    wcb = brace_body(store, store.find("func writeCanonical"))
+    if "deterministicJSON" not in wcb:
+        violations.append(f"{store_rel}: atomic write must be the exact canonical bytes (R12)")
+    lcb = brace_body(store, store.find("func loadAccepted"))
+    if "deterministicJSON" not in lcb:
+        violations.append(f"{store_rel}: load must re-encode canonical bytes (R12)")
+    if "maxReceiptBytes" not in lcb:
+        violations.append(f"{store_rel}: load must bound file size (R12)")
+
+    # ── Historical load must never promote the current acceptance state (R12) ──
+    # Loading a saved receipt is historical evidence only; it must not begin a
+    # candidate, set prerequisites, invalidate, or enter accepted on the caller's
+    # behalf.
+    coord_rel = os.path.join("Sources", "MacSteam", "Ultimate",
+                             "UltimateSetupCoordinator.swift")
+    coordinator = read_file(root, coord_rel)
+    for hist_var in ("savedLocalReceipt", "savedLocalStore"):
+        idx = coordinator.find(hist_var + ":")
+        if idx < 0:
+            continue
+        body = brace_body(coordinator, idx)
+        if body == "":
+            continue
+        for tok in ("beginCandidate", "setPrerequisites", "invalidate(",
+                    "state = .accepted", "requireCompletion",
+                    "enterBlocked", "owner = "):
+            if tok in body:
+                violations.append(
+                    f"{coordinator_rel}: historical load must not promote "
+                    f"current acceptance state ('{tok}') (R12)")
 
     # ── Ownership independence (U1R18-R11-FIX1) ──
     # Ownership proof must be an independent census-derived boolean, never

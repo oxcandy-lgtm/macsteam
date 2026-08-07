@@ -68,6 +68,19 @@ struct LocalRuntimeAcceptanceTests {
         return authority
     }
 
+    func makeAuthority(
+        clock: TestClock,
+        persister: @escaping (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome
+    ) -> LocalRuntimeAcceptanceAuthority {
+        let authority = LocalRuntimeAcceptanceAuthority(
+            nowProvider: { clock.value },
+            receiptPersister: persister
+        )
+        authority.setPrerequisites(satisfied)
+        authority.beginCandidate(for: session, generation: 1)
+        return authority
+    }
+
     func advanceStable(_ clock: TestClock, _ authority: LocalRuntimeAcceptanceAuthority) {
         for _ in 0..<60 {
             clock.value += 1
@@ -468,7 +481,7 @@ struct LocalRuntimeAcceptanceTests {
         #expect(authority.isOwnershipProven)
     }
 
-    @Test func failClosedTerminalStateNeverAutoRecovers() async {
+@Test func failClosedTerminalStateNeverAutoRecovers() async {
         let clock = TestClock()
         let authority = LocalRuntimeAcceptanceAuthority { clock.value }
         var pre = makeSatisfiedPrerequisites()
@@ -490,5 +503,76 @@ struct LocalRuntimeAcceptanceTests {
         authority2.observe(makeSnapshot(session: session))
         #expect(authority2.isAccepted)
         #expect(authority2.state == .accepted)
+    }
+
+    // MARK: U1R18-R12 durable persistence
+
+    @Test func persistsExactlyOnceBeforeAcceptedState() async {
+        let clock = TestClock()
+        var persistenceCallCount = 0
+        var persistedReceipt: LocalAcceptanceReceipt?
+        var stateDuringPersistence: LocalAcceptanceState?
+        var authorityRef: LocalRuntimeAcceptanceAuthority?
+        let authority = makeAuthority(clock: clock) { receipt in
+            persistenceCallCount += 1
+            persistedReceipt = receipt
+            // The persistence step must run BEFORE the authority may reach the
+            // accepted state; at this point it may only have settled on cleanup.
+            stateDuringPersistence = authorityRef?.state
+            return .persisted(receipt)
+        }
+        authorityRef = authority
+        advanceStable(clock, authority)
+        _ = authority.confirmMainMenu()
+        _ = authority.confirmInputResponse()
+        let result = await authority.requireCompletion { .clean }
+        #expect(result == .accepted)
+        #expect(persistenceCallCount == 1)
+        #expect(authority.hasPersistedReceipt)
+        #expect(authority.isAccepted)
+        // Persistence ran while the authority was still awaiting/in cleanup,
+        // i.e. strictly before state = accepted.
+        #expect(stateDuringPersistence != .accepted)
+        #expect(persistedReceipt?.status.state == .accepted)
+        #expect(persistedReceipt?.evidence.cleanupComplete == true)
+        // The earned receipt is the exact persisted receipt.
+        #expect(authority.currentReceipt.deterministicJSONString
+            == persistedReceipt?.deterministicJSONString)
+    }
+
+    @Test func persistenceFailureBlocksAndDoesNotAccept() async {
+        let clock = TestClock()
+        var persistenceCallCount = 0
+        let authority = makeAuthority(clock: clock) { receipt in
+            persistenceCallCount += 1
+            return .failed
+        }
+        advanceStable(clock, authority)
+        _ = authority.confirmMainMenu()
+        _ = authority.confirmInputResponse()
+        let result = await authority.requireCompletion { .clean }
+        #expect(result == .rejected(.receiptPersistenceFailed))
+        #expect(authority.isBlocked)
+        #expect(authority.blocker == .receiptPersistenceFailed)
+        #expect(authority.isAccepted == false)
+        #expect(authority.hasPersistedReceipt == false)
+        #expect(authority.earnedReceipt == nil)
+        #expect(persistenceCallCount == 1)
+    }
+
+    @Test func persistenceNotRetriedAfterFailure() async {
+        let clock = TestClock()
+        var persistenceCallCount = 0
+        let authority = makeAuthority(clock: clock) { _ in
+            persistenceCallCount += 1
+            return .failed
+        }
+        advanceStable(clock, authority)
+        _ = authority.confirmMainMenu()
+        _ = authority.confirmInputResponse()
+        _ = await authority.requireCompletion { .clean }
+        // A rejected duplicate completion must not retry persistence.
+        _ = await authority.requireCompletion { .clean }
+        #expect(persistenceCallCount == 1)
     }
 }

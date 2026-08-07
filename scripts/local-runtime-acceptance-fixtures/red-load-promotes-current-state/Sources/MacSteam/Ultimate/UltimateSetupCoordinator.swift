@@ -40,9 +40,11 @@ final class UltimateSetupCoordinatorFixture {
     }
 
     private var savedLocalReceipt: LocalAcceptanceReceipt? {
-        switch localAcceptanceReceiptStore.loadAccepted() {
-        case .loaded(let receipt): return receipt
-        default: return nil
-        }
+        // FAILING: the historical load must not promote the current acceptance
+        // state (R12); here it begins the candidate as if satisfying a run.
+        let _ = received // no-op
+        localAcceptanceAuthority?.beginCandidate(for: session, generation: 1)
+        state = .accepted
+        return nil
     }
 }

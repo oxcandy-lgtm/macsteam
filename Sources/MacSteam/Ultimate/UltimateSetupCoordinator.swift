@@ -77,6 +77,11 @@ final class UltimateSetupCoordinator {
     /// Task that feeds reduced machine snapshots to the acceptance authority.
     private var localAcceptanceMonitorTask: Task<Void, Never>?
 
+    /// U1R18-R12: durable accepted-only store the authority persists into
+    /// strictly before it may enter the accepted state. Injectable for tests;
+    /// production roots at the MacSteam Application Support namespace.
+    private let localAcceptanceReceiptStore: LocalAcceptanceReceiptStore
+
     var acceptanceState: LocalAcceptanceState { localAcceptanceAuthority?.state ?? .notStarted }
     var acceptanceBlocker: LocalAcceptanceBlocker? { localAcceptanceAuthority?.blocker }
     var acceptanceStabilitySeconds: Int { localAcceptanceAuthority?.visibilityStableSeconds ?? 0 }
@@ -87,6 +92,30 @@ final class UltimateSetupCoordinator {
     var acceptanceInputConfirmed: Bool { localAcceptanceAuthority?.inputConfirmed ?? false }
     var acceptanceReceiptJSON: String {
         localAcceptanceAuthority?.currentReceipt.deterministicJSONString ?? "{}"
+    }
+
+    /// U1R18-R12: bounded historical evidence loaded from the durable store.
+    /// A loaded receipt is historical evidence only — it is never used to
+    /// promote the current acceptance state nor to satisfy the current
+    /// transaction.
+    var hasSavedLocalAcceptanceReceipt: Bool {
+        savedLocalStore != nil
+    }
+
+    /// Bounded status string of the saved receipt, or nil when none/invalid.
+    /// Never leaks raw paths, PIDs, identifiers or error text.
+    var savedLocalAcceptanceReceiptStatus: String? {
+        savedLocalStore?.status.state.rawValue
+    }
+
+    /// The loaded receipt (bounded evidence), or nil when absent/invalid.
+    /// Loading is historical-evidence only; it never promotes the current
+    /// acceptance state nor satisfies the current transaction.
+    var savedLocalStore: LocalAcceptanceReceipt? {
+        switch localAcceptanceReceiptStore.loadAccepted() {
+        case .loaded(let receipt): return receipt
+        default: return nil
+        }
     }
 
     /// U1R18-R11-FIX1: presentation model consumed by the CloverPit acceptance
@@ -352,7 +381,8 @@ final class UltimateSetupCoordinator {
     init(
         sessionSupervisor: any GameSessionSupervising = GameSessionSupervisor(),
         installerSupervisor: any InstallerLifecycleSupervising = InstallerSupervisor(),
-        prefixManager: PrefixManager = PrefixManager()
+        prefixManager: PrefixManager = PrefixManager(),
+        receiptStore: LocalAcceptanceReceiptStore = LocalAcceptanceReceiptStore()
     ) {
         // Read MACSTEAM_RENDER_PROFILE env var for non-persistent profile override.
         // didSet does not fire during init, so this is safe to set before log().
@@ -372,6 +402,7 @@ final class UltimateSetupCoordinator {
         self.sessionSupervisor = sessionSupervisor
         self.lifecycleInstaller = installerSupervisor
         self.prefixManager = prefixManager
+        self.localAcceptanceReceiptStore = receiptStore
     }
 
     // MARK: - Plan builders
@@ -1434,7 +1465,14 @@ final class UltimateSetupCoordinator {
         prerequisites.cloverpitInstallReady = cloverPitInspection?.isReady ?? false
         prerequisites.supervisedGameSessionStarted = true
 
-        let authority = LocalRuntimeAcceptanceAuthority()
+        let authority = LocalRuntimeAcceptanceAuthority(
+            receiptPersister: { [store = localAcceptanceReceiptStore] receipt in
+                switch store.saveAccepted(receipt) {
+                case .saved: return .persisted(receipt)
+                default: return .failed
+                }
+            }
+        )
         authority.setPrerequisites(prerequisites)
         acceptanceGenerationCounter &+= 1
         authority.beginCandidate(for: session, generation: acceptanceGenerationCounter)
@@ -1525,6 +1563,16 @@ final class UltimateSetupCoordinator {
         return response
     }
 
+    /// Test seam: install a fully-prepared acceptance authority so tests can
+    /// drive the completion/persistence path deterministically without a live
+    /// supervision session or visibility window. The monitor is intentionally
+    /// not started; only the authority identity is replaced.
+    func installAcceptanceForTesting(_ authority: LocalRuntimeAcceptanceAuthority?) {
+        localAcceptanceMonitorTask?.cancel()
+        localAcceptanceMonitorTask = nil
+        localAcceptanceAuthority = authority
+    }
+
     /// User confirmed the input response (production API; previously only the
     /// menu was confirmable from the production UI).
     @discardableResult
@@ -1543,11 +1591,6 @@ final class UltimateSetupCoordinator {
         case "crossover": return .crossover
         default: return .runtime
         }
-    }
-
-    /// User confirmed seeing CloverPit window.
-    func confirmWindowOriginal() {
-        launchPhase = .windowConfirmed
     }
 
     // MARK: - Cleanup orchestrator

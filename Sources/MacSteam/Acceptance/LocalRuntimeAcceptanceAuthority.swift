@@ -19,6 +19,13 @@ enum LocalAcceptanceActionResponse: Sendable, Equatable {
     case alreadyRunning
 }
 
+/// Bounded result of the durable persistence step that precedes the accepted
+/// state. A failed persistence must never be promoted to acceptance.
+enum LocalAcceptancePersistenceOutcome: Sendable, Equatable {
+    case persisted(LocalAcceptanceReceipt)
+    case failed
+}
+
 /// The single candidate a local acceptance transaction is bound to.
 struct LocalAcceptanceCandidate: Sendable, Equatable {
     var sessionID: UUID
@@ -68,6 +75,10 @@ final class LocalRuntimeAcceptanceAuthority {
     private(set) var earnedReceipt: LocalAcceptanceReceipt?
     private(set) var completionAttempted = false
     private(set) var cleanupWasClean = false
+    /// True only after the accepted candidate has been durably persisted and the
+    /// persistence step returned a success outcome. Consumed by the coordinator
+    /// before it may cancel the production monitor.
+    private(set) var receiptPersisted = false
 
     /// Continuous `runningVisible` start (absolute time). Reset on any loss.
     private var visibleSince: TimeInterval?
@@ -75,15 +86,21 @@ final class LocalRuntimeAcceptanceAuthority {
     private var operatorInputConfirmed = false
     private(set) var visibilityStableSeconds: Int = 0
 
+    /// Injectable durable persistence executed exactly once after a clean
+    /// cleanup and strictly before the authority may enter the accepted state.
+    private let receiptPersister: (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome
+
     /// Independent ownership evidence. This is bound to the latest census result,
     /// never derived from visibility. It is latched as historical evidence before
     /// cleanup and frozen in the accepted receipt.
     private(set) var ownershipCensusProven = false
 
     init(
-        nowProvider: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 }
+        nowProvider: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 },
+        receiptPersister: @escaping (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome = { .persisted($0) }
     ) {
         self.nowProvider = nowProvider
+        self.receiptPersister = receiptPersister
     }
 
     // MARK: - Prerequisites
@@ -130,6 +147,7 @@ final class LocalRuntimeAcceptanceAuthority {
         visibilityStableSeconds = 0
         earnedReceipt = nil
         completionAttempted = false
+        receiptPersisted = false
     }
 
     // MARK: - Observation
@@ -267,11 +285,25 @@ final class LocalRuntimeAcceptanceAuthority {
             state = .blocked
             return .rejected(.cleanupIncomplete)
         }
+        // The accepted candidate is constructed explicitly as accepted; it is
+        // never derived from the live state so it can never silently degrade to
+        // in_progress due to ordering.
+        let candidate = buildAcceptedReceipt()
+        // Durable persistence executes exactly once and MUST succeed before the
+        // authority may enter the accepted state. A persistence failure leaves
+        // the transaction blocked with no earned receipt.
+        let outcome = await receiptPersister(candidate)
+        guard case .persisted(let persisted) = outcome else {
+            blocker = .receiptPersistenceFailed
+            state = .blocked
+            earnedReceipt = nil
+            receiptPersisted = false
+            return .rejected(.receiptPersistenceFailed)
+        }
+        receiptPersisted = true
+        earnedReceipt = persisted
         blocker = nil
-        // Mark accepted BEFORE freezing the receipt so the earned receipt records
-        // the accepted status, not the in-progress status of the cleanup window.
         state = .accepted
-        earnedReceipt = buildAcceptedReceipt()
         return .accepted
     }
 
@@ -312,6 +344,10 @@ final class LocalRuntimeAcceptanceAuthority {
         // receipt can never silently degrade to in_progress due to ordering.
         var evidence = buildCurrentEvidence()
         evidence.cleanupComplete = true
+        // An accepted receipt means the target window WAS visible across the
+        // stability window, so the flag is recorded as proven rather than being
+        // derived from the pre-accepted (awaitingCleanup) live state.
+        evidence.targetWindowVisible = true
         return LocalAcceptanceReceipt(
             state: .accepted,
             blocker: "none",
@@ -348,4 +384,5 @@ final class LocalRuntimeAcceptanceAuthority {
     var menuConfirmed: Bool { operatorMainMenuConfirmed }
     var inputConfirmed: Bool { operatorInputConfirmed }
     var isOwnershipProven: Bool { ownershipCensusProven }
+    var hasPersistedReceipt: Bool { receiptPersisted }
 }

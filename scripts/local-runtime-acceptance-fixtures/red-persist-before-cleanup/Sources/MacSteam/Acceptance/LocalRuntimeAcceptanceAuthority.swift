@@ -2,13 +2,13 @@
 
 import Foundation
 
-/// FAILING fixture: header receipts are built before the authority enters the
-/// accepted state (regression of FIX1 receipt-ordering).
+/// Fixture authority (GREEN baseline for the acceptance audit harness).
 @MainActor
 final class LocalRuntimeAcceptanceAuthority {
     nonisolated static let requiredStabilitySeconds: Int = 30
     private(set) var state: LocalAcceptanceState = .notStarted
     private(set) var blocker: LocalAcceptanceBlocker?
+    private(set) var earnedReceipt: LocalAcceptanceReceipt?
     private(set) var ownershipCensusProven = false
 
     @discardableResult
@@ -21,15 +21,21 @@ final class LocalRuntimeAcceptanceAuthority {
     }
 
     @discardableResult
+
+    @discardableResult
     func requireCompletion(
         cleanupRunner: @escaping () async -> CleanupResult
     ) async -> LocalAcceptanceActionResponse {
-        await cleanupRunner()
-        // FIX1: receipt must NOT be built before acceptance.
-        let _ = buildAcceptedReceipt()
+        let candidate = buildAcceptedReceipt()
+        let outcome = await receiptPersister(candidate)
+        let result = await cleanupRunner()
+        guard result == .clean else { return .rejected(.cleanupIncomplete) }
+        guard case .persisted = outcome else { return .rejected(.receiptPersistenceFailed) }
         state = .accepted
+        earnedReceipt = candidate
         return .accepted
     }
+
 
     private func buildAcceptedReceipt() -> LocalAcceptanceReceipt {
         LocalAcceptanceReceipt(
@@ -37,6 +43,12 @@ final class LocalRuntimeAcceptanceAuthority {
             blocker: "none",
             evidence: .empty
         )
+    }
+
+    private func receiptPersister(
+        _ receipt: LocalAcceptanceReceipt
+    ) async -> LocalAcceptancePersistenceOutcome {
+        .persisted(receipt)
     }
 
     var currentReceipt: LocalAcceptanceReceipt {
@@ -58,4 +70,9 @@ enum LocalAcceptanceActionResponse: Sendable, Equatable {
     case accepted
     case rejected(LocalAcceptanceBlocker)
     case alreadyRunning
+}
+
+enum LocalAcceptancePersistenceOutcome: Sendable, Equatable {
+    case persisted(LocalAcceptanceReceipt)
+    case failed
 }
