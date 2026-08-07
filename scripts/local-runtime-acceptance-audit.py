@@ -83,8 +83,9 @@ UI_CONTRACTS = [
 ]
 
 # Store contract tokens whose absence is a semantic durability violation
-# (exit 1): full independent accepted-only gate, symlink fail-closed, atomic
-# canonical write, private perms, size-bounded canonical load.
+# (exit 1): full independent accepted-only gate, symlink fail-closed, bounded
+# no-follow same-FD load, same-directory atomic POSIX write with temp-only
+# cleanup, private perms, and size-bounded canonical load.
 STORE_CONTRACTS = [
     "acceptedSemanticGate",
     "status.state != .accepted",
@@ -99,9 +100,30 @@ STORE_CONTRACTS = [
     "nonRegularFile",
     "symlinkDestinationRejected",
     "symlinkParentEscapeRejected",
-    "replaceItemAt",
     "receiptFilePermissions = 0o600",
     "parentDirectoryPermissions = 0o700",
+    # File-descriptor fail-closed contract: the receipt is opened without
+    # following a symlink, in the same directory, and read via the same FD.
+    "openat",
+    "O_NOFOLLOW",
+    "O_DIRECTORY",
+    "O_NONBLOCK",
+    "fstat(",
+    "S_IFREG",
+    "read(fileFD",
+    "ENOENT",
+    # Atomic same-directory POSIX transaction with temp-only cleanup.
+    "O_EXCL",
+    "rename(",
+    "fsync",
+    "unlinkat",
+]
+
+# Tokens that must NEVER appear in the store: a path-based unbounded read and
+# the deletion of the last-known-good receipt on a replacement failure.
+STORE_FORBIDDEN = [
+    "Data(contentsOf: receiptURL)",
+    "removeItem(at: receiptURL)",
 ]
 
 # Immutable-scope paths, relative to repo root. Must remain byte-identical to
@@ -335,6 +357,9 @@ def main(argv) -> int:
     for needle in STORE_CONTRACTS:
         if needle not in store:
             violations.append(f"{store_rel}: store contract missing '{needle}' (R12)")
+    for needle in STORE_FORBIDDEN:
+        if needle in store:
+            violations.append(f"{store_rel}: store must not contain '{needle}' (FIX1)")
     if "0o644" in store:
         violations.append(f"{store_rel}: store must not use world-readable perms (R12)")
     wcb = brace_body(store, store.find("func writeCanonical"))
@@ -345,6 +370,31 @@ def main(argv) -> int:
         violations.append(f"{store_rel}: load must re-encode canonical bytes (R12)")
     if "maxReceiptBytes" not in lcb:
         violations.append(f"{store_rel}: load must bound file size (R12)")
+    # Bounded read must use the same opened FD (never a path re-open), must
+    # prove regular-file type before reading, and must bound the read size.
+    if "read(fileFD" not in lcb:
+        violations.append(f"{store_rel}: load must read via the opened FD (FIX1)")
+    if "maxReceiptBytes" not in lcb:
+        violations.append(f"{store_rel}: load read must be bounded (FIX1)")
+    if "fstat(" not in lcb or "S_IFREG" not in lcb:
+        violations.append(f"{store_rel}: load must prove regular-file before read (FIX1)")
+    # `.notFound` is reserved for an absent receipt; a caught read failure must
+    # never degrade to `.notFound`.
+    if "catch" in lcb:
+        violations.append(f"{store_rel}: read failure must not become notFound (FIX1)")
+
+    # ── U1R18-R12-FIX1 authority: explicit persister + exact identity ──
+    # The persister must be a required (non-defaulted) parameter and its
+    # persisted receipt must be the exact candidate. A defaulted success
+    # persister or a result-substitution path is a violation.
+    if "receiptPersister: @escaping (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome" in auth:
+        pass
+    else:
+        violations.append(f"{auth_rel}: explicit durable persister must be a required init parameter (FIX1)")
+    if "persisted == candidate" not in auth:
+        violations.append(f"{auth_rel}: persisted receipt identity must be checked against the candidate (FIX1)")
+    if "= { .persisted($0) }" in auth or "receiptPersister: @escaping (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome = " in auth:
+        violations.append(f"{auth_rel}: success-default persister is forbidden; caller must supply it (FIX1)")
 
     # ── Historical load must never promote the current acceptance state (R12) ──
     # Loading a saved receipt is historical evidence only; it must not begin a

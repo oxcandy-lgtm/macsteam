@@ -17,7 +17,7 @@ final class LocalRuntimeAcceptanceAuthority {
 
     init(
         nowProvider: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 },
-        receiptPersister: @escaping (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome
+        receiptPersister: @escaping (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome = { .persisted($0) }
     ) {
         self.receiptPersister = receiptPersister
     }

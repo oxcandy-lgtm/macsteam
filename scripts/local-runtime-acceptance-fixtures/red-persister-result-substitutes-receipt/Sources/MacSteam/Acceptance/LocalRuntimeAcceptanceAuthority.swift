@@ -46,8 +46,7 @@ final class LocalRuntimeAcceptanceAuthority {
         // persisted receipt must be the exact candidate (identity checked).
         let candidate = buildAcceptedReceipt()
         let outcome = await receiptPersister(candidate)
-        guard case .persisted(let persisted) = outcome,
-              persisted == candidate else {
+        guard case .persisted(let persisted) = outcome else {
             blocker = .receiptPersistenceFailed
             state = .blocked
             return .rejected(.receiptPersistenceFailed)

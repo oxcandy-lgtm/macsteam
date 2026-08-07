@@ -45,16 +45,13 @@ struct LocalAcceptanceReceiptStore {
         // to it, fstat'd (regular-file proof), and bounded-read via the SAME FD.
         let dirFD = open(directoryPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         let fileFD = openat(dirFD, receiptName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-        var st = stat()
-        _ = fstat(fileFD, &st)
-        guard (st.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }
-        guard st.st_size <= Self.maxReceiptBytes else { return .failed(.oversized) }
-        var buffer = [UInt8](repeating: 0, count: Self.maxReceiptBytes + 1)
-        _ = read(fileFD, &buffer, Self.maxReceiptBytes + 1)
-        if missingFileStatus == ENOENT { return .notFound }
-        guard let decoded = decode(bytes) else { return .failed(.malformedJSON) }
-        if decoded.deterministicJSON != bytes { return .failed(.nonCanonicalBytes) }
-        return .loaded(decoded)
+        do {
+            let decoded = try readReceiptFromDisk()
+            if decoded.deterministicJSON != bytes { return .failed(.nonCanonicalBytes) }
+            return .loaded(decoded)
+        } catch {
+            return .notFound
+        }
     }
 
     private var directoryPath: String { "" }

@@ -43,8 +43,8 @@ struct LocalAcceptanceReceiptStore {
         // Bounded no-follow load through a single file descriptor: the parent
         // directory is opened non-following and the receipt is opened relative
         // to it, fstat'd (regular-file proof), and bounded-read via the SAME FD.
-        let dirFD = open(directoryPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        let fileFD = openat(dirFD, receiptName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        let dirFD = open(directoryPath, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        let fileFD = openat(dirFD, receiptName, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
         var st = stat()
         _ = fstat(fileFD, &st)
         guard (st.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }
@@ -69,7 +69,7 @@ struct LocalAcceptanceReceiptStore {
         // Same-directory POSIX transaction: exclusive temp, exact canonical
         // bytes, 0600, fsync, atomic rename, directory fsync. On failure ONLY
         // the temp is removed via unlinkat; the last-known-good receipt is kept.
-        let dirFD = open(directoryPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        let dirFD = open(directoryPath, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         let tempFD = openat(dirFD, tempName, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC)
         _ = write(tempFD, data, data.count)
         _ = fchmod(tempFD, mode_t(S_IRUSR | S_IWUSR))

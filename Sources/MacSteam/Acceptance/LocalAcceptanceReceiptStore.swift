@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Foundation
+import Darwin
 
 /// Bounded persistence outcome for a local acceptance receipt save/load.
 ///
@@ -44,13 +45,26 @@ enum LocalAcceptanceReceiptStoreError: String, Sendable, Equatable {
 ///   * The bytes written are exactly `receipt.deterministicJSON`. No pretty
 ///     printing, timestamps, PIDs, UUIDs, usernames, absolute paths, raw error
 ///     text, or runtime executable paths are appended.
-///   * Load is fail-closed and bounded: max file size → canonical decode →
-///     accepted semantic validation → deterministic re-encode → disk bytes ==
-///     canonical bytes. Unknown fields, extra payload and non-canonical
-///     serialization all fail closed (not cryptographic tamper proof).
-///   * Filesystem safety: private (0700) parent dir, `0600` receipt, temp write
-///     in the same directory, atomic replace, temp cleanup on success and
-///     failure, and symlink destination / symlink parent-escape rejection.
+///   * The write is a same-directory POSIX transaction: a unique `O_EXCL` temp
+///     is created in the parent directory, written with the exact canonical
+///     bytes, `fchmod`ed to `0600`, `fsync`ed, then atomically `rename`d over
+///     the destination and the directory is `fsync`ed. A failure removes only
+///     the temp — the last-known-good receipt is never deleted.
+///   * Load is fail-closed and bounded through a single non-following file
+///     descriptor: the parent directory is opened `O_DIRECTORY|O_NOFOLLOW`, the
+///     receipt is opened relative to it with
+///     `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, the exact opened FD is
+///     `fstat`ed (regular-file proof + size bound) and bounded-read via the same
+///     FD, then decode → accepted semantic validation → deterministic
+///     re-encode → disk bytes == canonical bytes. Unknown fields, extra payload
+///     and non-canonical serialization all fail closed.
+///   * `.notFound` is returned only for an absent receipt (ENOENT). Permission
+///     denial, open/read/stat failure, filesystem races and non-missing I/O
+///     errors surface as `.ioFailure`; a symlink is rejected exactly.
+///   * Filesystem safety: private (0700) parent dir, `0600` receipt, symlink
+///     destination / symlink parent-escape rejection, and non-regular nodes
+///     (directory, symlink, FIFO, socket, device) rejected as `nonRegularFile`
+///     before any read.
 struct LocalAcceptanceReceiptStore {
     nonisolated static let relativeReceiptPath = "Acceptance/cloverpit.json"
     nonisolated static let maxReceiptBytes: Int = 1 << 12
@@ -141,15 +155,56 @@ struct LocalAcceptanceReceiptStore {
 
     /// Loads and re-verifies the persisted accepted receipt. Returns `.notFound`
     /// when no receipt exists and `.failed` for any size / symlink / regular-file
-    /// / canonical-byte / semantics violation. This is a historical-evidence load
-    /// only; it never promotes the caller's current acceptance state.
+    /// / canonical-byte / semantics violation. This is a historical-evidence
+    /// load only, performed through a single non-following file descriptor; it
+    /// never promotes the caller's current acceptance state.
     func loadAccepted() -> LocalAcceptanceReceiptStoreResult {
-        if let failure = destinationAuditFailure() { return .failed(failure) }
-        if let size = fileSize(at: receiptPath), size > Self.maxReceiptBytes {
-            return .failed(.oversized)
+        // Open the parent directory without following a final symlink. A missing
+        // parent is simply "no receipt"; a symlink parent or any other I/O error
+        // is a bounded failure.
+        let dirFD = parentPath.withCString { open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+        if dirFD < 0 {
+            if errno == ENOENT { return .notFound }
+            if errno == ELOOP { return .failed(.symlinkParentEscapeRejected) }
+            return .failed(.ioFailure)
         }
-        guard let diskBytes = try? Data(contentsOf: receiptURL) else { return .notFound }
-        if diskBytes.count > Self.maxReceiptBytes { return .failed(.oversized) }
+        defer { close(dirFD) }
+
+        // Open the receipt relative to the parent directory FD, refusing to
+        // follow a symlink and opening non-blocking so a FIFO cannot block.
+        let relName = "cloverpit.json"
+        let fileFD = relName.withCString {
+            openat(dirFD, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        }
+        if fileFD < 0 {
+            if errno == ENOENT { return .notFound }
+            if errno == ELOOP { return .failed(.symlinkDestinationRejected) }
+            return .failed(.ioFailure)
+        }
+        defer { close(fileFD) }
+
+        // The single opened FD is the authority: fstat and read use the same FD.
+        var st = stat()
+        if fstat(fileFD, &st) != 0 { return .failed(.ioFailure) }
+        // Require an actual regular file before touching the data road. Any
+        // non-regular node (symlink, directory, FIFO, socket, device) is rejected.
+        guard (st.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }
+        if Int(st.st_size) > Self.maxReceiptBytes { return .failed(.oversized) }
+
+        // Bounded read from the same FD: never read past maxReceiptBytes + 1.
+        var buffer = [UInt8](repeating: 0, count: Self.maxReceiptBytes + 1)
+        var total = 0
+        while total < buffer.count {
+            let n = read(fileFD, &buffer[total], buffer.count - total)
+            if n < 0 {
+                if errno == EINTR { continue }
+                return .failed(.ioFailure)
+            }
+            if n == 0 { break }
+            total += Int(n)
+        }
+        if total > Self.maxReceiptBytes { return .failed(.oversized) }
+        let diskBytes = Data(buffer.prefix(total))
 
         guard let decoded = decodeCanonical(diskBytes) else { return .failed(.malformedJSON) }
         if let failure = acceptedSemanticGate(decoded) { return .failed(failure) }
@@ -165,27 +220,8 @@ struct LocalAcceptanceReceiptStore {
 
     // MARK: - Filesystem safety
 
-    private func destinationAuditFailure() -> LocalAcceptanceReceiptStoreError? {
-        guard fileManager.fileExists(atPath: receiptPath) else { return nil }
-        if isSymlink(at: receiptPath) { return .symlinkDestinationRejected }
-        if isSymlink(at: parentPath) { return .symlinkParentEscapeRejected }
-        if !isRegularFile(at: receiptPath) { return .nonRegularFile }
-        return nil
-    }
-
     private func isSymlink(at path: String) -> Bool {
         (try? fileManager.destinationOfSymbolicLink(atPath: path)) != nil
-    }
-
-    private func isRegularFile(at path: String) -> Bool {
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { return false }
-        return !isDirectory.boolValue
-    }
-
-    private func fileSize(at path: String) -> Int? {
-        guard let attrs = try? fileManager.attributesOfItem(atPath: path) else { return nil }
-        return (attrs[.size] as? Int)
     }
 
     private func normalizePrivateParent() -> Bool {
@@ -202,29 +238,70 @@ struct LocalAcceptanceReceiptStore {
         }
     }
 
-    // MARK: - Canonical atomic write
+    private func removeTemp(at dirFD: Int32, name: String) {
+        _ = name.withCString { unlinkat(dirFD, $0, 0) }
+    }
 
+    // MARK: - Canonical atomic write (same-directory POSIX transaction)
+
+    /// Writes the exact canonical bytes through an atomic same-directory POSIX
+    /// transaction. On any failure ONLY the temp is removed; a pre-existing
+    /// last-known-good receipt is never deleted.
     private func writeCanonical(_ receipt: LocalAcceptanceReceipt) -> LocalAcceptanceReceiptStoreResult {
         let data = receipt.deterministicJSON
-        let tempURL = acceptanceRoot.appendingPathComponent(".cloverpit-\(UUID().uuidString).tmp")
-        do {
-            try data.write(to: tempURL, options: [])
-            try fileManager.setAttributes([.posixPermissions: Self.receiptFilePermissions],
-                                          ofItemAtPath: tempURL.path)
-        } catch {
-            try? fileManager.removeItem(at: tempURL)
+        let dirFD = parentPath.withCString { open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+        if dirFD < 0 { return .failed(.ioFailure) }
+        defer { close(dirFD) }
+
+        // Unique temp created exclusively in the same directory.
+        let tempName = ".cloverpit-\(UUID().uuidString).tmp"
+        let tempFD = tempName.withCString {
+            openat(dirFD, $0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                   mode_t(S_IRUSR | S_IWUSR))
+        }
+        if tempFD < 0 { return .failed(.ioFailure) }
+
+        var writeFailed = false
+        var wrote = 0
+        while wrote < data.count {
+            var count = 0
+            data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+                guard let base = bytes.baseAddress else { return }
+                let r = write(tempFD, base.advanced(by: wrote), data.count - wrote)
+                count = r == -1 ? -1 : Int(r)
+            }
+            if count < 0 {
+                if errno == EINTR { continue }
+                writeFailed = true
+                break
+            }
+            wrote += count
+        }
+        if !writeFailed, fchmod(tempFD, mode_t(S_IRUSR | S_IWUSR)) != 0 {
+            writeFailed = true
+        }
+        if !writeFailed, fsync(tempFD) != 0 {
+            writeFailed = true
+        }
+        if close(tempFD) != 0 { writeFailed = true }
+        if writeFailed {
+            // Only the temp is removed — never a pre-existing receipt.
+            removeTemp(at: dirFD, name: tempName)
             return .failed(.ioFailure)
         }
-        do {
-            _ = try fileManager.replaceItemAt(receiptURL, withItemAt: tempURL,
-                                              backupItemName: nil,
-                                              options: [.usingNewMetadataOnly])
-            try? fileManager.removeItem(at: tempURL)
-            return .saved
-        } catch {
-            try? fileManager.removeItem(at: tempURL)
-            try? fileManager.removeItem(at: receiptURL)
+
+        // Atomic replace: rename never follows a destination symlink; it
+        // replaces the directory entry itself.
+        let tempPath = parentPath + "/" + tempName
+        let renamed = tempPath.withCString { t in
+            receiptPath.withCString { r in rename(t, r) }
+        }
+        if renamed != 0 {
+            removeTemp(at: dirFD, name: tempName)
             return .failed(.ioFailure)
         }
+        // Best-effort directory flush. The rename already succeeded.
+        fsync(dirFD)
+        return .saved
     }
 }

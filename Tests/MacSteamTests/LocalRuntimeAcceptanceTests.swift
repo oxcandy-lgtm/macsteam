@@ -62,7 +62,12 @@ struct LocalRuntimeAcceptanceTests {
     let satisfied = makeSatisfiedPrerequisites()
 
     func makeAuthority(clock: TestClock) -> LocalRuntimeAcceptanceAuthority {
-        let authority = LocalRuntimeAcceptanceAuthority { clock.value }
+        // Tests must always supply an explicit durable persister; the authority
+        // has no success-default. A well-behaved persister echoes the candidate.
+        let authority = LocalRuntimeAcceptanceAuthority(
+            nowProvider: { clock.value },
+            receiptPersister: { candidate in .persisted(candidate) }
+        )
         authority.setPrerequisites(satisfied)
         authority.beginCandidate(for: session, generation: 1)
         return authority
@@ -137,7 +142,10 @@ struct LocalRuntimeAcceptanceTests {
         var pre = makeSatisfiedPrerequisites()
         pre.runtimeRealLoadHealthy = false
         let clock = TestClock()
-        let authority = LocalRuntimeAcceptanceAuthority { clock.value }
+        let authority = LocalRuntimeAcceptanceAuthority(
+            nowProvider: { clock.value },
+            receiptPersister: { candidate in .persisted(candidate) }
+        )
         authority.setPrerequisites(pre)
         let result = authority.beginCandidate(for: session, generation: 1)
         #expect(result == .blocked)
@@ -392,7 +400,10 @@ struct LocalRuntimeAcceptanceTests {
         var pre = makeSatisfiedPrerequisites()
         pre.steamInstallVerified = false
         let clock = TestClock()
-        let authority = LocalRuntimeAcceptanceAuthority { clock.value }
+        let authority = LocalRuntimeAcceptanceAuthority(
+            nowProvider: { clock.value },
+            receiptPersister: { candidate in .persisted(candidate) }
+        )
         authority.setPrerequisites(pre)
         #expect(authority.currentReceipt.status.blocker == "steam_not_verified")
     }
@@ -458,7 +469,10 @@ struct LocalRuntimeAcceptanceTests {
         // And a blocked attempt leaves ownership unproven, never inferred from
         // the visible window alone.
         let clock2 = TestClock()
-        let authority2 = LocalRuntimeAcceptanceAuthority { clock2.value }
+        let authority2 = LocalRuntimeAcceptanceAuthority(
+            nowProvider: { clock2.value },
+            receiptPersister: { candidate in .persisted(candidate) }
+        )
         var pre = makeSatisfiedPrerequisites()
         pre.runtimeRealLoadHealthy = false
         authority2.setPrerequisites(pre)
@@ -483,7 +497,10 @@ struct LocalRuntimeAcceptanceTests {
 
 @Test func failClosedTerminalStateNeverAutoRecovers() async {
         let clock = TestClock()
-        let authority = LocalRuntimeAcceptanceAuthority { clock.value }
+        let authority = LocalRuntimeAcceptanceAuthority(
+            nowProvider: { clock.value },
+            receiptPersister: { candidate in .persisted(candidate) }
+        )
         var pre = makeSatisfiedPrerequisites()
         pre.runtimeRealLoadHealthy = false
         authority.setPrerequisites(pre)
@@ -575,4 +592,61 @@ struct LocalRuntimeAcceptanceTests {
         _ = await authority.requireCompletion { .clean }
         #expect(persistenceCallCount == 1)
     }
+
+    // MARK: U1R18-R12-FIX1 explicit persister + exact identity
+
+    @Test func substitutedPersistedReceiptCannotAccept() async {
+        let clock = TestClock()
+        // The persister claims success but returns a DIFFERENT receipt. The
+        // authority must treat this as a bounded persistence failure — a
+        // substituted receipt can never promote acceptance.
+        let authority = makeAuthority(clock: clock) { _ in
+            .persisted(makeOtherAcceptedReceipt())
+        }
+        advanceStable(clock, authority)
+        _ = authority.confirmMainMenu()
+        _ = authority.confirmInputResponse()
+        let result = await authority.requireCompletion { .clean }
+        #expect(result == .rejected(.receiptPersistenceFailed))
+        #expect(authority.isBlocked)
+        #expect(authority.blocker == .receiptPersistenceFailed)
+        #expect(authority.isAccepted == false)
+        #expect(authority.hasPersistedReceipt == false)
+        #expect(authority.earnedReceipt == nil)
+    }
+
+    @Test func persistedReceiptMustEqualExactCandidate() async {
+        let clock = TestClock()
+        var seenCandidate: LocalAcceptanceReceipt?
+        var returnedReceipt: LocalAcceptanceReceipt?
+        let authority = makeAuthority(clock: clock) { candidate in
+            seenCandidate = candidate
+            // Echo the exact candidate back — identity must be preserved.
+            let echoed = candidate
+            returnedReceipt = echoed
+            return .persisted(echoed)
+        }
+        advanceStable(clock, authority)
+        _ = authority.confirmMainMenu()
+        _ = authority.confirmInputResponse()
+        let result = await authority.requireCompletion { .clean }
+        #expect(result == .accepted)
+        #expect(authority.isAccepted)
+        // The exact candidate is what was persisted and what was earned.
+        #expect(seenCandidate?.deterministicJSON == returnedReceipt?.deterministicJSON)
+        #expect(authority.currentReceipt.deterministicJSON == seenCandidate?.deterministicJSON)
+    }
+}
+
+private func makeOtherAcceptedReceipt() -> LocalAcceptanceReceipt {
+    // A distinct, otherwise-gated accepted receipt that is NOT this candidate.
+    let evidence = LocalAcceptanceReceipt.Evidence(
+        importedWineSelected: true, runtimeRealLoadHealthy: true,
+        canonicalPrefixBound: true, steamInstallVerified: true,
+        cloverpitInstallReady: true, supervisedGameSessionStarted: true,
+        ownershipCensusProven: true, targetWindowVisible: true,
+        visibilityStableSeconds: 42, mainMenuConfirmedByOperator: true,
+        inputResponseConfirmedByOperator: true, cleanupComplete: true
+    )
+    return LocalAcceptanceReceipt(state: .accepted, blocker: "none", evidence: evidence)
 }

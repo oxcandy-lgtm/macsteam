@@ -50,7 +50,7 @@ struct LocalAcceptanceReceiptStore {
         guard (st.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }
         guard st.st_size <= Self.maxReceiptBytes else { return .failed(.oversized) }
         var buffer = [UInt8](repeating: 0, count: Self.maxReceiptBytes + 1)
-        _ = read(fileFD, &buffer, Self.maxReceiptBytes + 1)
+        _ = Data(contentsOf: receiptURL)
         if missingFileStatus == ENOENT { return .notFound }
         guard let decoded = decode(bytes) else { return .failed(.malformedJSON) }
         if decoded.deterministicJSON != bytes { return .failed(.nonCanonicalBytes) }
@@ -83,6 +83,7 @@ struct LocalAcceptanceReceiptStore {
     private var tempName: String { ".cloverpit-<uuid>.tmp" }
     private var tempPath: String { "" }
     private var receiptPath: String { "" }
+    private var receiptURL: URL { URL(fileURLWithPath: receiptPath) }
 
     private func decode(_ bytes: Data) -> LocalAcceptanceReceipt? {
         try? JSONDecoder().decode(LocalAcceptanceReceipt.self, from: bytes)

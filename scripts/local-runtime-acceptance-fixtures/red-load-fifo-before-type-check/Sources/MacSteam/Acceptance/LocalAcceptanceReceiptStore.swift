@@ -44,7 +44,7 @@ struct LocalAcceptanceReceiptStore {
         // directory is opened non-following and the receipt is opened relative
         // to it, fstat'd (regular-file proof), and bounded-read via the SAME FD.
         let dirFD = open(directoryPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        let fileFD = openat(dirFD, receiptName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        let fileFD = openat(dirFD, receiptName, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         var st = stat()
         _ = fstat(fileFD, &st)
         guard (st.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }

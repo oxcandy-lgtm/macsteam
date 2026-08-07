@@ -124,6 +124,18 @@ run "red-load-promotes-current-state" "historical load promotes current state" 1
 run "red-store-writes-noncanonical-json" "store writes non-canonical json" 1 "canonical bytes"
 run "red-load-accepts-oversized-file" "store loads oversized file" 1 "store contract missing"
 
+echo "--- RED: U1R18-R12-FIX1 durable receipt repairs (rc=1) ---"
+run "red-default-success-persister" "success-default persister reintroduced" 1 "success-default persister"
+run "red-persister-result-substitutes-receipt" "persister substitutes the receipt" 1 "persisted receipt identity"
+run "red-write-failure-deletes-old-receipt" "write failure deletes old receipt" 1 "must not contain 'removeItem(at: receiptURL)"
+run "red-load-path-data-contents" "load uses path-based Data(contentsOf:)" 1 "must not contain 'Data(contentsOf: receiptURL)"
+run "red-load-nonregular-as-regular" "load treats non-regular as regular" 1 "prove regular-file before read"
+run "red-load-fifo-before-type-check" "load reads FIFO before type check" 1 "store contract missing 'O_NONBLOCK"
+run "red-load-without-nofollow" "load follows symlinks" 1 "store contract missing 'O_NOFOLLOW"
+run "red-load-unbounded-read" "load reads unbounded" 1 "load read must be bounded"
+run "red-load-read-failure-becomes-notfound" "read failure becomes notFound" 1 "must not become notFound"
+run "red-load-stat-and-read-different-object" "load stats and reads different objects" 1 "must read via the opened FD"
+
 echo "--- GREEN variants ---"
 run "green-variant-space" "green space variant" 0
 run "green-variant-comment" "green comment variant" 0

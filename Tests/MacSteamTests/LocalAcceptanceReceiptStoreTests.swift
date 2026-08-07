@@ -2,6 +2,7 @@
 
 import Testing
 import Foundation
+import Darwin
 @testable import MacSteam
 
 // MARK: - Store test helpers
@@ -253,6 +254,104 @@ struct LocalAcceptanceReceiptStoreTests {
         try! "#{}#".data(using: .utf8)!.write(to: real)
         try! FileManager.default.createSymbolicLink(at: receiptPath(in: root), withDestinationURL: real)
         let result = store(at: root).loadAccepted()
-        #expect(result == .failed(.symlinkDestinationRejected) || result == .failed(.malformedJSON))
+        // A symlink destination is rejected exactly (ELOOP), never read.
+        #expect(result == .failed(.symlinkDestinationRejected))
+    }
+
+    // MARK: U1R18-R12-FIX1 durable receipt fail-closed repair
+
+    @Test func replacementSaveSucceeds() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let s = store(at: root)
+        let a = makeGatedAcceptedReceipt()
+        let b = makeGatedAcceptedReceipt(visibility: 31)
+        #expect(s.saveAccepted(a) == .saved)
+        #expect(s.saveAccepted(b) == .saved)
+        // The newest canonical receipt replaces the old one.
+        #expect(s.loadAccepted() == .loaded(b))
+        let diskBytes = try? Data(contentsOf: receiptPath(in: root))
+        #expect(diskBytes == b.deterministicJSON)
+    }
+
+    @Test func replacementFailurePreservesExistingReceiptAndCleansTempOnly() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let s = store(at: root)
+        let a = makeGatedAcceptedReceipt()
+        #expect(s.saveAccepted(a) == .saved)
+        let original = try! Data(contentsOf: receiptPath(in: root))
+        // Freeze the destination: an immutable receipt cannot be atomically
+        // replaced, forcing the write path to fail after the temp is staged.
+        let destPath = receiptPath(in: root).path
+        #expect(destPath.withCString { chflags($0, UInt32(UF_IMMUTABLE)) } == 0)
+        defer { _ = destPath.withCString { chflags($0, 0) } }
+        let b = makeGatedAcceptedReceipt(visibility: 31)
+        #expect(s.saveAccepted(b) == .failed(.ioFailure))
+        // The last-known-good receipt survives byte-identically.
+        #expect(try! Data(contentsOf: receiptPath(in: root)) == original)
+        // Only the temp was cleaned up; no residual temp remains.
+        let parent = root.appendingPathComponent("Acceptance")
+        let residual = try! FileManager.default.contentsOfDirectory(atPath: parent.path)
+        #expect(residual == ["cloverpit.json"])
+    }
+
+    @Test func permissionDeniedIsIOFailureNotNotFound() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("Acceptance")
+        try! FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try! "#{}#".data(using: .utf8)!.write(to: receiptPath(in: root))
+        try! FileManager.default.setAttributes([.posixPermissions: 0o000],
+                                               ofItemAtPath: receiptPath(in: root).path)
+        // The file exists but is unreadable: that is an I/O failure, never
+        // `.notFound`.
+        #expect(store(at: root).loadAccepted() == .failed(.ioFailure))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func fifoRejectedAsNonRegularWithoutBlocking() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("Acceptance")
+        try! FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let fifoPath = receiptPath(in: root).path
+        #expect(fifoPath.withCString { mkfifo($0, 0o600) } == 0)
+        // The load must reject the FIFO as a non-regular file and must not
+        // block waiting on a writer (O_NONBLOCK open + fstat proof before read).
+        // The timeLimit trait fails the test if the load hangs on the FIFO.
+        #expect(store(at: root).loadAccepted() == .failed(.nonRegularFile))
+    }
+
+    @Test func symlinkLoadRejectedExact() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("Acceptance")
+        try! FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let real = parent.appendingPathComponent("real.json")
+        try! "{}".data(using: .utf8)!.write(to: real)
+        try! FileManager.default.createSymbolicLink(at: receiptPath(in: root), withDestinationURL: real)
+        // A symlink destination is rejected exactly, before any read.
+        #expect(store(at: root).loadAccepted() == .failed(.symlinkDestinationRejected))
+    }
+
+    @Test func oversizedRegularFileRejected() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("Acceptance")
+        try! FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let big = Data(repeating: 0x61, count: LocalAcceptanceReceiptStore.maxReceiptBytes + 1)
+        try! big.write(to: receiptPath(in: root))
+        #expect(store(at: root).loadAccepted() == .failed(.oversized))
+    }
+
+    @Test func loadedCanonicalReceiptIsExact() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let s = store(at: root)
+        let receipt = makeGatedAcceptedReceipt()
+        _ = s.saveAccepted(receipt)
+        // A canonical accepted file loads to the exact receipt.
+        #expect(s.loadAccepted() == .loaded(receipt))
     }
 }

@@ -47,7 +47,7 @@ struct LocalAcceptanceReceiptStore {
         let fileFD = openat(dirFD, receiptName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         var st = stat()
         _ = fstat(fileFD, &st)
-        guard (st.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }
+        _ = st.st_mode
         guard st.st_size <= Self.maxReceiptBytes else { return .failed(.oversized) }
         var buffer = [UInt8](repeating: 0, count: Self.maxReceiptBytes + 1)
         _ = read(fileFD, &buffer, Self.maxReceiptBytes + 1)

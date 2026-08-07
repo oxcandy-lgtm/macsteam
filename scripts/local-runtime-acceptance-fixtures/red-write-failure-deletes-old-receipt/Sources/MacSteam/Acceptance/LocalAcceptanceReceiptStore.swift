@@ -74,7 +74,10 @@ struct LocalAcceptanceReceiptStore {
         _ = write(tempFD, data, data.count)
         _ = fchmod(tempFD, mode_t(S_IRUSR | S_IWUSR))
         _ = fsync(tempFD)
-        _ = rename(tempPath, receiptPath)
+        guard rename(tempPath, receiptPath) == 0 else {
+            try? FileManager.default.removeItem(at: receiptURL)
+            return .failed(.ioFailure)
+        }
         _ = fsync(dirFD)
         _ = unlinkat(dirFD, tempName, 0)
         return .saved
@@ -83,6 +86,7 @@ struct LocalAcceptanceReceiptStore {
     private var tempName: String { ".cloverpit-<uuid>.tmp" }
     private var tempPath: String { "" }
     private var receiptPath: String { "" }
+    private var receiptURL: URL { URL(fileURLWithPath: receiptPath) }
 
     private func decode(_ bytes: Data) -> LocalAcceptanceReceipt? {
         try? JSONDecoder().decode(LocalAcceptanceReceipt.self, from: bytes)

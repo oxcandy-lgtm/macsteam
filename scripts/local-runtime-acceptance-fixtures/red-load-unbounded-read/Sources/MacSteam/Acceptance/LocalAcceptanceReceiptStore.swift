@@ -48,9 +48,8 @@ struct LocalAcceptanceReceiptStore {
         var st = stat()
         _ = fstat(fileFD, &st)
         guard (st.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }
-        guard st.st_size <= Self.maxReceiptBytes else { return .failed(.oversized) }
-        var buffer = [UInt8](repeating: 0, count: Self.maxReceiptBytes + 1)
-        _ = read(fileFD, &buffer, Self.maxReceiptBytes + 1)
+        var buffer = [UInt8](repeating: 0, count: 1 << 24)
+        _ = read(fileFD, &buffer, 1 << 24)
         if missingFileStatus == ENOENT { return .notFound }
         guard let decoded = decode(bytes) else { return .failed(.malformedJSON) }
         if decoded.deterministicJSON != bytes { return .failed(.nonCanonicalBytes) }

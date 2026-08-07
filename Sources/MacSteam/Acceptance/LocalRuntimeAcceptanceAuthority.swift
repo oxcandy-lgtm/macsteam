@@ -97,7 +97,7 @@ final class LocalRuntimeAcceptanceAuthority {
 
     init(
         nowProvider: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 },
-        receiptPersister: @escaping (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome = { .persisted($0) }
+        receiptPersister: @escaping (LocalAcceptanceReceipt) async -> LocalAcceptancePersistenceOutcome
     ) {
         self.nowProvider = nowProvider
         self.receiptPersister = receiptPersister
@@ -290,10 +290,13 @@ final class LocalRuntimeAcceptanceAuthority {
         // in_progress due to ordering.
         let candidate = buildAcceptedReceipt()
         // Durable persistence executes exactly once and MUST succeed before the
-        // authority may enter the accepted state. A persistence failure leaves
-        // the transaction blocked with no earned receipt.
+        // authority may enter the accepted state. The persisted receipt must be
+        // the exact candidate — a persister substituting a different receipt is
+        // treated as a bounded persistence failure and cannot accept. A failure
+        // leaves the transaction blocked with no earned receipt.
         let outcome = await receiptPersister(candidate)
-        guard case .persisted(let persisted) = outcome else {
+        guard case .persisted(let persisted) = outcome,
+              persisted == candidate else {
             blocker = .receiptPersistenceFailed
             state = .blocked
             earnedReceipt = nil
