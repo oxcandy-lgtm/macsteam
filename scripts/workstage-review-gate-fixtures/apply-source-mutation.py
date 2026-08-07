@@ -224,7 +224,7 @@ def apply_mutation(source, mutation_name):
             "Bridge anti-self-auth: read source scope from policy instead of comment (rejects an explicit unknown path)"
         ),
 
-        # === BRDG-2: anti-self-authorization — restrict source scope instead of comment ===
+# === BRDG-2: anti-self-authorization — restrict source scope instead of comment ===
         # Source fix changed files must always be bounded by the (unedited)
         # comment scope; a code change that silently narrows the scope is still
         # caught because the changed source files cannot fit the narrow scope.
@@ -232,6 +232,58 @@ def apply_mutation(source, mutation_name):
             '        for filepath in source_files:\n            if not self._bridge_path_in_scope(filepath, self._bridge_source_scope):\n                raise GateError(EXIT_POLICY, "red_source_fix_forbidden_path",',
             '        for filepath in source_files:\n            if not self._bridge_path_in_scope(filepath, ("exact", ["unknown/path/only.swift"], "prefix", ["unknown/"])):\n            raise GateError(EXIT_POLICY, "red_source_fix_forbidden_path",',
             "Bridge self-auth: restrict source scope instead of honoring comment (rejects valid source files)"
+        ),
+
+        # === GATE1-FIX1: rejected review object binding anti-bypass ===
+        "bypass_rejected_review_fetch": (
+            'review = self.client.get_review_by_id(expected_id)',
+            'review = {}  # bypassed by mutation',
+            "Rejected review: replace exact object fetch with an empty object (no valid review found)"
+        ),
+
+        "bypass_rejected_review_classification_check": (
+            'if json_data.get("classification") != expected_classification:',
+            'if json_data.get("classification") == expected_classification:',
+            "Rejected review: invert classification check (rejects valid classification)"
+        ),
+
+        # === GATE1-FIX1: failed advance binding anti-bypass ===
+        "bypass_failed_advance_conclusion": (
+            'if run_conclusion != "failure":',
+            'if run_conclusion == "failure":',
+            "Failed advance: invert conclusion check (rejects valid failed run)"
+        ),
+
+        "bypass_failed_advance_job_check": (
+            'if isinstance(job, dict) and job.get("name") == "Advance Gate":',
+            'if isinstance(job, dict) and job.get("name") == "Wrong Gate":',
+            "Failed advance: look for a nonexistent job name (rejects valid gate job)"
+        ),
+
+        "bypass_failed_advance_guard_check": (
+            'if actual_guard != guard:',
+            'if actual_guard == guard:',
+            "Failed advance: invert guard comparison (rejects matching guard)"
+        ),
+
+        # === GATE1-FIX1: source authorization chronology anti-bypass ===
+        "bypass_source_auth_chronology": (
+            'if not self._check_comment_before_commit_ts(comment, bridge_date):',
+            'if self._check_comment_before_commit_ts(comment, bridge_date):',
+            "Source auth: invert chronology comparison (rejects valid chronology)"
+        ),
+
+        # === GATE1-FIX1: gate-fix authorization anti-bypass ===
+        "gate_fix_scope_read_from_policy": (
+            'self._gate_fix_scope = ("exact", exact, "prefix", prefixes)',
+            'self._gate_fix_scope = ("exact", [], "prefix", ["unknown/"])',
+            "Gate-fix: read child scope from a fixed narrow list (rejects valid gate files)"
+        ),
+
+        "gate_fix_chronology_bypassed": (
+            'if not self._check_comment_before_commit_ts(\n                {"created_at": getattr(self, "gate_fix_auth_created_at", None)},\n                head_date_str):',
+            'if self._check_comment_before_commit_ts(\n                {"created_at": getattr(self, "gate_fix_auth_created_at", None)},\n                head_date_str):',
+            "Gate-fix: invert child chronology check (rejects valid authorization)"
         ),
     }
 

@@ -1,0 +1,14 @@
+[
+  {
+    "id": 5211679288,
+    "created_at": "2026-08-07T02:59:40Z",
+    "updated_at": "2026-08-07T02:59:40Z",
+    "user": {
+      "login": "gatesmith"
+    },
+    "body": "Gate-fix authorization anchored on the exact bridge parent db2dc127b37b4a93d0c157458e8bb0ecb01b45ac.",
+    "issue_url": "https://api.github.com/repos/oxcandy-lgtm/macsteam/issues/2",
+    "url": "https://api.github.com/repos/oxcandy-lgtm/macsteam/issues/comments/5211679288",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#issuecomment-5211679288"
+  }
+]

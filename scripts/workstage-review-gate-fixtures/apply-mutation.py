@@ -75,6 +75,7 @@ WORKER_REPORT_COMMENT_ID = 5161887211
 CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
 SOURCE_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-authorization:v1 -->"
+GATE_FIX_MARKER = "<!-- macsteam-gate-fix-authorization:v1 -->"
 
 # === Red parent source fix bridge constants (GATE1) ===
 BRIDGE_PARENT = "a2d26b2e7ccd17c5c5ea153bf346572fa886a4be"   # source fix (parent of bridge)
@@ -87,6 +88,16 @@ BRIDGE_SOURCE_SUBJECT = "fix: close local runtime acceptance completion path (U1
 BRIDGE_SOURCE_WORKSTREAM = "U1R18-R11-FIX1"
 BRIDGE_SOURCE_CI_RUN = 31136834727
 BRIDGE_FAILED_RUN = 31136834743
+BRIDGE_REJECTED_REVIEW_ID = 4878732820
+
+# === GATE-FIX authorization constants (GATE1-FIX1) ===
+GATE_FIX_PARENT = "db2dc127b37b4a93d0c157458e8bb0ecb01b45ac"
+GATE_FIX_HEAD = "11aa22bb33cc44dd55ee66ff7788990011aabb22"
+GATE_FIX_COMMENT_ID = 5211679289
+GATE_FIX_SUBJECT = "ci: bind rejected review and failed advance evidence (U1R18-R11-FIX1-GATE1-FIX1)"
+GATE_FIX_WORKSTREAM = "U1R18-R11-FIX1-GATE1-FIX1"
+GATE_FIX_PARENT_ADVANCE_RUN = 31141723135
+GATE_FIX_PARENT_CI_RUN = 31141723115
 
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "workstage-review-gate-policy.json")
 
@@ -870,6 +881,318 @@ def m_red_bridge_forbidden_path(d):
     files = _bridge_files(d)
     files.append("unknown/gate/path.txt")
     save_json(d, "files.json", files)
+
+
+# === Rejected controller review binding (GATE1-FIX1 hardening) ===
+# Base fixture: advance_red_parent_source_fix_bridge.
+
+def _bridge_reviews(d):
+    path = os.path.join(d, "reviews.json")
+    if not os.path.exists(path):
+        return []
+    data = load_json(d, "reviews.json")
+    return data if isinstance(data, list) else [data]
+
+
+def _bridge_review_body(d):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            return r.get("body", "")
+    return ""
+
+
+def m_red_bridge_rejected_review_missing(d):
+    save_json(d, "reviews.json", [])
+
+
+def m_red_bridge_rejected_review_wrong_id(d):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            r["id"] = 1111111111
+    save_json(d, "reviews.json", reviews)
+
+
+def m_red_bridge_rejected_review_wrong_commit(d):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            r["commit_id"] = WRONG_SHA
+            r["body"] = r["body"].replace('"head_sha": "007e1d4e38d8e8a07950d5eff74c0453cf7a7dc6"',
+                                          '"head_sha": "' + WRONG_SHA + '"')
+    save_json(d, "reviews.json", reviews)
+
+
+def m_red_bridge_rejected_review_wrong_decision(d):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            r["state"] = "APPROVED"
+    save_json(d, "reviews.json", reviews)
+
+
+def m_red_bridge_rejected_review_wrong_classification(d):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            r["body"] = r["body"].replace(
+                '"RED_U1R18_R11_ACCEPTANCE_PATH_UNREACHABLE_AND_RECEIPT_DESTROYED"',
+                '"RED_SOME_OTHER_CLASSIFICATION"')
+    save_json(d, "reviews.json", reviews)
+
+
+def m_red_bridge_rejected_review_incomplete(d):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            r["body"] = r["body"].replace('"review_complete": true',
+                                          '"review_complete": false')
+    save_json(d, "reviews.json", reviews)
+
+
+def m_red_bridge_rejected_review_nx_false(d):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            r["body"] = r["body"].replace(
+                '"nx_required_for_next_workstream": true',
+                '"nx_required_for_next_workstream": false')
+    save_json(d, "reviews.json", reviews)
+
+
+def _bridge_review_flag(d, flag):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            r["body"] = r["body"].replace('"%s": false' % flag, '"%s": true' % flag)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_red_bridge_rejected_review_ready_true(d):
+    _bridge_review_flag(d, "ready_authorized")
+
+
+def m_red_bridge_rejected_review_merge_true(d):
+    _bridge_review_flag(d, "merge_authorized")
+
+
+def m_red_bridge_rejected_review_release_true(d):
+    _bridge_review_flag(d, "release_authorized")
+
+
+def m_red_bridge_rejected_review_after_source_fix(d):
+    reviews = _bridge_reviews(d)
+    for r in reviews:
+        if r.get("id") == BRIDGE_REJECTED_REVIEW_ID:
+            r["submitted_at"] = "2026-08-07T06:00:00Z"
+    save_json(d, "reviews.json", reviews)
+
+
+# === Failed Advance run binding (GATE1-FIX1 hardening) ===
+
+def _bridge_runs(d):
+    return load_json(d, "runs.json")
+
+
+def _bridge_jobs(d):
+    return load_json(d, "jobs.json")
+
+
+def m_red_failed_advance_incomplete(d):
+    runs = _bridge_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == BRIDGE_FAILED_RUN:
+            r["status"] = "in_progress"
+            r["conclusion"] = None
+    save_json(d, "runs.json", runs)
+
+
+def m_red_failed_advance_success(d):
+    runs = _bridge_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == BRIDGE_FAILED_RUN:
+            r["conclusion"] = "success"
+    save_json(d, "runs.json", runs)
+
+
+def m_red_failed_advance_job_missing(d):
+    jobs = _bridge_jobs(d)
+    jobs = jobs.get("jobs", [])
+    jobs = [j for j in jobs if not (j.get("run_id") == BRIDGE_FAILED_RUN
+                                    and j.get("name") == "Advance Gate")]
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_red_failed_advance_job_success(d):
+    jobs = _bridge_jobs(d)
+    jobs = jobs.get("jobs", [])
+    for j in jobs:
+        if j.get("run_id") == BRIDGE_FAILED_RUN and j.get("name") == "Advance Gate":
+            j["conclusion"] = "success"
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def _bridge_job_logs(d):
+    return load_json(d, "job-logs.json")
+
+
+def m_red_failed_advance_guard_missing(d):
+    logs = _bridge_job_logs(d)
+    for k in logs:
+        logs[k] = "::group::advance\nnothing here\n::endgroup::\n"
+    save_json(d, "job-logs.json", logs)
+
+
+def _replace_log_guard(d, old, new):
+    logs = _bridge_job_logs(d)
+    for k in logs:
+        logs[k] = logs[k].replace(old, new)
+    save_json(d, "job-logs.json", logs)
+
+
+def m_red_failed_advance_guard_mismatch(d):
+    _replace_log_guard(d, '"guard_label":"latest_rejected_overrides_old_green"',
+                       '"guard_label":"some_other_guard"')
+
+
+def m_red_failed_advance_wrong_head(d):
+    _replace_log_guard(d, '"head_sha":"' + BRIDGE_PARENT + '"',
+                       '"head_sha":"' + WRONG_SHA + '"')
+
+
+def m_red_failed_advance_wrong_parent(d):
+    _replace_log_guard(d, '"parent_sha":"' + BRIDGE_REJECTED_PARENT + '"',
+                       '"parent_sha":"' + WRONG_SHA + '"')
+
+
+def m_red_source_auth_after_bridge(d):
+    c = _auth_comment(d)
+    c["created_at"] = "2026-08-07T07:00:00Z"
+    c["updated_at"] = "2026-08-07T07:00:00Z"
+    save_json(d, "comment.json", c)
+
+
+# === GATE-FIX authorization lane mutations (GATE1-FIX1) ===
+# Base fixture: advance_gate_fix_authorization.
+
+def _gate_fix_comment(d):
+    return load_json(d, "comment.json")
+
+
+def _gate_fix_head(d):
+    return load_json(d, "commit_HEAD.json")
+
+
+def _gate_fix_policy(d):
+    path = os.path.join(d, "policy.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    p = load_policy()
+    return p
+
+
+def _save_gate_fix_policy(d, p):
+    save_json(d, "policy.json", p)
+
+
+def m_gate_fix_auth_missing(d):
+    path = os.path.join(d, "comment.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def m_gate_fix_auth_edited(d):
+    c = _gate_fix_comment(d)
+    c["updated_at"] = "2026-08-07T03:10:00Z"
+    save_json(d, "comment.json", c)
+
+
+def m_gate_fix_auth_marker_duplicated(d):
+    c = _gate_fix_comment(d)
+    c["body"] = GATE_FIX_MARKER + "\n" + c["body"]
+    save_json(d, "comment.json", c)
+
+
+def m_gate_fix_auth_json_duplicated(d):
+    c = _gate_fix_comment(d)
+    lead, _, rest = c["body"].partition(GATE_FIX_MARKER)
+    c["body"] = lead + GATE_FIX_MARKER + "\n```json\n{}\n```\n" + rest
+    save_json(d, "comment.json", c)
+
+
+def m_gate_fix_auth_policy_mismatch(d):
+    p = _gate_fix_policy(d)
+    p["gate_fix_authorization"]["required_workstream"] = "U1R18-R11-WRONG-FIX1"
+    _save_gate_fix_policy(d, p)
+
+
+def m_gate_fix_auth_after_child(d):
+    c = _gate_fix_comment(d)
+    c["created_at"] = "2026-08-07T09:00:00Z"
+    c["updated_at"] = "2026-08-07T09:00:00Z"
+    save_json(d, "comment.json", c)
+
+
+def m_gate_fix_wrong_parent(d):
+    head = _gate_fix_head(d)
+    head["parents"] = [{"sha": WRONG_SHA}]
+    save_json(d, "commit_HEAD.json", head)
+    p = _gate_fix_policy(d)
+    p["gate_fix_authorization"]["parent_sha"] = WRONG_SHA
+    _save_gate_fix_policy(d, p)
+    c = _gate_fix_comment(d)
+    c["body"] = c["body"].replace(GATE_FIX_PARENT, WRONG_SHA)
+    save_json(d, "comment.json", c)
+    parent = load_json(d, "commit_PARENT.json")
+    parent["commit"]["message"] = "ci: not the bridge child\n\nWorkstream: U1R18-R11-UNRELATED"
+    save_json(d, "commit_PARENT.json", parent)
+
+
+def m_gate_fix_reused_by_grandchild(d):
+    head = _gate_fix_head(d)
+    head["parents"] = [{"sha": BRIDGE_PARENT}]
+    save_json(d, "commit_HEAD.json", head)
+    p = _gate_fix_policy(d)
+    p.pop("red_parent_source_fix_bridge", None)
+    _save_gate_fix_policy(d, p)
+
+
+def m_gate_fix_wrong_subject(d):
+    head = _gate_fix_head(d)
+    head["commit"]["message"] = "ci: wrong subject\n\nWorkstream: %s" % GATE_FIX_WORKSTREAM
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_gate_fix_wrong_workstream(d):
+    head = _gate_fix_head(d)
+    head["commit"]["message"] = GATE_FIX_SUBJECT + "\n\nWorkstream: U1R18-R11-WRONG-FIX"
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_gate_fix_forbidden_path(d):
+    files = _bridge_files(d)
+    files.append("unknown/gate/extra.txt")
+    save_json(d, "files.json", files)
+
+
+def _gate_fix_flag(d, flag):
+    c = _gate_fix_comment(d)
+    c["body"] = c["body"].replace('"%s": false' % flag, '"%s": true' % flag)
+    save_json(d, "comment.json", c)
+
+
+def m_gate_fix_ready_true(d):
+    _gate_fix_flag(d, "ready_authorized")
+
+
+def m_gate_fix_merge_true(d):
+    _gate_fix_flag(d, "merge_authorized")
+
+
+def m_gate_fix_release_true(d):
+    _gate_fix_flag(d, "release_authorized")
 
 
 # === Worker report mutations (based on submission_historical_reports) ===
@@ -2240,6 +2563,48 @@ MUTATIONS = {
     "red_bridge_wrong_subject": m_red_bridge_wrong_subject,
     "red_bridge_wrong_workstream": m_red_bridge_wrong_workstream,
     "red_bridge_forbidden_path": m_red_bridge_forbidden_path,
+
+# === GATE1-FIX1: rejected controller review binding ===
+    "red_bridge_rejected_review_missing": m_red_bridge_rejected_review_missing,
+    "red_bridge_rejected_review_wrong_id": m_red_bridge_rejected_review_wrong_id,
+    "red_bridge_rejected_review_wrong_commit": m_red_bridge_rejected_review_wrong_commit,
+    "red_bridge_rejected_review_wrong_decision": m_red_bridge_rejected_review_wrong_decision,
+    "red_bridge_rejected_review_wrong_classification": m_red_bridge_rejected_review_wrong_classification,
+    "red_bridge_rejected_review_incomplete": m_red_bridge_rejected_review_incomplete,
+    "red_bridge_rejected_review_nx_false": m_red_bridge_rejected_review_nx_false,
+    "red_bridge_rejected_review_ready_true": m_red_bridge_rejected_review_ready_true,
+    "red_bridge_rejected_review_merge_true": m_red_bridge_rejected_review_merge_true,
+    "red_bridge_rejected_review_release_true": m_red_bridge_rejected_review_release_true,
+    "red_bridge_rejected_review_after_source_fix": m_red_bridge_rejected_review_after_source_fix,
+
+# === GATE1-FIX1: failed advance binding ===
+    "red_failed_advance_incomplete": m_red_failed_advance_incomplete,
+    "red_failed_advance_success": m_red_failed_advance_success,
+    "red_failed_advance_job_missing": m_red_failed_advance_job_missing,
+    "red_failed_advance_job_success": m_red_failed_advance_job_success,
+    "red_failed_advance_guard_missing": m_red_failed_advance_guard_missing,
+    "red_failed_advance_guard_mismatch": m_red_failed_advance_guard_mismatch,
+    "red_failed_advance_wrong_head": m_red_failed_advance_wrong_head,
+    "red_failed_advance_wrong_parent": m_red_failed_advance_wrong_parent,
+
+# === GATE1-FIX1: source auth chronology ===
+    "red_source_auth_after_bridge": m_red_source_auth_after_bridge,
+
+# === GATE1-FIX1: gate-fix authorization lane ===
+    "gate_fix_auth_missing": m_gate_fix_auth_missing,
+    "gate_fix_auth_edited": m_gate_fix_auth_edited,
+    "gate_fix_auth_marker_duplicated": m_gate_fix_auth_marker_duplicated,
+    "gate_fix_auth_json_duplicated": m_gate_fix_auth_json_duplicated,
+    "gate_fix_auth_policy_mismatch": m_gate_fix_auth_policy_mismatch,
+    "gate_fix_auth_after_child": m_gate_fix_auth_after_child,
+    "gate_fix_wrong_parent": m_gate_fix_wrong_parent,
+    "gate_fix_wrong_subject": m_gate_fix_wrong_subject,
+    "gate_fix_wrong_workstream": m_gate_fix_wrong_workstream,
+    "gate_fix_forbidden_path": m_gate_fix_forbidden_path,
+    "gate_fix_reused_by_grandchild": m_gate_fix_reused_by_grandchild,
+    "gate_fix_ready_true": m_gate_fix_ready_true,
+    "gate_fix_merge_true": m_gate_fix_merge_true,
+    "gate_fix_release_true": m_gate_fix_release_true,
     "report_missing": m_report_missing,
     "report_malformed_current_head": m_report_malformed_current_head,
     "report_marker_duplicated": m_report_marker_duplicated,

@@ -1,0 +1,8 @@
+[
+  ".github/workstage-review-gate-policy.json",
+  "scripts/workstage-review-gate.py",
+  "scripts/test-workstage-review-gate.sh",
+  "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+  "scripts/workstage-review-gate-fixtures/apply-source-mutation.py",
+  "scripts/workstage-review-gate-fixtures/green/advance_gate_fix_authorization/files.json"
+]

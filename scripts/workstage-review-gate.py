@@ -54,6 +54,7 @@ EXIT_INFRA = 2
 WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
 CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 SOURCE_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-authorization:v1 -->"
+GATE_FIX_MARKER = "<!-- macsteam-gate-fix-authorization:v1 -->"
 
 WORKER_SCHEMA_PATH = "Contracts/workstream-report.schema.json"
 CONTROLLER_SCHEMA_PATH = "Contracts/controller-review.schema.json"
@@ -455,6 +456,33 @@ class GitHubClient:
             return None
         return self._gh_object(f"actions/runs/{run_id}")
 
+    def get_job_log(self, job_id):
+        """Actions job log (bounded read). Raises on unavailable / oversized log."""
+        if self.fixtures_dir:
+            logs_path = os.path.join(self.fixtures_dir, "job-logs.json")
+            if os.path.exists(logs_path):
+                data = self._load("job-logs.json")
+                if isinstance(data, dict) and str(job_id) in data:
+                    return str(data[str(job_id)])
+            single_path = os.path.join(self.fixtures_dir, f"job-{job_id}.txt")
+            if os.path.exists(single_path):
+                with open(single_path) as f:
+                    return f.read()
+            raise GateError(EXIT_INFRA, "fixture_missing",
+                            f"Fixture job log missing: job-{job_id}.txt")
+        result = subprocess.run(
+            ["gh", "api", "-H", "Accept: application/vnd.github+json",
+             f"repos/{self.repo}/actions/jobs/{job_id}/logs"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "404" in stderr or "not found" in stderr.lower():
+                raise GateError(EXIT_INFRA, "api_404_job_log",
+                                f"GitHub job log 404: {job_id}")
+            raise GateError(EXIT_INFRA, "api_request_failure", stderr)
+        return result.stdout
+
     def set_context(self, expected_head, parent_sha):
         self._expected_head = expected_head
         self._parent_sha = parent_sha
@@ -696,10 +724,25 @@ class Gate:
                           "source_fix_workstream", "source_fix_commit_subject",
                           "source_fix_core_ci_run_id", "source_fix_required_ci_jobs",
                           "failed_advance_run_id", "failed_advance_guard",
-                          "bridge_workstream", "bridge_commit_subject"]:
+                          "bridge_workstream", "bridge_commit_subject",
+                          "rejected_controller_review_id", "rejected_classification"]:
                 if field not in bridge:
                     raise GateError(EXIT_INFRA, "policy_malformed",
-                                    f"Policy red_parent_source_fix_bridge missing: {field}")
+                                    "Policy red_parent_source_fix_bridge missing: {field}")
+
+        gate_fix = policy.get("gate_fix_authorization")
+        if gate_fix is not None:
+            if not isinstance(gate_fix, dict):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "gate_fix_authorization must be an object")
+            for field in ["authorization_comment_id", "parent_sha",
+                          "parent_workstream", "parent_classification",
+                          "parent_advance_run_id", "parent_core_ci_run_id",
+                          "required_workstream", "required_commit_subject",
+                          "single_direct_child_only"]:
+                if field not in gate_fix:
+                    raise GateError(EXIT_INFRA, "policy_malformed",
+                                    "Policy gate_fix_authorization missing: {field}")
 
         return policy
 
@@ -842,6 +885,17 @@ class Gate:
         bridge = self.policy.get("red_parent_source_fix_bridge", {})
         bridge_source_fix = bridge.get("source_fix_sha")
 
+        gate_fix = self.policy.get("gate_fix_authorization")
+        gate_fix_grand = None
+        if gate_fix:
+            gp = gate_fix.get("parent_sha")
+            if gp:
+                gpc = self.client.get_commit(gp)
+                if isinstance(gpc, dict):
+                    gpp = gpc.get("parents") or []
+                    if gpp:
+                        gate_fix_grand = gpp[0].get("sha")
+
         self._load_reviews()
 
         if self.parent_sha == bootstrap_head and self.expected_head == bootstrap_child:
@@ -853,6 +907,10 @@ class Gate:
         elif bridge and self.parent_sha == bridge_source_fix:
             self.parent_authority = "red_parent_source_fix_bridge"
             self._validate_red_parent_source_fix_bridge(bridge)
+        elif gate_fix and (self.parent_sha == gate_fix.get("parent_sha")
+                           or (gate_fix_grand and self.parent_sha == gate_fix_grand)):
+            self.parent_authority = "gate_fix_authorization"
+            self._validate_gate_fix_authorization(gate_fix, gate_fix_grand)
         else:
             self.parent_authority = "controller_review"
             self._validate_normal_parent_review()
@@ -1078,6 +1136,11 @@ class Gate:
             raise GateError(EXIT_POLICY, "red_source_auth_wrong_kind",
                             "Authorization JSON kind mismatch")
         self.bridge_auth = json_data
+        # Chronology: authorization comment must precede the bridge child.
+        bridge_date = (self.commit_head.get("commit", {}) or {}).get("committer", {}).get("date")
+        if not self._check_comment_before_commit_ts(comment, bridge_date):
+            raise GateError(EXIT_POLICY, "red_source_auth_after_bridge",
+                            "Authorization must precede the bridge commit")
 
     def _validate_bridge_scope_from_comment(self, bridge):
         """The comment JSON is the scope authority; policy must not widen it."""
@@ -1090,7 +1153,10 @@ class Gate:
                             "Authorization schema_version mismatch")
         for field in ("source_fix_sha", "rejected_parent_sha",
                       "source_fix_workstream", "source_fix_commit_subject",
-                      "bridge_workstream", "bridge_commit_subject"):
+                      "bridge_workstream", "bridge_commit_subject",
+                      "rejected_controller_review_id", "rejected_classification",
+                      "failed_advance_run_id", "failed_advance_guard",
+                      "source_fix_required_ci_jobs"):
             if auth.get(field) != bridge.get(field):
                 raise GateError(EXIT_POLICY, "red_source_auth_policy_mismatch",
                                 f"Authorization field mismatch: {field}")
@@ -1174,7 +1240,11 @@ class Gate:
         self._validate_source_fix_ci(core_run, source_fix_sha, require_jobs)
 
         # The prior failed advance attempt records the rejection origin.
-        self._validate_failed_advance_run(fail_run, source_fix_sha, fail_guard)
+        self._validate_failed_advance_run(fail_run, source_fix_sha, fail_guard,
+                                          rejected_parent_sha)
+
+        # Bind the rejected controller review to its real object + chronology.
+        self._validate_rejected_controller_review(bridge, source_fix_sha)
 
         # Bridge child (this HEAD) identity.
         head_msg = self.commit_head.get("commit", {}).get("message", "") or ""
@@ -1243,13 +1313,37 @@ class Gate:
             raise GateError(EXIT_POLICY, "red_source_ci_wrong_job_count",
                             f"Source fix CI required job count mismatch")
 
-    def _validate_failed_advance_run(self, run_id, source_sha, guard):
+    def _extract_gate_json_from_log(self, log):
+        """Bounded extraction of the gate-emitted JSON from an Actions job log.
+
+        The Advance gate emits one REJECTED result object (state, head_sha,
+        parent_sha, guard_label) at the end of a rejection.  We locate the last
+        '"guard_label"' token and re-parse the enclosing JSON object so a later
+        warning line cannot change the proof.
+        """
+        if not isinstance(log, str) or not log:
+            return None
+        matches = list(re.finditer(r'"guard_label"\s*:\s*"[^"]*"', log))
+        for m in reversed(matches):
+            start = log.rfind('{', 0, m.start())
+            end = log.find('}', m.end())
+            if start < 0 or end < 0 or end < start:
+                continue
+            try:
+                data = json.loads(log[start:end + 1])
+            except (ValueError, TypeError):
+                continue
+            if isinstance(data, dict) and data.get("state") == "REJECTED":
+                return data
+        return None
+
+    def _validate_failed_advance_run(self, run_id, source_sha, guard, rejected_parent_sha):
         if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
-            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_missing",
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_incomplete",
                             "Failed advance run id invalid")
         run = self.client.get_workflow_run_by_id(run_id)
         if run is None:
-            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_missing",
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_incomplete",
                             f"Failed advance run {run_id} not found")
         if not isinstance(run, dict):
             raise GateError(EXIT_INFRA, "object_unparseable",
@@ -1257,6 +1351,376 @@ class Gate:
         if run.get("head_sha") != source_sha:
             raise GateError(EXIT_POLICY, "red_bridge_failed_advance_wrong_sha",
                             "Failed advance run head_sha mismatch")
+
+        run_status = run.get("status")
+        if run_status != "completed":
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_incomplete",
+                            "Failed advance run not completed")
+        run_conclusion = run.get("conclusion")
+        if run_conclusion != "failure":
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_not_failed",
+                            "Failed advance run conclusion != failure")
+
+        jobs = self.client.get_workflow_jobs(run_id)
+        if not isinstance(jobs, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Failed advance jobs data is not a list")
+        advance_job = None
+        for job in jobs:
+            if isinstance(job, dict) and job.get("name") == "Advance Gate":
+                advance_job = job
+                break
+        if advance_job is None:
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_job_missing",
+                            "Failed advance run has no Advance Gate job")
+        job_status = advance_job.get("status")
+        if job_status != "completed":
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_job_missing",
+                            "Advance Gate job not completed")
+        job_conclusion = advance_job.get("conclusion")
+        if job_conclusion != "failure":
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_job_not_failed",
+                            "Advance Gate job conclusion != failure")
+
+        job_id = advance_job.get("id")
+        if not isinstance(job_id, int) or isinstance(job_id, bool) or job_id < 1:
+            raise GateError(EXIT_INFRA, "red_bridge_failed_advance_job_missing",
+                            "Advance Gate job has no valid id")
+        log = self.client.get_job_log(job_id)
+        gate_json = self._extract_gate_json_from_log(log)
+        if gate_json is None:
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_guard_missing",
+                            "Advance Gate log has no REJECTED guard JSON")
+        actual_guard = gate_json.get("guard_label")
+        if actual_guard != guard:
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_guard_mismatch",
+                            "Advance Gate log guard_label mismatch")
+        if gate_json.get("head_sha") != source_sha:
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_wrong_head",
+                            "Advance Gate log head_sha mismatch")
+        if gate_json.get("parent_sha") != rejected_parent_sha:
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_wrong_parent",
+                            "Advance Gate log parent_sha mismatch")
+
+    def _validate_rejected_controller_review(self, bridge, source_fix_sha):
+        """Bind the rejected parent's controller review to its real object."""
+        expected_id = bridge.get("rejected_controller_review_id")
+        expected_classification = bridge.get("rejected_classification", "")
+        try:
+            review = self.client.get_review_by_id(expected_id)
+        except GateError as e:
+            if e.label == "api_404_reviews":
+                raise GateError(EXIT_POLICY, "red_bridge_rejected_review_missing",
+                                "Rejected controller review not found by ID")
+            raise
+        if not isinstance(review, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Rejected controller review is not an object")
+        if review.get("id") != expected_id:
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_wrong_id",
+                            "Rejected controller review ID mismatch")
+        if review.get("commit_id") != bridge.get("rejected_parent_sha"):
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_wrong_commit",
+                            "Rejected controller review commit_id mismatch")
+        if review.get("state") not in ("COMMENTED", "CHANGES_REQUESTED"):
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_wrong_decision",
+                            "Rejected controller review state is not COMMENTED/CHANGES_REQUESTED")
+
+        body = review.get("body", "") or ""
+        marker_count = body.count(CONTROLLER_MARKER)
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_incomplete",
+                            "Rejected controller review marker count != 1")
+        json_data, _, block_count = parse_json_block(body, CONTROLLER_MARKER)
+        if block_count != 1:
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_incomplete",
+                            "Rejected controller review JSON block count != 1")
+        if json_data is None:
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_incomplete",
+                            "Rejected controller review JSON is malformed")
+        if not validate_document(json_data, CONTROLLER_SCHEMA_PATH, CONTROLLER_SCHEMA_PATH):
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_incomplete",
+                            "Rejected controller review JSON fails schema")
+        if json_data.get("kind") != "controller_review":
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_incomplete",
+                            "Rejected controller review kind != controller_review")
+        if json_data.get("head_sha") != bridge.get("rejected_parent_sha"):
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_wrong_commit",
+                            "Rejected controller review JSON head_sha mismatch")
+        if json_data.get("decision") != "rejected":
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_wrong_decision",
+                            "Rejected controller review decision != rejected")
+        if json_data.get("classification") != expected_classification:
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_wrong_classification",
+                            "Rejected controller review classification mismatch")
+        if json_data.get("review_complete") is not True:
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_incomplete",
+                            "Rejected controller review review_complete != true")
+        if json_data.get("nx_required_for_next_workstream") is not True:
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_nx_false",
+                            "Rejected controller review nx_required != true")
+        for flag in ("ready_authorized", "merge_authorized", "release_authorized"):
+            if json_data.get(flag):
+                raise GateError(EXIT_POLICY, "red_bridge_rejected_review_" + (
+                    "ready_true" if flag == "ready_authorized"
+                    else "merge_true" if flag == "merge_authorized"
+                    else "release_true"),
+                    f"Rejected controller review {flag} == true")
+
+        quarantined = set(self.policy.get("quarantined_review_ids", []))
+        if expected_id in quarantined:
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_quarantined",
+                            "Rejected controller review is quarantined")
+
+        if not self._check_review_before_commit(review, source_fix_sha):
+            raise GateError(EXIT_POLICY, "red_bridge_rejected_review_after_source_fix",
+                            "Rejected controller review submitted after source fix")
+
+    def _check_review_before_commit(self, review, sha):
+        submitted_at_str = review.get("submitted_at")
+        if not submitted_at_str:
+            return False
+        try:
+            submitted_at = parse_iso_datetime(submitted_at_str)
+        except GateError:
+            return False
+        commit_obj = self.client.get_commit(sha)
+        commit_date_str = (commit_obj.get("commit", {}) or {}).get("committer", {}).get("date")
+        if not commit_date_str:
+            return False
+        commit_date = parse_iso_datetime(commit_date_str)
+        return submitted_at <= commit_date
+
+    def _check_comment_before_commit_ts(self, comment, commit_date_str):
+        created_str = comment.get("created_at")
+        if not created_str:
+            return False
+        try:
+            created = parse_iso_datetime(created_str)
+        except GateError:
+            return False
+        if not commit_date_str:
+            return False
+        commit_date = parse_iso_datetime(commit_date_str)
+        return created < commit_date
+
+    # === GATE-FIX authorization lane ===
+    #
+    # An external controller/platform comment authorizes exactly ONE gate-only
+    # direct child (the current HEAD) of the given bridge parent. The comment
+    # JSON is the scope authority; the policy must not widen it. This lane does
+    # not widen the generic repair envelope and does not authorize
+    # Ready/Merge/Release or any further workstream.
+
+    def _validate_gate_fix_comment(self, gate_fix):
+        comment_id = gate_fix.get("authorization_comment_id")
+        if not isinstance(comment_id, int) or isinstance(comment_id, bool) or comment_id < 1:
+            raise GateError(EXIT_INFRA, "gate_fix_auth_comment_id_invalid",
+                            "Gate-fix authorization comment ID is invalid")
+        comment = self.client.get_comment_by_id(comment_id)
+        if not isinstance(comment, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Gate-fix authorization comment data is not an object")
+        if comment.get("in_reply_to_id") or comment.get("path") or comment.get("position"):
+            raise GateError(EXIT_POLICY, "gate_fix_auth_top_level_required",
+                            "Gate-fix authorization comment is not top-level")
+        if comment.get("created_at") != comment.get("updated_at"):
+            raise GateError(EXIT_POLICY, "gate_fix_auth_edited",
+                            "Gate-fix authorization comment was edited")
+        body = comment.get("body", "") or ""
+        marker_count = body.count(GATE_FIX_MARKER)
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "gate_fix_auth_marker_duplicated",
+                            "Gate-fix authorization marker count != 1")
+        json_data, _, block_count = parse_json_block(body, GATE_FIX_MARKER)
+        if block_count != 1:
+            raise GateError(EXIT_POLICY, "gate_fix_auth_json_duplicated",
+                            "Gate-fix authorization JSON block count != 1")
+        if json_data is None:
+            raise GateError(EXIT_POLICY, "gate_fix_auth_malformed_json",
+                            "Gate-fix authorization JSON is malformed")
+        if json_data.get("kind") != "gate_fix_authorization":
+            raise GateError(EXIT_POLICY, "gate_fix_auth_wrong_kind",
+                            "Gate-fix authorization JSON kind mismatch")
+        if json_data.get("schema_version") != 1:
+            raise GateError(EXIT_POLICY, "gate_fix_auth_schema_mismatch",
+                            "Gate-fix authorization schema_version != 1")
+        gatefix_list = ("parent_sha", "parent_workstream", "parent_classification",
+                        "required_workstream", "required_commit_subject")
+        for field in gatefix_list:
+            if json_data.get(field) != gate_fix.get(field):
+                raise GateError(EXIT_POLICY, "gate_fix_auth_policy_mismatch",
+                                f"Gate-fix authorization field mismatch: {field}")
+        if json_data.get("parent_advance_run_id") != gate_fix.get("parent_advance_run_id"):
+            raise GateError(EXIT_POLICY, "gate_fix_auth_policy_mismatch",
+                            "Gate-fix auth parent_advance_run_id mismatch")
+        if json_data.get("parent_core_ci_run_id") != gate_fix.get("parent_core_ci_run_id"):
+            raise GateError(EXIT_POLICY, "gate_fix_auth_policy_mismatch",
+                            "Gate-fix auth parent_core_ci_run_id mismatch")
+        if json_data.get("single_direct_child_only") is not True:
+            raise GateError(EXIT_POLICY, "gate_fix_auth_single_direct_child_required",
+                            "Gate-fix authorization single_direct_child_only != true")
+        for flag in ("ready_authorized", "merge_authorized", "release_authorized"):
+            if json_data.get(flag):
+                raise GateError(EXIT_POLICY, "gate_fix_" + flag.replace("_authorized", "") + "_true",
+                                f"Gate-fix authorization {flag} == true")
+        self.gate_fix_auth = json_data
+        self.gate_fix_auth_created_at = comment.get("created_at")
+
+    def _validate_gate_fix_scope_from_comment(self, gate_fix):
+        auth = getattr(self, "gate_fix_auth", None)
+        if not auth:
+            raise GateError(EXIT_INFRA, "gate_fix_scope_unavailable",
+                            "Gate-fix authorization JSON not loaded")
+        exact = auth.get("allowed_exact_paths")
+        prefixes = auth.get("allowed_path_prefixes")
+        if not isinstance(exact, list) or not isinstance(prefixes, list):
+            raise GateError(EXIT_POLICY, "gate_fix_auth_scope_invalid",
+                            "Gate-fix authorization scope must be arrays")
+        self._gate_fix_scope = ("exact", exact, "prefix", prefixes)
+
+    def _validate_gate_fix_authorization(self, gate_fix, gate_fix_grand=None):
+        self._validate_gate_fix_comment(gate_fix)
+        self._validate_gate_fix_scope_from_comment(gate_fix)
+
+        parent_sha = gate_fix.get("parent_sha")
+        required_ws = gate_fix.get("required_workstream")
+        required_subject = gate_fix.get("required_commit_subject")
+
+        if self.parent_sha != parent_sha:
+            if gate_fix_grand and self.parent_sha == gate_fix_grand:
+                raise GateError(EXIT_POLICY, "gate_fix_reused_by_grandchild",
+                                "Gate-fix authorization reused for a grandchild")
+            raise GateError(EXIT_POLICY, "gate_fix_wrong_parent",
+                            "Gate-fix child parent mismatch")
+
+        # Parent (bridge child) identity: it must be the exact bridge child.
+        parent_msg = (self.commit_parent.get("commit", {}) or {}).get("message", "") or ""
+        parent_first = parent_msg.split("\n")[0].strip() if parent_msg else ""
+        if not parent_first:
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Gate-fix parent commit has no subject")
+        bridge_view = self.policy.get("red_parent_source_fix_bridge", {})
+        expected_parent_subject = bridge_view.get("bridge_commit_subject")
+        if expected_parent_subject is None or parent_first != expected_parent_subject:
+            raise GateError(EXIT_POLICY, "gate_fix_wrong_parent",
+                            "Gate-fix parent is not the authorized bridge child")
+
+        # Gate-fix authorization must precede this child.
+        head_date_str = (self.commit_head.get("commit", {}) or {}).get("committer", {}).get("date")
+        if not self._check_comment_before_commit_ts(
+                {"created_at": getattr(self, "gate_fix_auth_created_at", None)},
+                head_date_str):
+            raise GateError(EXIT_POLICY, "gate_fix_authorization_after_child",
+                            "Gate-fix authorization does not precede child commit")
+
+        # Parent hosted evidence (advance + core CI) bound to the exact parent.
+        self._validate_gate_fix_parent_evidence(gate_fix, parent_sha)
+
+        # Child (this HEAD) identity.
+        head_msg = self.commit_head.get("commit", {}).get("message", "") or ""
+        head_first = head_msg.split("\n")[0].strip()
+        if head_first != required_subject:
+            raise GateError(EXIT_POLICY, "gate_fix_wrong_subject",
+                            "Gate-fix child commit subject mismatch")
+        if not re.search(rf"^Workstream:\s*{re.escape(required_ws)}\s*$", head_msg, re.MULTILINE):
+            raise GateError(EXIT_POLICY, "gate_fix_wrong_workstream",
+                            "Gate-fix child workstream trailer mismatch")
+
+        head_files = self._get_changed_files()
+        if not head_files:
+            raise GateError(EXIT_INFRA, "gate_fix_no_changed_files",
+                            "Gate-fix child reported no changed files")
+        for filepath in head_files:
+            if not self._bridge_path_in_scope(filepath, self._gate_fix_scope):
+                raise GateError(EXIT_POLICY, "gate_fix_forbidden_path",
+                                f"Gate-fix changed file outside scope: {filepath}")
+
+    def _check_fix_before_child_ts(self, auth, head_date_str):
+        created_str = auth.get("created_at")
+        if not created_str:
+            return False
+        try:
+            created = parse_iso_datetime(created_str)
+        except GateError:
+            return False
+        if not head_date_str:
+            return False
+        head_date = parse_iso_datetime(head_date_str)
+        return created < head_date
+
+    def _validate_gate_fix_parent_evidence(self, gate_fix, parent_sha):
+        adv_run_id = gate_fix.get("parent_advance_run_id")
+        ci_run_id = gate_fix.get("parent_core_ci_run_id")
+        adv_run = self.client.get_workflow_run_by_id(adv_run_id)
+        if adv_run is None or not isinstance(adv_run, dict):
+            raise GateError(EXIT_POLICY, "gate_fix_parent_advance_missing",
+                            "Parent advance run not found")
+        if adv_run.get("head_sha") != parent_sha:
+            raise GateError(EXIT_POLICY, "gate_fix_parent_advance_wrong_head",
+                            "Parent advance run head_sha mismatch")
+        adv_status = adv_run.get("status")
+        if adv_status != "completed":
+            raise GateError(EXIT_POLICY, "gate_fix_parent_advance_incomplete",
+                            "Parent advance run not completed")
+        adv_conclusion = adv_run.get("conclusion")
+        if adv_conclusion != "success":
+            raise GateError(EXIT_POLICY, "gate_fix_parent_advance_failed",
+                            "Parent advance run conclusion != success")
+        adv_jobs = self.client.get_workflow_jobs(adv_run_id)
+        adv_gate = None
+        for job in adv_jobs if isinstance(adv_jobs, list) else []:
+            if isinstance(job, dict) and job.get("name") == "Advance Gate":
+                adv_gate = job
+                break
+        if adv_gate is None:
+            raise GateError(EXIT_POLICY, "gate_fix_parent_advance_job_missing",
+                            "Parent advance run has no Advance Gate job")
+        adv_job_conclusion = adv_gate.get("conclusion")
+        if adv_job_conclusion != "success":
+            raise GateError(EXIT_POLICY, "gate_fix_parent_advance_job_failed",
+                            "Parent Advance Gate job conclusion != success")
+
+        adv_job_id = adv_gate.get("id")
+        if isinstance(adv_job_id, int) and not isinstance(adv_job_id, bool) and adv_job_id >= 1:
+            log = self.client.get_job_log(adv_job_id)
+            if '"red_parent_source_fix_bridge"' not in log and "red_parent_source_fix_bridge" not in log:
+                raise GateError(EXIT_POLICY, "gate_fix_parent_advance_authority_missing",
+                                "Parent advance log lacks red_parent_source_fix_bridge")
+
+        ci_run = self.client.get_workflow_run_by_id(ci_run_id)
+        if ci_run is None or not isinstance(ci_run, dict):
+            raise GateError(EXIT_POLICY, "gate_fix_parent_ci_missing",
+                            "Parent core CI run not found")
+        if ci_run.get("head_sha") != parent_sha:
+            raise GateError(EXIT_POLICY, "gate_fix_parent_ci_wrong_head",
+                            "Parent core CI run head_sha mismatch")
+        ci_status = ci_run.get("status")
+        if ci_status != "completed":
+            raise GateError(EXIT_POLICY, "gate_fix_parent_ci_incomplete",
+                            "Parent core CI run not completed")
+        ci_conclusion = ci_run.get("conclusion")
+        if ci_conclusion != "success":
+            raise GateError(EXIT_POLICY, "gate_fix_parent_ci_failed",
+                            "Parent core CI run conclusion != success")
+        ci_jobs = self.client.get_workflow_jobs(ci_run_id)
+        required_jobs = set(self.policy.get("core_ci", {}).get("required_jobs", []))
+        seen = {}
+        for job in ci_jobs if isinstance(ci_jobs, list) else []:
+            if not isinstance(job, dict):
+                continue
+            name = job.get("name")
+            if name in required_jobs:
+                job_conclusion = job.get("conclusion")
+                if job_conclusion != "success":
+                    raise GateError(EXIT_POLICY, "gate_fix_parent_ci_job_failed",
+                                    f"Parent core CI required job '{name}' not success")
+                seen[name] = job
+            if len(seen) == len(required_jobs):
+                break
+        if len(seen) != len(required_jobs):
+            raise GateError(EXIT_POLICY, "gate_fix_parent_ci_job_missing",
+                            "Parent core CI missing a required job")
 
     # === Two-tier repair-path authority ===
     #

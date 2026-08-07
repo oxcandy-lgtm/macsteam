@@ -1,0 +1,22 @@
+{
+  "number": 2,
+  "head": {
+    "ref": "feat/ultimate-cloverpit-u1",
+    "sha": "11aa22bb33cc44dd55ee66ff7788990011aabb22",
+    "repo": {
+      "full_name": "oxcandy-lgtm/macsteam"
+    }
+  },
+  "base": {
+    "ref": "feat/public-oss-bootstrap",
+    "repo": {
+      "full_name": "oxcandy-lgtm/macsteam"
+    }
+  },
+  "state": "open",
+  "draft": true,
+  "merged": false,
+  "mergeable": "MERGEABLE",
+  "title": "MacsTeam Ultimate U1R18-R11-FIX1-GATE1-FIX1 Gate Fix",
+  "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2"
+}

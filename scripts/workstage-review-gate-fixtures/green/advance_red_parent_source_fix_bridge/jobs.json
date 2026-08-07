@@ -40,6 +40,30 @@
       "conclusion": "success",
       "run_id": 31136834727,
       "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834727"
+    },
+    {
+      "id": 3113683474301,
+      "name": "Advance Gate",
+      "status": "completed",
+      "conclusion": "failure",
+      "run_id": 31136834743,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834743"
+    },
+    {
+      "id": 3113683474302,
+      "name": "Review Gate",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 31136834743,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834743"
+    },
+    {
+      "id": 3113683474303,
+      "name": "Submission Gate",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 31136834743,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834743"
     }
   ]
 }

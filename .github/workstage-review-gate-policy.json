@@ -38,8 +38,21 @@
     "source_fix_required_ci_jobs": 5,
     "failed_advance_run_id": 31136834743,
     "failed_advance_guard": "latest_rejected_overrides_old_green",
+    "rejected_controller_review_id": 4878732820,
+    "rejected_classification": "RED_U1R18_R11_ACCEPTANCE_PATH_UNREACHABLE_AND_RECEIPT_DESTROYED",
     "bridge_workstream": "U1R18-R11-FIX1-GATE1",
     "bridge_commit_subject": "ci: admit rejected-parent source fix bridge (U1R18-R11-FIX1-GATE1)"
+  },
+  "gate_fix_authorization": {
+    "authorization_comment_id": 5211679289,
+    "parent_sha": "db2dc127b37b4a93d0c157458e8bb0ecb01b45ac",
+    "parent_workstream": "U1R18-R11-FIX1-GATE1",
+    "parent_classification": "RED_U1R18_R11_FIX1_GATE1_AUTHORITY_BINDING_INCOMPLETE_AND_SUBMISSION_UNPROVEN",
+    "parent_advance_run_id": 31141723135,
+    "parent_core_ci_run_id": 31141723115,
+    "required_workstream": "U1R18-R11-FIX1-GATE1-FIX1",
+    "required_commit_subject": "ci: bind rejected review and failed advance evidence (U1R18-R11-FIX1-GATE1-FIX1)",
+    "single_direct_child_only": true
   },
   "core_ci": {
     "required_jobs": [

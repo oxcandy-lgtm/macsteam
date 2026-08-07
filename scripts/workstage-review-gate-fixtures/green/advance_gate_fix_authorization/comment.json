@@ -1,0 +1,9 @@
+{
+  "id": 5211679289,
+  "created_at": "2026-08-07T02:59:45Z",
+  "updated_at": "2026-08-07T02:59:45Z",
+  "user": {
+    "login": "sai-controller"
+  },
+  "body": "<!-- macsteam-gate-fix-authorization:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"gate_fix_authorization\",\n  \"parent_sha\": \"db2dc127b37b4a93d0c157458e8bb0ecb01b45ac\",\n  \"parent_workstream\": \"U1R18-R11-FIX1-GATE1\",\n  \"parent_classification\": \"RED_U1R18_R11_FIX1_GATE1_AUTHORITY_BINDING_INCOMPLETE_AND_SUBMISSION_UNPROVEN\",\n  \"parent_advance_run_id\": 31141723135,\n  \"parent_core_ci_run_id\": 31141723115,\n  \"required_workstream\": \"U1R18-R11-FIX1-GATE1-FIX1\",\n  \"required_commit_subject\": \"ci: bind rejected review and failed advance evidence (U1R18-R11-FIX1-GATE1-FIX1)\",\n  \"allowed_exact_paths\": [\n    \".github/workstage-review-gate-policy.json\",\n    \"scripts/workstage-review-gate.py\",\n    \"scripts/test-workstage-review-gate.sh\",\n    \"scripts/workstage-review-gate-fixtures/apply-mutation.py\",\n    \"scripts/workstage-review-gate-fixtures/apply-source-mutation.py\"\n  ],\n  \"allowed_path_prefixes\": [\n    \"scripts/workstage-review-gate-fixtures/\"\n  ],\n  \"single_direct_child_only\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n"
+}
