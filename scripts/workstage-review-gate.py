@@ -53,6 +53,7 @@ EXIT_INFRA = 2
 
 WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
 CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
+SOURCE_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-authorization:v1 -->"
 
 WORKER_SCHEMA_PATH = "Contracts/workstream-report.schema.json"
 CONTROLLER_SCHEMA_PATH = "Contracts/controller-review.schema.json"
@@ -341,6 +342,11 @@ class GitHubClient:
 
     def get_commit_files(self, sha):
         if self.fixtures_dir:
+            if sha == self._expected_head:
+                return self._load("files.json")
+            source_path = os.path.join(self.fixtures_dir, "source-fix.json")
+            if os.path.exists(source_path):
+                return self._load("source-fix.json")
             return self._load("files.json")
         commit = self._gh_object(f"commits/{sha}")
         return commit.get("files", [])
@@ -680,6 +686,21 @@ class Gate:
                 raise GateError(EXIT_INFRA, "policy_malformed",
                                 f"Policy repair_authorization missing: {field}")
 
+        bridge = policy.get("red_parent_source_fix_bridge")
+        if bridge is not None:
+            if not isinstance(bridge, dict):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "red_parent_source_fix_bridge must be an object")
+            for field in ["authorization_schema_version", "authorization_comment_id",
+                          "source_fix_sha", "rejected_parent_sha",
+                          "source_fix_workstream", "source_fix_commit_subject",
+                          "source_fix_core_ci_run_id", "source_fix_required_ci_jobs",
+                          "failed_advance_run_id", "failed_advance_guard",
+                          "bridge_workstream", "bridge_commit_subject"]:
+                if field not in bridge:
+                    raise GateError(EXIT_INFRA, "policy_malformed",
+                                    f"Policy red_parent_source_fix_bridge missing: {field}")
+
         return policy
 
     def run(self):
@@ -818,6 +839,9 @@ class Gate:
         repair = self.policy.get("repair_authorization", {})
         repair_parent = repair.get("parent_sha")
 
+        bridge = self.policy.get("red_parent_source_fix_bridge", {})
+        bridge_source_fix = bridge.get("source_fix_sha")
+
         self._load_reviews()
 
         if self.parent_sha == bootstrap_head and self.expected_head == bootstrap_child:
@@ -826,6 +850,9 @@ class Gate:
         elif self.parent_sha == repair_parent:
             self.parent_authority = "repair_authorization"
             self._validate_repair_authorization(repair)
+        elif bridge and self.parent_sha == bridge_source_fix:
+            self.parent_authority = "red_parent_source_fix_bridge"
+            self._validate_red_parent_source_fix_bridge(bridge)
         else:
             self.parent_authority = "controller_review"
             self._validate_normal_parent_review()
@@ -994,6 +1021,242 @@ class Gate:
         else:
             files_list = self.client.get_commit_files(self.expected_head)
         return [f.get("filename", f) if isinstance(f, dict) else f for f in files_list]
+
+    def _source_fix_changed_files(self, sha):
+        """Changed file paths of a specific commit (used for the source fix)."""
+        if self.fixtures_dir:
+            files_data = self.client.get_commit_files(sha)
+            if isinstance(files_data, dict):
+                files_list = files_data.get("files", [])
+            elif isinstance(files_data, list):
+                files_list = files_data
+            else:
+                return []
+        else:
+            files_list = self.client.get_commit_files(sha)
+        return [f.get("filename", f) if isinstance(f, dict) else f for f in files_list]
+
+    # === Red parent source fix bridge authority ===
+    #
+    # A controller/platform authorization comment grants a single bridge child
+    # for an already-pushed source fix whose parent was rejected. The bridge
+    # lane only ever authorizes ONE gate-only commit (the current HEAD) whose
+    # parent is the exact already-pushed source fix SHA. It does NOT widen the
+    # generic repair envelope and does NOT authorize Ready/Merge/Release.
+
+    def _validate_bridge_comment(self, bridge):
+        comment_id = bridge.get("authorization_comment_id")
+        if not isinstance(comment_id, int) or isinstance(comment_id, bool) or comment_id < 1:
+            raise GateError(EXIT_INFRA, "bridge_authorization_comment_id_invalid",
+                            "Bridge authorization comment ID is invalid")
+        comment = self.client.get_comment_by_id(comment_id)
+        if not isinstance(comment, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Authorization comment data is not an object")
+        if comment.get("in_reply_to_id"):
+            raise GateError(EXIT_POLICY, "red_source_auth_top_level_required",
+                            "Authorization comment is a reply")
+        if comment.get("path") or comment.get("position"):
+            raise GateError(EXIT_POLICY, "red_source_auth_top_level_required",
+                            "Authorization comment is inline")
+        if comment.get("created_at") != comment.get("updated_at"):
+            raise GateError(EXIT_POLICY, "red_source_auth_comment_edited",
+                            "Authorization comment was edited after creation")
+        body = comment.get("body", "") or ""
+        marker_count = body.count(SOURCE_BRIDGE_MARKER)
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "red_source_auth_marker_duplicated",
+                            "Authorization marker count != 1")
+        json_data, _, block_count = parse_json_block(body, SOURCE_BRIDGE_MARKER)
+        if block_count != 1:
+            raise GateError(EXIT_POLICY, "red_source_auth_json_duplicated",
+                            "Authorization JSON block count != 1")
+        if json_data is None:
+            raise GateError(EXIT_POLICY, "red_source_auth_malformed_json",
+                            "Authorization JSON is malformed")
+        if json_data.get("kind") != "red_parent_source_fix_authorization":
+            raise GateError(EXIT_POLICY, "red_source_auth_wrong_kind",
+                            "Authorization JSON kind mismatch")
+        self.bridge_auth = json_data
+
+    def _validate_bridge_scope_from_comment(self, bridge):
+        """The comment JSON is the scope authority; policy must not widen it."""
+        auth = getattr(self, "bridge_auth", None)
+        if not auth:
+            raise GateError(EXIT_INFRA, "bridge_scope_unavailable",
+                            "Bridge authorization JSON not loaded")
+        if auth.get("schema_version") != bridge.get("authorization_schema_version"):
+            raise GateError(EXIT_POLICY, "red_source_auth_schema_mismatch",
+                            "Authorization schema_version mismatch")
+        for field in ("source_fix_sha", "rejected_parent_sha",
+                      "source_fix_workstream", "source_fix_commit_subject",
+                      "bridge_workstream", "bridge_commit_subject"):
+            if auth.get(field) != bridge.get(field):
+                raise GateError(EXIT_POLICY, "red_source_auth_policy_mismatch",
+                                f"Authorization field mismatch: {field}")
+        auth_core_run = auth.get("source_fix_core_ci_run_id")
+        if auth_core_run != bridge.get("source_fix_core_ci_run_id"):
+            raise GateError(EXIT_POLICY, "red_source_auth_policy_mismatch",
+                            "Authorization core CI run mismatch")
+        for flag in ("ready_authorized", "merge_authorized", "release_authorized"):
+            if auth.get(flag):
+                raise GateError(EXIT_POLICY, "red_source_auth_unsafe_authorization",
+                                f"Authorization {flag} == true")
+
+        source_exact = auth.get("source_fix_allowed_exact_paths", [])
+        source_prefixes = auth.get("source_fix_allowed_path_prefixes", [])
+        bridge_exact = auth.get("bridge_allowed_exact_paths", [])
+        bridge_prefixes = auth.get("bridge_allowed_path_prefixes", [])
+        if not isinstance(source_exact, list) or not isinstance(source_prefixes, list):
+            raise GateError(EXIT_POLICY, "red_source_auth_scope_invalid",
+                            "Authorization source scope must be arrays")
+        if not isinstance(bridge_exact, list) or not isinstance(bridge_prefixes, list):
+            raise GateError(EXIT_POLICY, "red_source_auth_scope_invalid",
+                            "Authorization bridge scope must be arrays")
+        self._bridge_source_scope = ("exact", source_exact, "prefix", source_prefixes)
+        self._bridge_bridge_scope = ("exact", bridge_exact, "prefix", bridge_prefixes)
+
+    def _bridge_path_in_scope(self, filepath, scope):
+        _, exact, _, prefixes = scope
+        if filepath in exact:
+            return True
+        for prefix in prefixes:
+            if filepath.startswith(prefix):
+                return True
+        return False
+
+    def _validate_red_parent_source_fix_bridge(self, bridge):
+        self._validate_bridge_comment(bridge)
+        self._validate_bridge_scope_from_comment(bridge)
+
+        source_fix_sha = bridge.get("source_fix_sha")
+        rejected_parent_sha = bridge.get("rejected_parent_sha")
+        source_ws = bridge.get("source_fix_workstream")
+        source_subject = bridge.get("source_fix_commit_subject")
+        core_run = bridge.get("source_fix_core_ci_run_id")
+        require_jobs = bridge.get("source_fix_required_ci_jobs")
+        fail_run = bridge.get("failed_advance_run_id")
+        fail_guard = bridge.get("failed_advance_guard")
+        bridge_ws = bridge.get("bridge_workstream")
+        bridge_subject = bridge.get("bridge_commit_subject")
+
+        if self.parent_sha != source_fix_sha:
+            raise GateError(EXIT_POLICY, "red_source_fix_wrong_parent",
+                            "Bridge parent is not the authorized source fix")
+
+        # Continuity: the source fix itself descends from the rejected parent.
+        parents = self.commit_parent.get("parents", []) if self.commit_parent else []
+        if not parents or parents[0].get("sha") != rejected_parent_sha:
+            raise GateError(EXIT_POLICY, "red_source_fix_wrong_source_parent",
+                            "Source fix parent differs from rejected parent")
+
+        # Source fix commit identity (subject + workstream).
+        fix_msg = (self.commit_parent.get("commit", {}) or {}).get("message", "") or ""
+        fix_first = fix_msg.split("\n")[0].strip() if fix_msg else ""
+        if fix_first != source_subject:
+            raise GateError(EXIT_POLICY, "red_source_fix_wrong_subject",
+                            "Source fix commit subject mismatch")
+        if not re.search(rf"^Workstream:\s*{re.escape(source_ws)}\s*$", fix_msg, re.MULTILINE):
+            raise GateError(EXIT_POLICY, "red_source_fix_wrong_workstream",
+                            "Source fix workstream trailer mismatch")
+
+        # Source fix changed files must stay within the comment's source scope.
+        source_files = self._source_fix_changed_files(source_fix_sha)
+        if not source_files:
+            raise GateError(EXIT_INFRA, "red_source_fix_no_changed_files",
+                            "Source fix reported no changed files")
+        for filepath in source_files:
+            if not self._bridge_path_in_scope(filepath, self._bridge_source_scope):
+                raise GateError(EXIT_POLICY, "red_source_fix_forbidden_path",
+                                f"Source fix changed file outside scope: {filepath}")
+
+        # Source fix core CI must be green with the exact required job count.
+        self._validate_source_fix_ci(core_run, source_fix_sha, require_jobs)
+
+        # The prior failed advance attempt records the rejection origin.
+        self._validate_failed_advance_run(fail_run, source_fix_sha, fail_guard)
+
+        # Bridge child (this HEAD) identity.
+        head_msg = self.commit_head.get("commit", {}).get("message", "") or ""
+        head_first = head_msg.split("\n")[0].strip()
+        if head_first != bridge_subject:
+            raise GateError(EXIT_POLICY, "red_bridge_wrong_subject",
+                            "Bridge commit subject mismatch")
+        if not re.search(rf"^Workstream:\s*{re.escape(bridge_ws)}\s*$", head_msg, re.MULTILINE):
+            raise GateError(EXIT_POLICY, "red_bridge_wrong_workstream",
+                            "Bridge workstream trailer mismatch")
+
+        # Bridge (gate-only) changed files must fit the bridge scope.
+        head_files = self._get_changed_files()
+        if not head_files:
+            raise GateError(EXIT_INFRA, "red_bridge_no_changed_files",
+                            "Bridge commit reported no changed files")
+        for filepath in head_files:
+            if not self._bridge_path_in_scope(filepath, self._bridge_bridge_scope):
+                raise GateError(EXIT_POLICY, "red_bridge_forbidden_path",
+                                f"Bridge changed file outside scope: {filepath}")
+
+    def _validate_source_fix_ci(self, run_id, source_sha, require_jobs):
+        if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+            raise GateError(EXIT_POLICY, "red_source_ci_missing",
+                            "Source fix core CI run id invalid")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if run is None:
+            raise GateError(EXIT_POLICY, "red_source_ci_missing",
+                            f"Source fix core CI run {run_id} not found")
+        if not isinstance(run, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Source fix CI run data is not an object")
+        if run.get("head_sha") != source_sha:
+            raise GateError(EXIT_POLICY, "red_source_ci_wrong_sha",
+                            "Source fix CI run head_sha mismatch")
+        run_status = run.get("status")
+        if run_status != "completed":
+            raise GateError(EXIT_POLICY, "red_source_ci_incomplete",
+                            "Source fix CI run not completed")
+        run_conclusion = run.get("conclusion")
+        if run_conclusion != "success":
+            raise GateError(EXIT_POLICY, "red_source_ci_failed",
+                            "Source fix CI run conclusion != success")
+        jobs = self.client.get_workflow_jobs(run_id)
+        if not isinstance(jobs, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Source fix CI jobs data is not a list")
+        required_jobs = set(self.policy.get("core_ci", {}).get("required_jobs", []))
+        seen = {}
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            name = job.get("name")
+            if name in required_jobs:
+                seen[name] = job
+                job_conclusion = job.get("conclusion")
+                if job_conclusion != "success":
+                    raise GateError(EXIT_POLICY, "red_source_ci_failed",
+                                    f"Source fix required job '{name}' not success")
+            if len(seen) == len(required_jobs):
+                break
+        if len(seen) != len(required_jobs):
+            raise GateError(EXIT_POLICY, "red_source_ci_required_job_missing",
+                            "Source fix CI missing a required job")
+        if require_jobs is not None and len(required_jobs) != require_jobs:
+            raise GateError(EXIT_POLICY, "red_source_ci_wrong_job_count",
+                            f"Source fix CI required job count mismatch")
+
+    def _validate_failed_advance_run(self, run_id, source_sha, guard):
+        if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_missing",
+                            "Failed advance run id invalid")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if run is None:
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_missing",
+                            f"Failed advance run {run_id} not found")
+        if not isinstance(run, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Failed advance run data is not an object")
+        if run.get("head_sha") != source_sha:
+            raise GateError(EXIT_POLICY, "red_bridge_failed_advance_wrong_sha",
+                            "Failed advance run head_sha mismatch")
 
     # === Two-tier repair-path authority ===
     #

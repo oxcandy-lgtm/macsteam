@@ -214,6 +214,25 @@ def apply_mutation(source, mutation_name):
             '# self._validate_submission_receipt()  # bypassed by mutation',
             "Review: bypass submission run receipt validation entirely"
         ),
+
+        # === BRDG-1: anti-self-authorization — policy read as scope authority ===
+        # If a bridge's path scope were taken from the policy instead of the
+        # (unedited) comment, a self-expanding policy would widen the envelope.
+        "bridge_policy_read_as_scope_authority": (
+            'self._bridge_source_scope = ("exact", source_exact, "prefix", source_prefixes)',
+            'self._bridge_source_scope = ("exact", [self.policy.get("bridge_workstream") or "unknown"], "prefix", ["scripts/"])',
+            "Bridge anti-self-auth: read source scope from policy instead of comment (rejects an explicit unknown path)"
+        ),
+
+        # === BRDG-2: anti-self-authorization — restrict source scope instead of comment ===
+        # Source fix changed files must always be bounded by the (unedited)
+        # comment scope; a code change that silently narrows the scope is still
+        # caught because the changed source files cannot fit the narrow scope.
+        "bridge_drop_source_scope_check": (
+            '        for filepath in source_files:\n            if not self._bridge_path_in_scope(filepath, self._bridge_source_scope):\n                raise GateError(EXIT_POLICY, "red_source_fix_forbidden_path",',
+            '        for filepath in source_files:\n            if not self._bridge_path_in_scope(filepath, ("exact", ["unknown/path/only.swift"], "prefix", ["unknown/"])):\n            raise GateError(EXIT_POLICY, "red_source_fix_forbidden_path",',
+            "Bridge self-auth: restrict source scope instead of honoring comment (rejects valid source files)"
+        ),
     }
 
     if mutation_name not in mutations:

@@ -1,0 +1,45 @@
+{
+  "total_count": 5,
+  "jobs": [
+    {
+      "id": 3113683472701,
+      "name": "Swift Build",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31136834727,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834727"
+    },
+    {
+      "id": 3113683472702,
+      "name": "Public Audit",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31136834727,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834727"
+    },
+    {
+      "id": 3113683472703,
+      "name": "Recipe Validation",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31136834727,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834727"
+    },
+    {
+      "id": 3113683472704,
+      "name": "License Validation",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31136834727,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834727"
+    },
+    {
+      "id": 3113683472705,
+      "name": "Gitignore Validation",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31136834727,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31136834727"
+    }
+  ]
+}

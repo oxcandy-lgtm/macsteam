@@ -243,6 +243,7 @@ GREEN_FIXTURES=(
   "advance_normal_commented|advance|"
   "advance_normal_approved|advance|"
   "advance_product_after_gate1|advance|"
+  "advance_red_parent_source_fix_bridge|advance|"
   "gate1_report_matches_head_trailer|submission|--worker-report-comment-id 5161887211"
   "future_product_report_uses_fix1|submission|--worker-report-comment-id 5161887211"
   "latest_accept_after_reject|review|--worker-report-comment-id 5161887211"
@@ -347,6 +348,24 @@ ADVANCE_MUTATIONS=(
   "repair_scope_gate1_changes_truth_fixtures|1|repair_forbidden_path|advance_repair"
   "repair_scope_tier_a_doc_denied|1|repair_forbidden_path|advance_repair"
   "repair_scope_old_r8_review_id|2|api_404_reviews|advance_repair"
+  "red_source_auth_comment_missing|2|fixture_missing|advance_red_parent_source_fix_bridge"
+  "red_source_auth_comment_edited|1|red_source_auth_comment_edited|advance_red_parent_source_fix_bridge"
+  "red_source_auth_marker_duplicated|1|red_source_auth_marker_duplicated|advance_red_parent_source_fix_bridge"
+  "red_source_auth_json_duplicated|1|red_source_auth_json_duplicated|advance_red_parent_source_fix_bridge"
+  "red_source_auth_schema_mismatch|1|red_source_auth_schema_mismatch|advance_red_parent_source_fix_bridge"
+  "red_source_auth_policy_mismatch|1|red_source_auth_policy_mismatch|advance_red_parent_source_fix_bridge"
+  "red_source_auth_unsafe_authorization|1|red_source_auth_unsafe_authorization|advance_red_parent_source_fix_bridge"
+  "red_source_fix_wrong_parent|1|red_source_fix_wrong_source_parent|advance_red_parent_source_fix_bridge"
+  "red_source_fix_wrong_subject|1|red_source_fix_wrong_subject|advance_red_parent_source_fix_bridge"
+  "red_source_fix_wrong_workstream|1|red_source_fix_wrong_workstream|advance_red_parent_source_fix_bridge"
+  "red_source_fix_forbidden_path|1|red_source_fix_forbidden_path|advance_red_parent_source_fix_bridge"
+  "red_source_fix_no_changed_files|2|red_source_fix_no_changed_files|advance_red_parent_source_fix_bridge"
+  "red_source_ci_wrong_sha|1|red_source_ci_wrong_sha|advance_red_parent_source_fix_bridge"
+  "red_source_ci_failed|1|red_source_ci_failed|advance_red_parent_source_fix_bridge"
+  "red_source_ci_required_job_missing|1|red_source_ci_required_job_missing|advance_red_parent_source_fix_bridge"
+  "red_bridge_wrong_subject|1|red_bridge_wrong_subject|advance_red_parent_source_fix_bridge"
+  "red_bridge_wrong_workstream|1|red_bridge_wrong_workstream|advance_red_parent_source_fix_bridge"
+  "red_bridge_forbidden_path|1|red_bridge_forbidden_path|advance_red_parent_source_fix_bridge"
 )
 
 for entry in "${ADVANCE_MUTATIONS[@]}"; do
@@ -736,6 +755,8 @@ SOURCE_MUTATIONS=(
   "m24_skip_run_attempt_check|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
   "m25_bypass_submission_receipt|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
   "receipt_dynamic_identity_reads_name_not_display_title|review_exact_submission_receipt|review|--worker-report-comment-id 5161887211"
+  "bridge_policy_read_as_scope_authority|advance_red_parent_source_fix_bridge|advance|"
+  "bridge_drop_source_scope_check|advance_red_parent_source_fix_bridge|advance|"
 )
 
 for entry in "${SOURCE_MUTATIONS[@]}"; do

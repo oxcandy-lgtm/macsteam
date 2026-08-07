@@ -27,6 +27,20 @@
         ]
     },
   "quarantined_review_ids": [4841357081],
+  "red_parent_source_fix_bridge": {
+    "authorization_schema_version": 1,
+    "authorization_comment_id": 5211174534,
+    "source_fix_sha": "a2d26b2e7ccd17c5c5ea153bf346572fa886a4be",
+    "rejected_parent_sha": "007e1d4e38d8e8a07950d5eff74c0453cf7a7dc6",
+    "source_fix_workstream": "U1R18-R11-FIX1",
+    "source_fix_commit_subject": "fix: close local runtime acceptance completion path (U1R18-R11-FIX1)",
+    "source_fix_core_ci_run_id": 31136834727,
+    "source_fix_required_ci_jobs": 5,
+    "failed_advance_run_id": 31136834743,
+    "failed_advance_guard": "latest_rejected_overrides_old_green",
+    "bridge_workstream": "U1R18-R11-FIX1-GATE1",
+    "bridge_commit_subject": "ci: admit rejected-parent source fix bridge (U1R18-R11-FIX1-GATE1)"
+  },
   "core_ci": {
     "required_jobs": [
       "Swift Build",

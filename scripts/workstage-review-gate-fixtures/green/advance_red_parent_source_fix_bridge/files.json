@@ -1,0 +1,12 @@
+[
+  ".github/workstage-review-gate-policy.json",
+  "scripts/workstage-review-gate.py",
+  "scripts/test-workstage-review-gate.sh",
+  "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+  "scripts/workstage-review-gate-fixtures/apply-source-mutation.py",
+  "scripts/workstage-review-gate-fixtures/green/advance_red_parent_source_fix_bridge/commit_HEAD.json",
+  "scripts/workstage-review-gate-fixtures/green/advance_red_parent_source_fix_bridge/commit_PARENT.json",
+  "scripts/workstage-review-gate-fixtures/green/advance_red_parent_source_fix_bridge/files.json",
+  "scripts/workstage-review-gate-fixtures/green/advance_red_parent_source_fix_bridge/pr.json",
+  "scripts/workstage-review-gate-fixtures/green/advance_red_parent_source_fix_bridge/source-fix.json"
+]

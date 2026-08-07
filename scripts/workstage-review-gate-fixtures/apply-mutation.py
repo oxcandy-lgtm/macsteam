@@ -74,6 +74,19 @@ WORKER_REPORT_COMMENT_ID = 5161887211
 
 CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
+SOURCE_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-authorization:v1 -->"
+
+# === Red parent source fix bridge constants (GATE1) ===
+BRIDGE_PARENT = "a2d26b2e7ccd17c5c5ea153bf346572fa886a4be"   # source fix (parent of bridge)
+BRIDGE_REJECTED_PARENT = "007e1d4e38d8e8a07950d5eff74c0453cf7a7dc6"
+BRIDGE_HEAD = "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5"
+BRIDGE_COMMENT_ID = 5211174534
+BRIDGE_SUBJECT = "ci: admit rejected-parent source fix bridge (U1R18-R11-FIX1-GATE1)"
+BRIDGE_WORKSTREAM = "U1R18-R11-FIX1-GATE1"
+BRIDGE_SOURCE_SUBJECT = "fix: close local runtime acceptance completion path (U1R18-R11-FIX1)"
+BRIDGE_SOURCE_WORKSTREAM = "U1R18-R11-FIX1"
+BRIDGE_SOURCE_CI_RUN = 31136834727
+BRIDGE_FAILED_RUN = 31136834743
 
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "workstage-review-gate-policy.json")
 
@@ -694,6 +707,168 @@ def m_repair_scope_r9_rejects_gate_path(d):
     files = files if isinstance(files, list) else files.get("files", [])
     files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
     files.append("scripts/workstage-review-gate.py")
+    save_json(d, "files.json", files)
+
+
+# === Red parent source fix bridge mutations (GATE1) ===
+#
+# Each bridges a source fix (BRIDGE_PARENT) rejected on BRIDGE_REJECTED_PARENT
+# to a single bridge child (BRIDGE_HEAD) via the authorization comment.
+
+def _bridge_files(d):
+    path = os.path.join(d, "files.json")
+    files = load_json(d, "files.json") if os.path.exists(path) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    return [f if isinstance(f, str) else f.get("filename", "") for f in files]
+
+
+def _bridge_source_files(d):
+    path = os.path.join(d, "source-fix.json")
+    files = load_json(d, "source-fix.json") if os.path.exists(path) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    return [f if isinstance(f, str) else f.get("filename", "") for f in files]
+
+
+def _auth_comment(d):
+    c = load_json(d, "comment.json")
+    return c
+
+
+def _load_bridge_policy(d):
+    path = os.path.join(d, "policy.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return load_policy()
+
+
+def _save_bridge_policy(d, policy):
+    with open(os.path.join(d, "policy.json"), "w") as f:
+        json.dump(policy, f, indent=2)
+        f.write("\n")
+
+
+def m_red_source_auth_comment_missing(d):
+    path = os.path.join(d, "comment.json")
+    if os.path.exists(path):
+        os.remove(path)
+    save_json(d, "comments.json", [])
+
+
+def m_red_source_auth_comment_edited(d):
+    c = _auth_comment(d)
+    c["updated_at"] = "2026-08-07T02:00:00Z"
+    save_json(d, "comment.json", c)
+
+
+def m_red_source_auth_marker_duplicated(d):
+    c = _auth_comment(d)
+    c["body"] = c.get("body", "") + SOURCE_BRIDGE_MARKER + "\n```json\n{}\n```\n"
+    save_json(d, "comment.json", c)
+
+
+def m_red_source_auth_json_duplicated(d):
+    c = _auth_comment(d)
+    import re
+    body = c.get("body", "")
+    lead, _, rest = body.partition(SOURCE_BRIDGE_MARKER)
+    c["body"] = lead + SOURCE_BRIDGE_MARKER + "\n```json\n{}\n```\n" + rest
+    save_json(d, "comment.json", c)
+
+
+def m_red_source_auth_schema_mismatch(d):
+    c = _auth_comment(d)
+    import re
+    body = c["body"]
+    body = body.replace('"schema_version": 1', '"schema_version": 2')
+    c["body"] = body
+    save_json(d, "comment.json", c)
+
+
+def m_red_source_auth_policy_mismatch(d):
+    policy = _load_bridge_policy(d)
+    policy["red_parent_source_fix_bridge"]["bridge_workstream"] = "U1R18-R11-GATE1-WRONG"
+    _save_bridge_policy(d, policy)
+
+
+def m_red_source_auth_unsafe_authorization(d):
+    c = _auth_comment(d)
+    c["body"] = c.get("body", "").replace('"ready_authorized": false', '"ready_authorized": true')
+    save_json(d, "comment.json", c)
+
+
+def m_red_source_fix_wrong_parent(d):
+    commit = load_json(d, "commit_PARENT.json")
+    commit["parents"] = [{"sha": WRONG_SHA}]
+    save_json(d, "commit_PARENT.json", commit)
+
+
+def m_red_source_fix_wrong_subject(d):
+    parent = load_json(d, "commit_PARENT.json")
+    parent["commit"]["message"] = "ci: wrong subject\n\nWorkstream: U1R18-R11-FIX1"
+    save_json(d, "commit_PARENT.json", parent)
+
+
+def m_red_source_fix_wrong_workstream(d):
+    parent = load_json(d, "commit_PARENT.json")
+    parent["commit"]["message"] = BRIDGE_SOURCE_SUBJECT + "\n\nWorkstream: U1R18-R11-WRONG"
+    save_json(d, "commit_PARENT.json", parent)
+
+
+def m_red_source_fix_forbidden_path(d):
+    files = _bridge_source_files(d)
+    files.append("unknown/path/outside.swift")
+    save_json(d, "source-fix.json", files)
+
+
+def m_red_source_fix_no_changed_files(d):
+    save_json(d, "source-fix.json", [])
+
+
+def m_red_source_ci_wrong_sha(d):
+    runs = load_json(d, "runs.json")
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == BRIDGE_SOURCE_CI_RUN:
+            r["head_sha"] = WRONG_SHA
+    save_json(d, "runs.json", runs)
+
+
+def m_red_source_ci_failed(d):
+    runs = load_json(d, "runs.json")
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == BRIDGE_SOURCE_CI_RUN:
+            r["conclusion"] = "failure"
+    save_json(d, "runs.json", runs)
+
+
+def m_red_source_ci_required_job_missing(d):
+    jobs = load_json(d, "jobs.json")
+    jobs = jobs.get("jobs", [])
+    stop = False
+    kept = []
+    for j in jobs:
+        if j.get("name") == "License Validation" and not stop:
+            stop = True
+            continue
+        kept.append(j)
+    save_json(d, "jobs.json", {"total_count": len(kept), "jobs": kept})
+
+
+def m_red_bridge_wrong_subject(d):
+    head = load_json(d, "commit_HEAD.json")
+    head["commit"]["message"] = "ci: wrong bridge subject\n\nWorkstream: U1R18-R11-FIX1-GATE1"
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_red_bridge_wrong_workstream(d):
+    head = load_json(d, "commit_HEAD.json")
+    head["commit"]["message"] = BRIDGE_SUBJECT + "\n\nWorkstream: U1R18-R11-WRONG-BRIDGE"
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_red_bridge_forbidden_path(d):
+    files = _bridge_files(d)
+    files.append("unknown/gate/path.txt")
     save_json(d, "files.json", files)
 
 
@@ -2047,6 +2222,24 @@ MUTATIONS = {
     "repair_scope_old_r8_review_id": m_repair_scope_old_r8_review_id,
     "repair_scope_r9_rejects_gate_path": m_repair_scope_r9_rejects_gate_path,
     "repair_scope_tier_a_doc_denied": m_repair_scope_tier_a_doc_denied,
+    "red_source_auth_comment_missing": m_red_source_auth_comment_missing,
+    "red_source_auth_comment_edited": m_red_source_auth_comment_edited,
+    "red_source_auth_marker_duplicated": m_red_source_auth_marker_duplicated,
+    "red_source_auth_json_duplicated": m_red_source_auth_json_duplicated,
+    "red_source_auth_schema_mismatch": m_red_source_auth_schema_mismatch,
+    "red_source_auth_policy_mismatch": m_red_source_auth_policy_mismatch,
+    "red_source_auth_unsafe_authorization": m_red_source_auth_unsafe_authorization,
+    "red_source_fix_wrong_parent": m_red_source_fix_wrong_parent,
+    "red_source_fix_wrong_subject": m_red_source_fix_wrong_subject,
+    "red_source_fix_wrong_workstream": m_red_source_fix_wrong_workstream,
+    "red_source_fix_forbidden_path": m_red_source_fix_forbidden_path,
+    "red_source_fix_no_changed_files": m_red_source_fix_no_changed_files,
+    "red_source_ci_wrong_sha": m_red_source_ci_wrong_sha,
+    "red_source_ci_failed": m_red_source_ci_failed,
+    "red_source_ci_required_job_missing": m_red_source_ci_required_job_missing,
+    "red_bridge_wrong_subject": m_red_bridge_wrong_subject,
+    "red_bridge_wrong_workstream": m_red_bridge_wrong_workstream,
+    "red_bridge_forbidden_path": m_red_bridge_forbidden_path,
     "report_missing": m_report_missing,
     "report_malformed_current_head": m_report_malformed_current_head,
     "report_marker_duplicated": m_report_marker_duplicated,
