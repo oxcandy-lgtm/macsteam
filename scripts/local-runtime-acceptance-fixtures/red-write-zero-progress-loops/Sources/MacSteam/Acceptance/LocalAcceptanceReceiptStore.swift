@@ -120,7 +120,7 @@ struct LocalAcceptanceReceiptStore {
                 }
                 return .failed(.ioFailure)
             }
-            if count == 0 { return .failed(.ioFailure) }
+            if count == 0 { continue }
             wrote += count
             writeRetries = 0
         }

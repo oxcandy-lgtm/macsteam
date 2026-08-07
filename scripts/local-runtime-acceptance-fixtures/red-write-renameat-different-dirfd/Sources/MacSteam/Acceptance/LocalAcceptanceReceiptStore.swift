@@ -126,7 +126,8 @@ struct LocalAcceptanceReceiptStore {
         }
         _ = fchmod(tempFD, mode_t(S_IRUSR | S_IWUSR))
         _ = fsync(tempFD)
-        _ = renameat(dirFD, tempName, dirFD, receiptName)
+        let otherDirFD = open(directoryPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        _ = renameat(otherDirFD, tempName, dirFD, receiptName)
         _ = fsync(dirFD)
         return .saved
     }

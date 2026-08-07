@@ -126,7 +126,7 @@ struct LocalAcceptanceReceiptStore {
         }
         _ = fchmod(tempFD, mode_t(S_IRUSR | S_IWUSR))
         _ = fsync(tempFD)
-        _ = renameat(dirFD, tempName, dirFD, receiptName)
+        _ = rename(tempPath, receiptPath)
         _ = fsync(dirFD)
         return .saved
     }

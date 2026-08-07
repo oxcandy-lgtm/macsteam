@@ -40,6 +40,25 @@ private func receiptPath(in root: URL) -> URL {
     root.appendingPathComponent("Acceptance").appendingPathComponent("cloverpit.json")
 }
 
+/// Thread-safe decrementing counter so a @Sendable syscall seam closure can
+/// deliver a bounded number of EINTRs without capturing a mutable var.
+private final class SeamCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Int
+    init(_ value: Int) { _value = value }
+    func value() -> Int { lock.lock(); defer { lock.unlock() }; return _value }
+    func decrement() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if _value > 0 { _value -= 1; return true }
+        return false
+    }
+    func increment() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        _value += 1
+        return _value
+    }
+}
+
 // MARK: - Tests
 
 @Suite("LocalAcceptanceReceiptStore")
@@ -353,5 +372,181 @@ struct LocalAcceptanceReceiptStoreTests {
         _ = s.saveAccepted(receipt)
         // A canonical accepted file loads to the exact receipt.
         #expect(s.loadAccepted() == .loaded(receipt))
+    }
+
+    // MARK: U1R18-R12-FIX2 bounded POSIX transaction (snapshot-consistent load)
+
+    private func storeWithOps(at root: URL, fileOperations: ReceiptFileOperations) -> LocalAcceptanceReceiptStore {
+        LocalAcceptanceReceiptStore(applicationSupportRoot: root, fileOperations: fileOperations)
+    }
+
+    @Test func loadSucceedsAcrossBoundedEINTRReads() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        let receipt = makeGatedAcceptedReceipt()
+        _ = real.saveAccepted(receipt)
+        // Deliver a bounded number of EINTRs on read, then fall through to the
+        // live syscall: the retry must recover and load the exact receipt.
+        let eintrRemaining = SeamCounter(4)
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: { fd, ptr, n in
+                if eintrRemaining.decrement() { errno = EINTR; return -1 }
+                return Darwin.read(fd, ptr, n)
+            },
+            write: live.write, fstat: live.fstat))
+        #expect(s.loadAccepted() == .loaded(receipt))
+    }
+
+    @Test func loadFailsClosedWhenEINTRExhausted() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: { fd, _, _ in errno = EINTR; return -1 },
+            write: live.write, fstat: live.fstat))
+        // The read is EINTR every call: the bounded retry is exhausted and the
+        // load fails closed, never spinning.
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+    }
+
+    @Test func loadFailsClosedOnInconsistentShortRead() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        // The read returns EOF before the pre-stat size: an inconsistent short
+        // read is a fail-closed ioFailure, never `.malformedJSON`.
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: { _, _, _ in 0 },
+            write: live.write, fstat: live.fstat))
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+    }
+
+    @Test func loadFailsClosedWhenFileGrewPastPreStatSize() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        // The exact-size read is honoured, but the 1-byte probe (a read that
+        // asks for exactly one more byte) reports extra content, meaning the
+        // file grew past the pre-stat size. That is a fail-closed ioFailure.
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: { fd, ptr, n in
+                if n == 1 { return 1 }
+                return Darwin.read(fd, ptr, n)
+            },
+            write: live.write, fstat: live.fstat))
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+    }
+
+    @Test func loadFailsClosedOnPostStatSizeChange() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        let calls = SeamCounter(0)
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: live.read, write: live.write,
+            fstat: { fd, st in
+                let isPost = calls.increment() > 1
+                let r = Darwin.fstat(fd, &st)
+                if r == 0, isPost { st.st_size += 1 }
+                return r
+            }))
+        // A change to the post-read snapshot size is a metadata change that the
+        // fail-closed comparison must reject.
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+    }
+
+    @Test func loadFailsClosedOnPostStatRemoval() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        let calls = SeamCounter(0)
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: live.read, write: live.write,
+            fstat: { fd, st in
+                let isPost = calls.increment() > 1
+                if isPost { errno = EBADF; return -1 }
+                return Darwin.fstat(fd, &st)
+            }))
+        // If the file is gone by the post-read stat, the load must fail closed.
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+    }
+
+    @Test func loadFailsOnAnyInterruptedProbeAfterExhaustion() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        _ = real.saveAccepted(makeGatedAcceptedReceipt())
+        // The main body read succeeds, but the probe read is an endless EINTR.
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: { fd, ptr, n in
+                if n == 1 { errno = EINTR; return -1 }
+                return Darwin.read(fd, ptr, n)
+            },
+            write: live.write, fstat: live.fstat))
+        #expect(s.loadAccepted() == .failed(.ioFailure))
+    }
+
+    // MARK: U1R18-R12-FIX2 zero-progress write + bounded EINTR write
+
+    @Test func saveSucceedsAcrossBoundedEINTRWrites() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let eintrRemaining = SeamCounter(3)
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: live.read,
+            write: { fd, ptr, n in
+                if eintrRemaining.decrement() { errno = EINTR; return -1 }
+                return Darwin.write(fd, ptr, n)
+            },
+            fstat: live.fstat))
+        #expect(s.saveAccepted(makeGatedAcceptedReceipt()) == .saved)
+        #expect(s.loadAccepted() == .loaded(makeGatedAcceptedReceipt()))
+    }
+
+    @Test func saveFailsClosedWhenWriteEINTRExhausted() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: live.read,
+            write: { _, _, _ in errno = EINTR; return -1 },
+            fstat: live.fstat))
+        // The write is EINTR forever: bounded retries are exhausted and the save
+        // fails closed, never spinning.
+        #expect(s.saveAccepted(makeGatedAcceptedReceipt()) == .failed(.ioFailure))
+    }
+
+    @Test func saveFailsClosedOnZeroProgressWrite() {
+        let root = makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = ReceiptFileOperations.live
+        let real = store(at: root)
+        let a = makeGatedAcceptedReceipt()
+        #expect(real.saveAccepted(a) == .saved)
+        let original = try! Data(contentsOf: receiptPath(in: root))
+        // A zero-progress write is a fail-closed condition, not a spin. The or
+        // previous receipt must survive and no temp may remain.
+        let s = storeWithOps(at: root, fileOperations: ReceiptFileOperations(
+            read: live.read,
+            write: { _, _, _ in 0 },
+            fstat: live.fstat))
+        #expect(s.saveAccepted(makeGatedAcceptedReceipt(visibility: 31)) == .failed(.ioFailure))
+        #expect(try! Data(contentsOf: receiptPath(in: root)) == original)
+        let parent = root.appendingPathComponent("Acceptance")
+        #expect(try! FileManager.default.contentsOfDirectory(atPath: parent.path) == ["cloverpit.json"])
     }
 }

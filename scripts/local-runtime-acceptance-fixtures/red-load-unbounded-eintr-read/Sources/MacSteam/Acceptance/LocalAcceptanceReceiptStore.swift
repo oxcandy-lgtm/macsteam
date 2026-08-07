@@ -62,11 +62,7 @@ struct LocalAcceptanceReceiptStore {
         while total < expectedSize {
             let n = read(fileFD, &buffer[total], expectedSize - total)
             if n < 0 {
-                if errno == EINTR {
-                    readRetries += 1
-                    if readRetries > Self.maxInterruptedSyscallRetries { return .failed(.ioFailure) }
-                    continue
-                }
+                if errno == EINTR { continue }
                 return .failed(.ioFailure)
             }
             if n == 0 { return .failed(.ioFailure) }

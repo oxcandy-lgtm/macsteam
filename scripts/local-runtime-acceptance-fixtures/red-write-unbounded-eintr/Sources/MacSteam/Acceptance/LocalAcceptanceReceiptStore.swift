@@ -113,11 +113,7 @@ struct LocalAcceptanceReceiptStore {
         while wrote < data.count {
             let count = write(tempFD, data, data.count - wrote)
             if count < 0 {
-                if errno == EINTR {
-                    writeRetries += 1
-                    if writeRetries > Self.maxInterruptedSyscallRetries { return .failed(.ioFailure) }
-                    continue
-                }
+                if errno == EINTR { continue }
                 return .failed(.ioFailure)
             }
             if count == 0 { return .failed(.ioFailure) }

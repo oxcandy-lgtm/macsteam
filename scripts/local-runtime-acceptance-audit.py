@@ -114,7 +114,7 @@ STORE_CONTRACTS = [
     "ENOENT",
     # Atomic same-directory POSIX transaction with temp-only cleanup.
     "O_EXCL",
-    "rename(",
+    "renameat",
     "fsync",
     "unlinkat",
 ]
@@ -124,6 +124,8 @@ STORE_CONTRACTS = [
 STORE_FORBIDDEN = [
     "Data(contentsOf: receiptURL)",
     "removeItem(at: receiptURL)",
+    "rename(tempPath, receiptPath)",
+    "rename(tempName, receiptPath)",
 ]
 
 # Immutable-scope paths, relative to repo root. Must remain byte-identical to
@@ -382,6 +384,43 @@ def main(argv) -> int:
     # never degrade to `.notFound`.
     if "catch" in lcb:
         violations.append(f"{store_rel}: read failure must not become notFound (FIX1)")
+
+    # ── U1R18-R12-FIX2 directory-FD-bound atomic rename ──
+    # The final install must be a renameat where the source AND destination are
+    # relative to the SAME opened directory FD. A path-based rename(tempPath,
+    # receiptPath) that re-resolves a symlink or a renameat that switches
+    # directory FDs is a violation.
+    if "renameat" not in wcb:
+        violations.append(f"{store_rel}: atomic install must use renameat (FIX2)")
+    elif "renameat(dirFD, tempName, dirFD, receiptName)" not in wcb \
+            and "renameat(dirFD, t, dirFD, d)" not in wcb:
+        violations.append(f"{store_rel}: renameat must bind source and destination to the SAME directory FD (FIX2)")
+
+    # ── U1R18-R12-FIX2 snapshot-consistent load ──
+    # The load must read EXACTLY the pre-stat size (short read and post-stat
+    # metadata change both fail closed), probe for growth past the pre-stat size,
+    # and re-fstat the SAME FD before decoding.
+    if "expectedSize" not in lcb:
+        violations.append(f"{store_rel}: load must read exactly the pre-stat size (FIX2)")
+    if "total" not in lcb or "n == 0" not in lcb:
+        violations.append(f"{store_rel}: load must fail closed on an inconsistent short read (FIX2)")
+    if "extraByte" not in lcb:
+        violations.append(f"{store_rel}: load must probe for growth past the pre-stat size (FIX2)")
+    if "postStat" not in lcb:
+        violations.append(f"{store_rel}: load must re-fstat the same FD after reading (FIX2)")
+    if "st_mtimespec" not in lcb and "st_mtime" not in lcb:
+        violations.append(f"{store_rel}: load must compare post-read metadata timestamps (FIX2)")
+
+    # ── U1R18-R12-FIX2 bounded EINTR + zero-progress fail-closed ──
+    if "maxInterruptedSyscallRetries" not in lcb:
+        violations.append(f"{store_rel}: load EINTR retry must be bounded (FIX2)")
+    if "maxInterruptedSyscallRetries" not in wcb:
+        violations.append(f"{store_rel}: write EINTR retry must be bounded (FIX2)")
+    # A zero-progress write must fail closed, never spin on a continue.
+    if re.search(r"count\s*==\s*0\s*\{", wcb) is None:
+        violations.append(f"{store_rel}: zero-progress write must fail closed (FIX2)")
+    elif re.search(r"count\s*==\s*0\s*\{\s*continue", wcb):
+        violations.append(f"{store_rel}: zero-progress write must fail closed (FIX2)")
 
     # ── U1R18-R12-FIX1 authority: explicit persister + exact identity ──
     # The persister must be a required (non-defaulted) parameter and its

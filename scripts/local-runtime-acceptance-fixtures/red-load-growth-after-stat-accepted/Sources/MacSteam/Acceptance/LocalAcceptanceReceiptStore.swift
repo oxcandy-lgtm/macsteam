@@ -73,8 +73,6 @@ struct LocalAcceptanceReceiptStore {
             total += n
             readRetries = 0
         }
-        var extraByte: UInt8 = 0
-        if read(fileFD, &extraByte, 1) != 0 { return .failed(.ioFailure) }
         var postStat = stat()
         _ = fstat(fileFD, &postStat)
         guard postStat.st_dev == preStat.st_dev,

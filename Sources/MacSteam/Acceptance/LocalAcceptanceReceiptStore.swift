@@ -33,6 +33,21 @@ enum LocalAcceptanceReceiptStoreError: String, Sendable, Equatable {
     case ioFailure = "receipt_io_failure"
 }
 
+/// Internal syscall seam so snapshot-consistency and interrupted-syscall
+/// behavior can be driven deterministically in tests. The production store
+/// always uses `.live`; the seam is never exposed through a public API.
+struct ReceiptFileOperations {
+    var read: @Sendable (Int32, UnsafeMutableRawPointer, Int) -> Int
+    var write: @Sendable (Int32, UnsafeRawPointer, Int) -> Int
+    var fstat: @Sendable (Int32, inout stat) -> Int32
+
+    static let live = ReceiptFileOperations(
+        read: { fd, ptr, count in Darwin.read(fd, ptr, count) },
+        write: { fd, ptr, count in Darwin.write(fd, ptr, count) },
+        fstat: { fd, st in Darwin.fstat(fd, &st) }
+    )
+}
+
 /// Persists only __accepted__ local acceptance receipts as the exact
 /// ``LocalAcceptanceReceipt.deterministicJSON`` bytes, and loads them back only
 /// through a strict canonical-byte + semantic gate.
@@ -45,19 +60,24 @@ enum LocalAcceptanceReceiptStoreError: String, Sendable, Equatable {
 ///   * The bytes written are exactly `receipt.deterministicJSON`. No pretty
 ///     printing, timestamps, PIDs, UUIDs, usernames, absolute paths, raw error
 ///     text, or runtime executable paths are appended.
-///   * The write is a same-directory POSIX transaction: a unique `O_EXCL` temp
-///     is created in the parent directory, written with the exact canonical
-///     bytes, `fchmod`ed to `0600`, `fsync`ed, then atomically `rename`d over
-///     the destination and the directory is `fsync`ed. A failure removes only
-///     the temp — the last-known-good receipt is never deleted.
-///   * Load is fail-closed and bounded through a single non-following file
-///     descriptor: the parent directory is opened `O_DIRECTORY|O_NOFOLLOW`, the
-///     receipt is opened relative to it with
-///     `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, the exact opened FD is
-///     `fstat`ed (regular-file proof + size bound) and bounded-read via the same
-///     FD, then decode → accepted semantic validation → deterministic
-///     re-encode → disk bytes == canonical bytes. Unknown fields, extra payload
-///     and non-canonical serialization all fail closed.
+///   * The write is a single directory-FD-bound POSIX transaction: the parent
+///     directory is opened once (`O_DIRECTORY|O_NOFOLLOW`), a unique `O_EXCL`
+///     temp is created with `openat`, written with the exact canonical bytes,
+///     `fchmod`ed to `0600`, `fsync`ed, and installed with `renameat` where the
+///     source and destination live in the SAME opened directory FD. No path is
+///     re-resolved after the temp is created. A failure removes only the temp
+///     (`unlinkat` on the same FD) — the last-known-good receipt is never
+///     deleted.
+///   * Load is a snapshot-consistent fail-closed read through a single
+///     non-following file descriptor: open the parent `O_DIRECTORY|O_NOFOLLOW`,
+///     `openat` the receipt `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, `fstat`
+///     the exact FD (regular-file proof + size bound), read EXACTLY the
+///     pre-stat size (short read / extra byte / any pre↔post metadata change is
+///     an `ioFailure`), re-`fstat` the same FD, then decode → accepted semantic
+///     validation → deterministic re-encode → disk bytes == canonical bytes.
+///   * Every `read`/`write` EINTR is retried only up to a bounded
+///     `maxInterruptedSyscallRetries`; a zero-progress write fails closed. No
+///     syscall loop can run forever.
 ///   * `.notFound` is returned only for an absent receipt (ENOENT). Permission
 ///     denial, open/read/stat failure, filesystem races and non-missing I/O
 ///     errors surface as `.ioFailure`; a symlink is rejected exactly.
@@ -71,9 +91,13 @@ struct LocalAcceptanceReceiptStore {
     nonisolated static let parentDirectoryPermissions = 0o700
     nonisolated static let receiptFilePermissions = 0o600
     nonisolated static let requiredStabilitySeconds: Int = 30
+    /// Bound for EINTR retry on any single read/write syscall. 4…16 is the
+    /// allowed range; an exhausted bound is a bounded `ioFailure`.
+    nonisolated static let maxInterruptedSyscallRetries = 8
 
     private let applicationSupportRoot: URL
     private let fileManager: FileManager
+    private let ops: ReceiptFileOperations
 
     private var acceptanceRoot: URL {
         applicationSupportRoot.appendingPathComponent("Acceptance")
@@ -82,6 +106,7 @@ struct LocalAcceptanceReceiptStore {
     private var receiptPath: String { receiptURL.path }
     private var parentPath: String { acceptanceRoot.path }
     private var receiptURL: URL { acceptanceRoot.appendingPathComponent("cloverpit.json") }
+    private static let receiptFileName = "cloverpit.json"
 
     /// Standard store rooted at the MacSteam Application Support namespace.
     init() {
@@ -94,8 +119,18 @@ struct LocalAcceptanceReceiptStore {
     /// Injectable temporary-root store for tests. Never touches the real user
     /// Application Support.
     init(applicationSupportRoot: URL, fileManager: FileManager = .default) {
+        self.init(applicationSupportRoot: applicationSupportRoot,
+                  fileManager: fileManager,
+                  fileOperations: .live)
+    }
+
+    /// Internal syscall-injectable store. Kept internal so deterministic
+    /// snapshot/races can be driven in tests without exposing production API.
+    init(applicationSupportRoot: URL, fileManager: FileManager = .default,
+         fileOperations: ReceiptFileOperations) {
         self.applicationSupportRoot = applicationSupportRoot
         self.fileManager = fileManager
+        self.ops = fileOperations
     }
 
     // MARK: - Save
@@ -155,9 +190,9 @@ struct LocalAcceptanceReceiptStore {
 
     /// Loads and re-verifies the persisted accepted receipt. Returns `.notFound`
     /// when no receipt exists and `.failed` for any size / symlink / regular-file
-    /// / canonical-byte / semantics violation. This is a historical-evidence
-    /// load only, performed through a single non-following file descriptor; it
-    /// never promotes the caller's current acceptance state.
+    /// / snapshot-consistency / canonical-byte / semantics violation. This is a
+    /// historical-evidence load only; it never promotes the caller's current
+    /// acceptance state.
     func loadAccepted() -> LocalAcceptanceReceiptStoreResult {
         // Open the parent directory without following a final symlink. A missing
         // parent is simply "no receipt"; a symlink parent or any other I/O error
@@ -172,8 +207,7 @@ struct LocalAcceptanceReceiptStore {
 
         // Open the receipt relative to the parent directory FD, refusing to
         // follow a symlink and opening non-blocking so a FIFO cannot block.
-        let relName = "cloverpit.json"
-        let fileFD = relName.withCString {
+        let fileFD = Self.receiptFileName.withCString {
             openat(dirFD, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         }
         if fileFD < 0 {
@@ -183,33 +217,86 @@ struct LocalAcceptanceReceiptStore {
         }
         defer { close(fileFD) }
 
-        // The single opened FD is the authority: fstat and read use the same FD.
-        var st = stat()
-        if fstat(fileFD, &st) != 0 { return .failed(.ioFailure) }
-        // Require an actual regular file before touching the data road. Any
-        // non-regular node (symlink, directory, FIFO, socket, device) is rejected.
-        guard (st.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }
-        if Int(st.st_size) > Self.maxReceiptBytes { return .failed(.oversized) }
+        // Pre-read snapshot from the same opened FD. This is the authority for
+        // the whole transaction: an actually-regular file with a bounded size.
+        var preStat = stat()
+        if ops.fstat(fileFD, &preStat) != 0 { return .failed(.ioFailure) }
+        guard (preStat.st_mode & S_IFMT) == S_IFREG else { return .failed(.nonRegularFile) }
+        guard preStat.st_size >= 0 else { return .failed(.ioFailure) }
+        let expectedSize = Int(preStat.st_size)
+        guard expectedSize <= Self.maxReceiptBytes else { return .failed(.oversized) }
 
-        // Bounded read from the same FD: never read past maxReceiptBytes + 1.
-        var buffer = [UInt8](repeating: 0, count: Self.maxReceiptBytes + 1)
+        // Read EXACTLY expectedSize bytes from the same FD. Any EOF before the
+        // pre-stat size is an inconsistent short read, never `.malformedJSON`.
+        var buffer = [UInt8](repeating: 0, count: expectedSize)
         var total = 0
-        while total < buffer.count {
-            let n = read(fileFD, &buffer[total], buffer.count - total)
+        var eintrRetries = 0
+        while total < expectedSize {
+            let n = ops.read(fileFD, &buffer[total], expectedSize - total)
             if n < 0 {
-                if errno == EINTR { continue }
+                if errno == EINTR {
+                    eintrRetries += 1
+                    if eintrRetries > Self.maxInterruptedSyscallRetries {
+                        return .failed(.ioFailure)
+                    }
+                    continue
+                }
                 return .failed(.ioFailure)
             }
-            if n == 0 { break }
-            total += Int(n)
+            if n == 0 { return .failed(.ioFailure) }
+            total += n
+            eintrRetries = 0
         }
-        if total > Self.maxReceiptBytes { return .failed(.oversized) }
-        let diskBytes = Data(buffer.prefix(total))
+        // A single probe byte confirms the file did not grow beyond the pre-stat
+        // size while we were reading. Reading it is still bounded.
+        var extraByte: UInt8 = 0
+        let extraCount = ops.read(fileFD, &extraByte, 1)
+        if extraCount < 0 {
+            if errno == EINTR {
+                // Bounded probe retry: the probe is at most one retry sequence.
+                eintrRetries += 1
+                if eintrRetries > Self.maxInterruptedSyscallRetries {
+                    return .failed(.ioFailure)
+                }
+                return readProbeBounded(fileFD: fileFD, extraByte: &extraByte)
+            }
+            return .failed(.ioFailure)
+        }
+        if extraCount > 0 { return .failed(.ioFailure) }
 
+        // Post-read snapshot on the same FD. Any change to identity, size, or
+        // the most precise available timestamps fails closed.
+        var postStat = stat()
+        if ops.fstat(fileFD, &postStat) != 0 { return .failed(.ioFailure) }
+        guard postStat.st_dev == preStat.st_dev,
+              postStat.st_ino == preStat.st_ino,
+              postStat.st_size == preStat.st_size,
+              postStat.st_mtimespec.tv_sec == preStat.st_mtimespec.tv_sec,
+              postStat.st_mtimespec.tv_nsec == preStat.st_mtimespec.tv_nsec,
+              postStat.st_ctimespec.tv_sec == preStat.st_ctimespec.tv_sec,
+              postStat.st_ctimespec.tv_nsec == preStat.st_ctimespec.tv_nsec else {
+            return .failed(.ioFailure)
+        }
+
+        let diskBytes = Data(buffer)
         guard let decoded = decodeCanonical(diskBytes) else { return .failed(.malformedJSON) }
         if let failure = acceptedSemanticGate(decoded) { return .failed(failure) }
         if decoded.deterministicJSON != diskBytes { return .failed(.nonCanonicalBytes) }
         return .loaded(decoded)
+    }
+
+    /// One bounded retry for the extra-byte probe (EINTR only).
+    private func readProbeBounded(fileFD: Int32, extraByte: inout UInt8) -> LocalAcceptanceReceiptStoreResult {
+        for _ in 0..<Self.maxInterruptedSyscallRetries {
+            let n = ops.read(fileFD, &extraByte, 1)
+            if n < 0 {
+                if errno == EINTR { continue }
+                return .failed(.ioFailure)
+            }
+            if n > 0 { return .failed(.ioFailure) }
+            return .failed(.ioFailure)
+        }
+        return .failed(.ioFailure)
     }
 
     /// Strict decode against the schema's fixed CodingKeys. Carries no
@@ -242,18 +329,21 @@ struct LocalAcceptanceReceiptStore {
         _ = name.withCString { unlinkat(dirFD, $0, 0) }
     }
 
-    // MARK: - Canonical atomic write (same-directory POSIX transaction)
+    // MARK: - Canonical atomic write (directory-FD-bound POSIX transaction)
 
-    /// Writes the exact canonical bytes through an atomic same-directory POSIX
-    /// transaction. On any failure ONLY the temp is removed; a pre-existing
-    /// last-known-good receipt is never deleted.
+    /// Writes the exact canonical bytes through an atomic directory-FD-bound
+    /// POSIX transaction. Source and destination for the final `renameat` are
+    /// both relative to the SAME opened directory FD; no path is re-resolved.
+    /// On any failure ONLY the temp is removed; a pre-existing last-known-good
+    /// receipt is never deleted.
     private func writeCanonical(_ receipt: LocalAcceptanceReceipt) -> LocalAcceptanceReceiptStoreResult {
         let data = receipt.deterministicJSON
         let dirFD = parentPath.withCString { open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
         if dirFD < 0 { return .failed(.ioFailure) }
         defer { close(dirFD) }
 
-        // Unique temp created exclusively in the same directory.
+        // Unique temp created exclusively in the same directory, relative to the
+        // opened directory FD.
         let tempName = ".cloverpit-\(UUID().uuidString).tmp"
         let tempFD = tempName.withCString {
             openat(dirFD, $0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
@@ -263,19 +353,32 @@ struct LocalAcceptanceReceiptStore {
 
         var writeFailed = false
         var wrote = 0
+        var eintrRetries = 0
         while wrote < data.count {
             var count = 0
             data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
                 guard let base = bytes.baseAddress else { return }
-                let r = write(tempFD, base.advanced(by: wrote), data.count - wrote)
-                count = r == -1 ? -1 : Int(r)
+                count = ops.write(tempFD, base.advanced(by: wrote), data.count - wrote)
             }
             if count < 0 {
-                if errno == EINTR { continue }
+                if errno == EINTR {
+                    eintrRetries += 1
+                    if eintrRetries > Self.maxInterruptedSyscallRetries {
+                        writeFailed = true
+                        break
+                    }
+                    continue
+                }
+                writeFailed = true
+                break
+            }
+            if count == 0 {
+                // Zero progress is a fail-closed condition, never a spin.
                 writeFailed = true
                 break
             }
             wrote += count
+            eintrRetries = 0
         }
         if !writeFailed, fchmod(tempFD, mode_t(S_IRUSR | S_IWUSR)) != 0 {
             writeFailed = true
@@ -283,18 +386,17 @@ struct LocalAcceptanceReceiptStore {
         if !writeFailed, fsync(tempFD) != 0 {
             writeFailed = true
         }
-        if close(tempFD) != 0 { writeFailed = true }
+        _ = close(tempFD)
         if writeFailed {
             // Only the temp is removed — never a pre-existing receipt.
             removeTemp(at: dirFD, name: tempName)
             return .failed(.ioFailure)
         }
 
-        // Atomic replace: rename never follows a destination symlink; it
-        // replaces the directory entry itself.
-        let tempPath = parentPath + "/" + tempName
-        let renamed = tempPath.withCString { t in
-            receiptPath.withCString { r in rename(t, r) }
+        // Atomic install: source and destination are both relative to the same
+        // opened directory FD. renameat never follows a destination symlink.
+        let renamed = tempName.withCString { t in
+            Self.receiptFileName.withCString { d in renameat(dirFD, t, dirFD, d) }
         }
         if renamed != 0 {
             removeTemp(at: dirFD, name: tempName)

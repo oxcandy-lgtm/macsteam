@@ -136,6 +136,17 @@ run "red-load-unbounded-read" "load reads unbounded" 1 "load read must be bounde
 run "red-load-read-failure-becomes-notfound" "read failure becomes notFound" 1 "must not become notFound"
 run "red-load-stat-and-read-different-object" "load stats and reads different objects" 1 "must read via the opened FD"
 
+echo "--- RED: U1R18-R12-FIX2 bounded POSIX transaction (rc=1) ---"
+run "red-write-path-rename-instead-of-renameat" "atomic install uses path-based rename" 1 "must not contain 'rename(tempPath, receiptPath)"
+run "red-write-renameat-different-dirfd" "renameat switches directory FD" 1 "SAME directory FD"
+run "red-load-short-read-accepted" "load accepts inconsistent short read" 1 "inconsistent short read"
+run "red-load-growth-after-stat-accepted" "load accepts growth past pre-stat size" 1 "probe for growth"
+run "red-load-poststat-removed" "load omits post-read snapshot" 1 "re-fstat the same FD"
+run "red-load-poststat-change-ignored" "load ignores post-read metadata change" 1 "metadata timestamps"
+run "red-load-unbounded-eintr-read" "load EINTR retry unbounded" 1 "load EINTR retry must be bounded"
+run "red-write-unbounded-eintr" "write EINTR retry unbounded" 1 "write EINTR retry must be bounded"
+run "red-write-zero-progress-loops" "zero-progress write spins" 1 "zero-progress write must fail closed"
+
 echo "--- GREEN variants ---"
 run "green-variant-space" "green space variant" 0
 run "green-variant-comment" "green comment variant" 0

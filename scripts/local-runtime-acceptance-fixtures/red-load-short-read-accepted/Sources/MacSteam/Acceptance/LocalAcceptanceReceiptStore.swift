@@ -57,7 +57,7 @@ struct LocalAcceptanceReceiptStore {
         let expectedSize = Int(preStat.st_size)
         guard expectedSize <= Self.maxReceiptBytes else { return .failed(.oversized) }
         var buffer = [UInt8](repeating: 0, count: expectedSize)
-        var total = 0
+var total = 0
         var readRetries = 0
         while total < expectedSize {
             let n = read(fileFD, &buffer[total], expectedSize - total)
@@ -69,7 +69,6 @@ struct LocalAcceptanceReceiptStore {
                 }
                 return .failed(.ioFailure)
             }
-            if n == 0 { return .failed(.ioFailure) }
             total += n
             readRetries = 0
         }
@@ -86,7 +85,7 @@ struct LocalAcceptanceReceiptStore {
               postStat.st_ctimespec.tv_nsec == preStat.st_ctimespec.tv_nsec else {
             return .failed(.ioFailure)
         }
-        let bytes = Data(buffer)
+        let bytes = Data(buffer.prefix(total))
         if missingFileStatus == ENOENT { return .notFound }
         guard let decoded = decode(bytes) else { return .failed(.malformedJSON) }
         if decoded.deterministicJSON != bytes { return .failed(.nonCanonicalBytes) }

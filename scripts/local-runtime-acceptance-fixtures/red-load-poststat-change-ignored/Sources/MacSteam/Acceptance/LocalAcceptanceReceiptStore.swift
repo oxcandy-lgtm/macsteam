@@ -77,13 +77,7 @@ struct LocalAcceptanceReceiptStore {
         if read(fileFD, &extraByte, 1) != 0 { return .failed(.ioFailure) }
         var postStat = stat()
         _ = fstat(fileFD, &postStat)
-        guard postStat.st_dev == preStat.st_dev,
-              postStat.st_ino == preStat.st_ino,
-              postStat.st_size == preStat.st_size,
-              postStat.st_mtimespec.tv_sec == preStat.st_mtimespec.tv_sec,
-              postStat.st_mtimespec.tv_nsec == preStat.st_mtimespec.tv_nsec,
-              postStat.st_ctimespec.tv_sec == preStat.st_ctimespec.tv_sec,
-              postStat.st_ctimespec.tv_nsec == preStat.st_ctimespec.tv_nsec else {
+        guard postStat.st_size == preStat.st_size else {
             return .failed(.ioFailure)
         }
         let bytes = Data(buffer)
