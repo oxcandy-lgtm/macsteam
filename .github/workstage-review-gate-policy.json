@@ -124,6 +124,39 @@
       "scripts/workstage-review-gate-fixtures/"
     ]
   },
+  "protocol_recovery_fix_authorization": {
+      "schema_version": 1,
+      "authorization_comment_id": 5225253678,
+      "parent_sha": "464c18481aa19ea26b2ad574cea29632e208ce46",
+      "parent_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1",
+      "parent_commit_subject": "ci: quarantine unauthorized GATE1 closure (U1R18-R12-FIX3-GATE1-RECOVERY1)",
+      "failed_advance_run_id": 31247320739,
+      "failed_advance_job_id": 93077948452,
+      "failed_advance_guard": "protocol_recovery_review_run_final_state_wrong",
+      "failed_advance_message": "Review Gate log final state != REVIEW_COMPLETE_NX_REQUIRED",
+      "historical_review_gate_run_id": 31244379661,
+      "historical_review_gate_job_id": 93070440269,
+      "historical_review_gate_expected_state": "REVIEW_COMPLETE_NX_REQUIRED",
+      "historical_review_gate_head_sha": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+      "corrective_controller_review_id": 4888344128,
+      "required_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1",
+      "required_commit_subject": "ci: parse timestamped Review Gate proof (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1)",
+      "single_direct_child_only": true,
+      "allowed_exact_paths": [
+        ".github/workstage-review-gate-policy.json",
+        "scripts/workstage-review-gate.py",
+        "scripts/test-workstage-review-gate.sh",
+        "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+        "scripts/workstage-review-gate-fixtures/apply-source-mutation.py"
+      ],
+      "allowed_path_prefixes": [
+        "scripts/workstage-review-gate-fixtures/"
+      ],
+      "ready_authorized": false,
+      "merge_authorized": false,
+      "release_authorized": false,
+      "next_product_workstream_authorized": false
+    },
   "core_ci": {
     "required_jobs": [
       "Swift Build",

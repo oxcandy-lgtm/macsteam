@@ -1,0 +1,21 @@
+{
+  "sha": "180c5ea1ee2f4b3c9d8a7b6c5e4f3a2b1c0d9e8f",
+  "parents": [
+    {
+      "sha": "464c18481aa19ea26b2ad574cea29632e208ce46"
+    }
+  ],
+  "commit": {
+    "message": "ci: parse timestamped Review Gate proof (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1)\n\nWorkstream: U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1",
+    "committer": {
+      "date": "2026-08-08T08:05:00Z",
+      "name": "T",
+      "email": "t@example.com"
+    },
+    "author": {
+      "date": "2026-08-08T08:05:00Z",
+      "name": "T",
+      "email": "t@example.com"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "sha": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+  "parents": [
+    {
+      "sha": "615455c88a4ddae1aa71739f228f609653ef61f4"
+    }
+  ],
+  "commit": {
+    "message": "ci: admit R12 durable receipt repair chain (U1R18-R12-FIX3-GATE1)\n\nWorkstream: U1R18-R12-FIX3-GATE1",
+    "committer": {
+      "date": "2026-08-07T13:00:00Z",
+      "name": "T",
+      "email": "t@example.com"
+    },
+    "author": {
+      "date": "2026-08-07T13:00:00Z",
+      "name": "T",
+      "email": "t@example.com"
+    }
+  }
+}

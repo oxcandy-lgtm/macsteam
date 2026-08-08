@@ -1,0 +1,65 @@
+{
+  "total_count": 6,
+  "jobs": [
+    {
+      "id": 93070440269,
+      "name": "Review Gate",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31244379661,
+      "started_at": "2026-08-08T06:38:39Z",
+      "completed_at": "2026-08-08T06:39:06Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/31244379661/job/93070440269"
+    },
+    {
+      "id": 93070420504,
+      "name": "Advance Gate",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 31244379661,
+      "started_at": "2026-08-08T06:38:37Z",
+      "completed_at": "2026-08-08T06:38:37Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/31244379661/job/93070420504"
+    },
+    {
+      "id": 93070420512,
+      "name": "Submission Gate",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 31244379661,
+      "started_at": "2026-08-08T06:38:37Z",
+      "completed_at": "2026-08-08T06:38:37Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/31244379661/job/93070420512"
+    },
+    {
+      "id": 93077948452,
+      "name": "Advance Gate",
+      "status": "completed",
+      "conclusion": "failure",
+      "run_id": 31247320739,
+      "started_at": "2026-08-08T07:57:22Z",
+      "completed_at": "2026-08-08T07:57:37Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/31247320739/job/93077948452"
+    },
+    {
+      "id": 93077948775,
+      "name": "Submission Gate",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 31247320739,
+      "started_at": "2026-08-08T07:57:14Z",
+      "completed_at": "2026-08-08T07:57:14Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/31247320739/job/93077948775"
+    },
+    {
+      "id": 93077948833,
+      "name": "Review Gate",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 31247320739,
+      "started_at": "2026-08-08T07:57:14Z",
+      "completed_at": "2026-08-08T07:57:14Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/31247320739/job/93077948833"
+    }
+  ]
+}

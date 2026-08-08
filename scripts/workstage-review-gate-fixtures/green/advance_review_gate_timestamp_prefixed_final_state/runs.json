@@ -1,0 +1,29 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "id": 31244379661,
+      "name": "Workstream Review Gate",
+      "head_sha": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "started_at": "2026-08-08T06:34:00Z",
+      "created_at": "2026-08-08T06:34:00Z",
+      "completed_at": "2026-08-08T06:39:07Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/31244379661"
+    },
+    {
+      "id": 31244286734,
+      "name": "Workstream Review Gate",
+      "head_sha": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "started_at": "2026-08-08T06:20:00Z",
+      "created_at": "2026-08-08T06:20:00Z",
+      "completed_at": "2026-08-08T06:25:00Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/31244286734"
+    }
+  ]
+}

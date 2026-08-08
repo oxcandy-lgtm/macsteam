@@ -56,6 +56,7 @@ CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 SOURCE_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-authorization:v1 -->"
 SOURCE_CHAIN_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-chain-authorization:v1 -->"
 GATE_FIX_MARKER = "<!-- macsteam-gate-fix-authorization:v1 -->"
+PROTOCOL_RECOVERY_FIX_MARKER = "<!-- macsteam-protocol-recovery-fix-authorization:v1 -->"
 
 WORKER_SCHEMA_PATH = "Contracts/workstream-report.schema.json"
 CONTROLLER_SCHEMA_PATH = "Contracts/controller-review.schema.json"
@@ -271,12 +272,25 @@ def parse_json_block(body, marker):
 
 
 def parse_iso_datetime(ts):
-    """Parse an ISO 8601 datetime string, returning a timezone-aware datetime."""
+    """Parse an ISO 8601 datetime string, returning a timezone-aware datetime.
+
+    GitHub Actions job-log timestamps carry 7-digit fractional seconds
+    (e.g. "2026-08-08T06:39:04.1690260Z"); datetime.fromisoformat on some
+    Python versions only accepts 0, 3 or 6 fraction digits, so the fraction
+    is normalized to 6 digits before parsing.
+    """
     if not ts:
         return None
     try:
         if ts.endswith("Z"):
             ts = ts[:-1] + "+00:00"
+        if "." in ts:
+            frac_digits = len(ts.split(".")[1].split("+")[0].split("-")[0])
+            if frac_digits not in (0, 3, 6):
+                head, _, tail = ts.partition(".")
+                frac = tail.split("+")[0].split("-")[0]
+                zone = tail[len(frac):]
+                ts = head + "." + frac[:6].ljust(6, "0") + zone
         return datetime.fromisoformat(ts)
     except (ValueError, TypeError):
         raise GateError(EXIT_INFRA, "timestamp_malformed", f"Cannot parse datetime: {ts}")
@@ -789,7 +803,50 @@ class Gate:
         if recovery is not None:
             self._validate_recovery_policy(recovery)
 
+        fix = policy.get("protocol_recovery_fix_authorization")
+        if fix is not None:
+            self._validate_fix_policy(fix)
+
         return policy
+
+    def _validate_fix_policy(self, fix):
+        """Validate the protocol_recovery_fix_authorization policy object.
+
+        The FIX lane admits EXACTLY ONE gate-only direct child whose parent is
+        the recovery child (the reference implementation that already closed
+        the quarantine lane).  It must prove the recovery parser rejection
+        (failed advance), the historical Review Gate run whose log was
+        timestamp-prefixed (the root cause), and the corrective controller
+        review, all bound to immutable evidence.
+        """
+        if not isinstance(fix, dict):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "protocol_recovery_fix_authorization must be an object")
+        for field in ["schema_version", "authorization_comment_id",
+                      "parent_sha", "parent_workstream", "parent_commit_subject",
+                      "failed_advance_run_id", "failed_advance_job_id",
+                      "failed_advance_guard", "failed_advance_message",
+                      "historical_review_gate_run_id", "historical_review_gate_job_id",
+                      "historical_review_gate_expected_state",
+                      "historical_review_gate_head_sha",
+                      "corrective_controller_review_id",
+                      "required_workstream", "required_commit_subject",
+                      "single_direct_child_only",
+                      "allowed_exact_paths", "allowed_path_prefixes"]:
+            if field not in fix:
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Policy protocol_recovery_fix_authorization missing: " + field)
+        if not isinstance(fix.get("allowed_exact_paths"), list) or not fix.get("allowed_exact_paths"):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Protocol recovery fix allowed_exact_paths must be a non-empty array")
+        if not isinstance(fix.get("allowed_path_prefixes"), list) or not fix.get("allowed_path_prefixes"):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Protocol recovery fix allowed_path_prefixes must be a non-empty array")
+        if not isinstance(fix.get("authorization_comment_id"), int) \
+                or isinstance(fix.get("authorization_comment_id"), bool) \
+                or fix.get("authorization_comment_id") < 1:
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Protocol recovery fix authorization_comment_id must be a positive int")
 
     def _validate_recovery_policy(self, recovery):
         """Validate the standalone protocol_recovery_authorization policy object.
@@ -1021,6 +1078,11 @@ class Gate:
         if recovery:
             recovery_parent = recovery.get("parent_sha")
 
+        fix = self.policy.get("protocol_recovery_fix_authorization")
+        fix_parent = None
+        if fix:
+            fix_parent = fix.get("parent_sha")
+
         self._load_reviews()
 
         if self.parent_sha == bootstrap_head and self.expected_head == bootstrap_child:
@@ -1039,6 +1101,9 @@ class Gate:
                            or (gate_fix_grand and self.parent_sha == gate_fix_grand)):
             self.parent_authority = "gate_fix_authorization"
             self._validate_gate_fix_authorization(gate_fix, gate_fix_grand)
+        elif fix and self.parent_sha == fix_parent:
+            self.parent_authority = "protocol_recovery_fix_authorization"
+            self._validate_protocol_recovery_fix_authorization(fix)
         elif recovery and self.parent_sha == recovery_parent:
             self.parent_authority = "protocol_recovery_authorization"
             self._validate_protocol_recovery_authorization(recovery)
@@ -1672,6 +1737,50 @@ class Gate:
             if isinstance(data, dict) and data.get("state") == "REJECTED":
                 return data
         return None
+
+    # GitHub Actions prefixes every job log line with an ISO-8601 timestamp,
+    # e.g. "2026-08-08T06:39:04.1690260Z {...}".  The recovery final-state
+    # parser must strip that prefix before json.loads(line).
+
+    GATE_LOG_TS_PREFIX = re.compile(
+        r"^[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9:.]+(?:Z|[+-][0-9]{2}:[0-9]{2}))[ \t]+")
+
+    def _extract_last_gate_state_json_from_log(self, log, gate_state):
+        """Bounded, timestamp-aware last-gate-state extraction from an Actions log.
+
+        Returns (obj, ts_str) for the newest gate-state line whose state equals
+        gate_state, or (None, None) when no such line exists.  Each log line may
+        carry the GitHub Actions timestamp prefix; timestamped candidates sort
+        above untimestamped ones, ties are broken by line order, so a later
+        attempt can never shadow an older gate proof.
+        """
+        candidates = []
+        if isinstance(log, str):
+            for order, line in enumerate(log.splitlines()):
+                payload = line
+                ts_str = None
+                m = self.GATE_LOG_TS_PREFIX.match(line)
+                if m:
+                    ts_str = m.group(1)
+                    payload = line[m.end():]
+                if not payload.lstrip().startswith("{"):
+                    continue
+                try:
+                    obj = json.loads(payload)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(obj, dict) and obj.get("state") == gate_state:
+                    ts_parsed = None
+                    if ts_str:
+                        try:
+                            ts_parsed = parse_iso_datetime(ts_str)
+                        except GateError:
+                            ts_parsed = None
+                    candidates.append((order, ts_str or "", ts_parsed is not None, obj, ts_str))
+        if not candidates:
+            return None, None
+        best = max(candidates, key=lambda c: (c[2], c[1], c[0]))
+        return best[3], best[4]
 
     def _validate_failed_advance_run(self, run_id, source_sha, guard, rejected_parent_sha):
         if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
@@ -2422,16 +2531,9 @@ class Gate:
         if not log_lines:
             raise GateError(EXIT_POLICY, "protocol_recovery_review_run_final_state_wrong",
                             "Review Gate job log unavailable")
-        final = {}
-        for line in reversed(log_lines):
-            try:
-                obj = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(obj, dict) and obj.get("state") == "REVIEW_COMPLETE_NX_REQUIRED":
-                final = obj
-                break
-        if final.get("state") != "REVIEW_COMPLETE_NX_REQUIRED":
+        final, _ = self._extract_last_gate_state_json_from_log(
+            "\n".join(log_lines), "REVIEW_COMPLETE_NX_REQUIRED")
+        if final is None or final.get("state") != "REVIEW_COMPLETE_NX_REQUIRED":
             raise GateError(EXIT_POLICY, "protocol_recovery_review_run_final_state_wrong",
                             "Review Gate log final state != REVIEW_COMPLETE_NX_REQUIRED")
         if final.get("head_sha") != recovery.get("parent_sha"):
@@ -2457,6 +2559,318 @@ class Gate:
         if not (unauthorized_at < run_completed_at < corrective_at < child_date):
             raise GateError(EXIT_POLICY, "protocol_recovery_chronology_wrong",
                             "Recovery chronology out of order")
+
+    # === Protocol recovery FIX authorization lane ===
+    #
+    # The FIX lane admits exactly ONE gate-only direct child whose parent is
+    # the recovery child (the reference implementation).  The recovery parser
+    # rejected the reference child on 'protocol_recovery_review_run_final_state_wrong'
+    # because it ran bare json.loads(line) against timestamp-prefixed GitHub
+    # Actions logs.  Every piece of that rejection (the failed advance run,
+    # the historical Review Gate run and its timestamped final state, the
+    # corrective controller review) must be re-proven below, and the policy
+    # object must not widen what the immutable authorization comment allows.
+
+    FIX_AUTH_FIELDS = (
+        "parent_sha", "parent_workstream",
+        "failed_advance_run_id", "failed_advance_job_id",
+        "failed_advance_guard", "failed_advance_message",
+        "historical_review_gate_run_id", "historical_review_gate_job_id",
+        "historical_review_gate_expected_state", "historical_review_gate_head_sha",
+        "corrective_controller_review_id",
+        "required_workstream", "required_commit_subject",
+        "single_direct_child_only",
+        "allowed_exact_paths", "allowed_path_prefixes",
+    )
+
+    def _validate_protocol_recovery_fix_comment(self, fix):
+        """Bind and verify the immutable top-level authorization comment."""
+        comment_id = fix.get("authorization_comment_id")
+        comment = self.client.get_comment_by_id(comment_id)
+        if not isinstance(comment, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Protocol recovery fix authorization comment is not an object")
+        if comment.get("in_reply_to_id") or comment.get("path") or comment.get("position"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_top_level_required",
+                            "Protocol recovery fix authorization comment is not top-level")
+        if comment.get("created_at") != comment.get("updated_at"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_edited",
+                            "Protocol recovery fix authorization comment was edited")
+        body = comment.get("body", "") or ""
+        marker_count = body.count(PROTOCOL_RECOVERY_FIX_MARKER)
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_marker_duplicated",
+                            "Protocol recovery fix marker count != 1")
+        json_data, _, block_count = parse_json_block(body, PROTOCOL_RECOVERY_FIX_MARKER)
+        if block_count != 1:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_json_duplicated",
+                            "Protocol recovery fix JSON block count != 1")
+        if json_data is None or not isinstance(json_data, dict):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_malformed_json",
+                            "Protocol recovery fix authorization JSON malformed")
+        if json_data.get("kind") != "protocol_recovery_fix_authorization":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_wrong_kind",
+                            "Protocol recovery fix authorization kind mismatch")
+        for field in self.FIX_AUTH_FIELDS:
+            if field not in json_data:
+                raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_policy_mismatch",
+                                f"Protocol recovery fix authorization missing field: {field}")
+            if json_data.get(field) != fix.get(field):
+                raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_policy_mismatch",
+                                f"Protocol recovery fix authorization field mismatch: {field}")
+        for flag in ("ready_authorized", "merge_authorized", "release_authorized",
+                     "next_product_workstream_authorized"):
+            if json_data.get(flag):
+                raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_unsafe_authorization",
+                                f"Protocol recovery fix authorization {flag} == true")
+        child_date_str = (self.commit_head.get("commit", {}) or {}).get("committer", {}).get("date")
+        if not self._check_comment_before_commit_ts(comment, child_date_str):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_auth_after_child",
+                            "Protocol recovery fix authorization must precede the fix child")
+
+    def _validate_protocol_recovery_fix_authorization(self, fix):
+        self._validate_protocol_recovery_scope(fix)
+        self._validate_protocol_recovery_fix_comment(fix)
+
+        parent_sha = fix.get("parent_sha")
+        required_ws = fix.get("required_workstream")
+        required_subject = fix.get("required_commit_subject")
+
+        if self.parent_sha != parent_sha:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_wrong_parent",
+                            "Protocol recovery fix parent SHA mismatch")
+
+        parent_msg = (self.commit_parent.get("commit", {}) or {}).get("message", "") or ""
+        parent_first = parent_msg.split("\n")[0].strip() if parent_msg else ""
+        if parent_first != fix.get("parent_commit_subject"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_wrong_parent",
+                            "Protocol recovery fix parent subject mismatch")
+        parent_ws = fix.get("parent_workstream")
+        if not re.search(rf"^Workstream:\s*{re.escape(parent_ws)}\s*$", parent_msg, re.MULTILINE):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_wrong_parent",
+                            "Protocol recovery fix parent workstream mismatch")
+
+        if fix.get("single_direct_child_only") is not True:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_second_child",
+                            "Protocol recovery fix single_direct_child_only != true")
+
+        head_commit = self.commit_head.get("commit", {}) or {}
+        head_msg = head_commit.get("message", "") or ""
+        head_first = head_msg.split("\n")[0].strip() if head_msg else ""
+        if head_first != required_subject:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_wrong_subject",
+                            "Protocol recovery fix child subject mismatch")
+        ws_trailers = re.findall(r"(?:^|\n)Workstream:\s*([^\s]+)", head_msg)
+        if ws_trailers != [required_ws]:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_wrong_workstream",
+                            "Protocol recovery fix child workstream mismatch")
+
+        changed = self._get_changed_files()
+        if not changed:
+            raise GateError(EXIT_INFRA, "protocol_recovery_fix_no_changed_files",
+                            "Protocol recovery fix child has no changed files")
+        for filepath in changed:
+            if not self._recovery_path_allowed(filepath, fix):
+                raise GateError(EXIT_POLICY, "protocol_recovery_fix_forbidden_path",
+                                f"Protocol recovery fix child changed forbidden path: {filepath}")
+
+        corrective_review = self._fetch_recovery_review(
+            fix.get("corrective_controller_review_id"),
+            "protocol_recovery_fix_corrective_review_missing")
+
+        self._validate_protocol_recovery_fix_failed_advance(fix)
+        self._validate_protocol_recovery_fix_historical_gate(fix)
+        self._validate_protocol_recovery_fix_corrective_review(fix, corrective_review)
+        self._validate_protocol_recovery_fix_chronology(fix)
+
+    def _validate_protocol_recovery_fix_failed_advance(self, fix):
+        """The recovery advance on the reference child must have failed with the
+        exact parser guard in its Advance Gate log."""
+        run_id = fix.get("failed_advance_run_id")
+        job_id = fix.get("failed_advance_job_id")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_missing",
+                            "Protocol recovery fix failed advance run missing")
+        if run.get("head_sha") != fix.get("parent_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_wrong_head",
+                            "Protocol recovery fix failed advance run head mismatch")
+        if run.get("status") != "completed" or run.get("conclusion") != "failure":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_not_failed",
+                            "Protocol recovery fix failed advance run not failed")
+        jobs = self.client.get_workflow_jobs(run_id)
+        if not isinstance(jobs, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Protocol recovery fix failed advance jobs unparseable")
+        job = None
+        for j in jobs:
+            if isinstance(j, dict) and j.get("id") == job_id:
+                job = j
+                break
+        if job is None:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_job_missing",
+                            "Protocol recovery fix failed advance job missing")
+        if job.get("name") != "Advance Gate":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_job_missing",
+                            "Protocol recovery fix failed advance job is not Advance Gate")
+        if job.get("status") != "completed" or job.get("conclusion") != "failure":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_job_not_failed",
+                            "Protocol recovery fix failed advance job not failed")
+        log = self.client.get_job_log(job_id)
+        gate_json = self._extract_gate_json_from_log(log)
+        if gate_json is None:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_guard_missing",
+                            "Protocol recovery fix failed advance log has no REJECTED JSON")
+        if gate_json.get("guard_label") != fix.get("failed_advance_guard"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_guard_mismatch",
+                            "Protocol recovery fix failed advance guard mismatch")
+        if gate_json.get("message") != fix.get("failed_advance_message"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_guard_mismatch",
+                            "Protocol recovery fix failed advance message mismatch")
+        if gate_json.get("head_sha") != fix.get("parent_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_wrong_head",
+                            "Protocol recovery fix failed advance log head mismatch")
+        if gate_json.get("parent_sha") != fix.get("historical_review_gate_head_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_failed_advance_wrong_parent",
+                            "Protocol recovery fix failed advance log parent mismatch")
+
+    def _validate_protocol_recovery_fix_historical_gate(self, fix):
+        """The historical Review Gate run whose final state is timestamp-prefixed
+        must be re-proven: the run/job exist, the final gate state is extracted
+        with the timestamp-aware parser, and the state timestamp falls inside
+        the run window."""
+        run_id = fix.get("historical_review_gate_run_id")
+        job_id = fix.get("historical_review_gate_job_id")
+        expected_state = fix.get("historical_review_gate_expected_state")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_run_missing",
+                            "Protocol recovery fix historical review gate run missing")
+        if run.get("head_sha") != fix.get("historical_review_gate_head_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_wrong_head",
+                            "Protocol recovery fix historical review gate head mismatch")
+        if run.get("status") != "completed" or run.get("conclusion") != "success":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_run_not_success",
+                            "Protocol recovery fix historical review gate run not success")
+        jobs = self.client.get_workflow_jobs(run_id)
+        if not isinstance(jobs, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Protocol recovery fix historical jobs unparseable")
+        job = None
+        for j in jobs:
+            if isinstance(j, dict) and j.get("id") == job_id:
+                job = j
+                break
+        if job is None:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_job_missing",
+                            "Protocol recovery fix historical review gate job missing")
+        if job.get("name") != "Review Gate":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_job_missing",
+                            "Protocol recovery fix historical job is not Review Gate")
+        if job.get("status") != "completed" or job.get("conclusion") != "success":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_job_not_success",
+                            "Protocol recovery fix historical review gate job not success")
+        log = self.client.get_job_log(job_id)
+        final, ts_str = self._extract_last_gate_state_json_from_log(log, expected_state)
+        if final is None:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_final_state_missing",
+                            "Protocol recovery fix historical final state missing")
+        if final.get("head_sha") != fix.get("historical_review_gate_head_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_final_state_wrong",
+                            "Protocol recovery fix historical final state head mismatch")
+        if final.get("pr_number") != self.pr_number:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_final_state_wrong",
+                            "Protocol recovery fix historical final state PR mismatch")
+        if final.get("repository") != self.repo:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_final_state_wrong",
+                            "Protocol recovery fix historical final state repo mismatch")
+        if not ts_str:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_final_state_untimestamped",
+                            "Protocol recovery fix historical final state has no timestamp")
+        state_ts = parse_iso_datetime(ts_str)
+        started = parse_iso_datetime(run.get("started_at")) or parse_iso_datetime(run.get("created_at"))
+        completed = parse_iso_datetime(run.get("completed_at")) or parse_iso_datetime(run.get("updated_at"))
+        if state_ts is None or started is None or completed is None:
+            raise GateError(EXIT_INFRA, "protocol_recovery_fix_chronology_unprovable",
+                            "Protocol recovery fix historical run window unprovable")
+        if not (started <= state_ts <= completed):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_review_gate_final_state_outside_window",
+                            "Protocol recovery fix historical final state outside run window")
+
+    def _validate_protocol_recovery_fix_corrective_review(self, fix, corrective):
+        """The corrective controller review rejection must bind the exact same
+        unauthorized GATE1 closure the historical review gate proved, and the
+        parser lane must never be allowed to re-authorize."""
+        if corrective.get("id") != fix.get("corrective_controller_review_id"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_missing",
+                            "Protocol recovery fix corrective review missing")
+        if corrective.get("commit_id") != fix.get("historical_review_gate_head_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_wrong_head",
+                            "Protocol recovery fix corrective review head mismatch")
+        if corrective.get("state") not in ("COMMENTED", "CHANGES_REQUESTED"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_not_rejected",
+                            "Protocol recovery fix corrective review is not rejected")
+        body = corrective.get("body", "") or ""
+        marker_count = body.count(CONTROLLER_MARKER)
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_malformed",
+                            "Protocol recovery fix corrective review marker count != 1")
+        data, _, block_count = parse_json_block(body, CONTROLLER_MARKER)
+        if block_count != 1 or not isinstance(data, dict):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_malformed",
+                            "Protocol recovery fix corrective review JSON malformed")
+        if data.get("kind") != "controller_review" or data.get("decision") != "rejected":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_not_rejected",
+                            "Protocol recovery fix corrective review decision != rejected")
+        if data.get("head_sha") != fix.get("historical_review_gate_head_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_wrong_head",
+                            "Protocol recovery fix corrective review head mismatch")
+        if data.get("classification") != "RED_U1R18_R12_FIX3_GATE1_PROTOCOL_INTEGRITY_BREACH":
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_wrong_classification",
+                            "Protocol recovery fix corrective review classification mismatch")
+        if data.get("review_complete") is not True:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_incomplete",
+                            "Protocol recovery fix corrective review not complete")
+        if data.get("nx_required_for_next_workstream") is not True:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_incomplete",
+                            "Protocol recovery fix corrective review missing NX")
+        for flag in ("ready_authorized", "merge_authorized", "release_authorized"):
+            if data.get(flag):
+                raise GateError(EXIT_POLICY, "protocol_recovery_fix_unsafe_authorization",
+                                f"Protocol recovery fix corrective review {flag} == true")
+        quarantined = set(self.policy.get("quarantined_review_ids", []))
+        if corrective.get("id") in quarantined:
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_corrective_review_quarantined",
+                            "Protocol recovery fix corrective review cannot be quarantined")
+
+    def _validate_protocol_recovery_fix_chronology(self, fix):
+        """historical review gate completion < corrective review < recovery child
+        < failed advance < fix child"""
+        corrective = self._fetch_recovery_review(
+            fix.get("corrective_controller_review_id"),
+            "protocol_recovery_fix_corrective_review_missing")
+        gate_run = self.client.get_workflow_run_by_id(fix.get("historical_review_gate_run_id"))
+        fail_run = self.client.get_workflow_run_by_id(fix.get("failed_advance_run_id"))
+        if not isinstance(gate_run, dict) or not isinstance(fail_run, dict):
+            raise GateError(EXIT_INFRA, "protocol_recovery_fix_chronology_unprovable",
+                            "Protocol recovery fix chronology runs unavailable")
+
+        corrective_at = parse_iso_datetime(corrective.get("submitted_at"))
+        gate_completed = parse_iso_datetime(gate_run.get("completed_at")) or \
+            parse_iso_datetime(gate_run.get("updated_at"))
+        fail_created = parse_iso_datetime(fail_run.get("created_at")) or \
+            parse_iso_datetime(fail_run.get("started_at"))
+        parent_date = parse_iso_datetime(
+            (self.commit_parent.get("commit", {}) or {}).get("committer", {}).get("date"))
+        child_date = self._head_commit_datetime()
+
+        if corrective_at is None or gate_completed is None or fail_created is None \
+                or parent_date is None or child_date is None:
+            raise GateError(EXIT_INFRA, "protocol_recovery_fix_chronology_unprovable",
+                            "Protocol recovery fix chronology timestamps unavailable")
+        if not (gate_completed < corrective_at < parent_date < fail_created < child_date):
+            raise GateError(EXIT_POLICY, "protocol_recovery_fix_chronology_wrong",
+                            "Protocol recovery fix chronology out of order")
 
     # === Normal parent review validation ===
 
