@@ -280,10 +280,29 @@ def apply_mutation(source, mutation_name):
             "Gate-fix: read child scope from a fixed narrow list (rejects valid gate files)"
         ),
 
-        "gate_fix_chronology_bypassed": (
+"gate_fix_chronology_bypassed": (
             'if not self._check_comment_before_commit_ts(\n                {"created_at": getattr(self, "gate_fix_auth_created_at", None)},\n                head_date_str):',
             'if self._check_comment_before_commit_ts(\n                {"created_at": getattr(self, "gate_fix_auth_created_at", None)},\n                head_date_str):',
             "Gate-fix: invert child chronology check (rejects valid authorization)"
+        ),
+
+        # === GATE1-RECOVERY1: protocol recovery authorization anti-bypass ===
+        "recovery_quarantine_run_bypassed": (
+            'if run_id not in qruns:',
+            'if run_id in qruns:',
+            "Protocol recovery: invert quarantine-run membership (rejects quarantined runs)"
+        ),
+
+        "recovery_unauthorized_review_quarantine_inverted": (
+            'if recovery.get("unauthorized_controller_review_id") not in quarantined:',
+            'if recovery.get("unauthorized_controller_review_id") in quarantined:',
+            "Protocol recovery: invert unauthorized-review quarantine (rejects quarantined review)"
+        ),
+
+        "recovery_chronology_inverted": (
+            'if not (unauthorized_at < run_completed_at < corrective_at < child_date):',
+            'if (unauthorized_at < run_completed_at < corrective_at < child_date):',
+            "Protocol recovery: invert chronology ordering (rejects valid chronology)"
         ),
     }
 

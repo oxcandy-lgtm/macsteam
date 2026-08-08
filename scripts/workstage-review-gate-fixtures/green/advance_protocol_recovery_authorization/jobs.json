@@ -1,0 +1,29 @@
+{
+  "total_count": 3,
+  "jobs": [
+    {
+      "id": 900000301,
+      "name": "Review Gate",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31244379661,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/900000301"
+    },
+    {
+      "id": 900000302,
+      "name": "Advance Gate",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 31244379661,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/900000302"
+    },
+    {
+      "id": 900000303,
+      "name": "Submission Gate",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 31244379661,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/900000303"
+    }
+  ]
+}

@@ -26,7 +26,8 @@
             "scripts/workstage-review-gate-fixtures/"
         ]
     },
-  "quarantined_review_ids": [4841357081],
+  "quarantined_review_ids": [4841357081, 4888334695],
+  "quarantined_review_run_ids": [31244379661],
   "red_parent_source_fix_bridge": {
     "authorization_schema_version": 1,
     "authorization_comment_id": 5211174534,
@@ -96,6 +97,32 @@
     "bridge_workstream": "U1R18-R12-FIX3-GATE1",
     "bridge_commit_subject": "ci: admit R12 durable receipt repair chain (U1R18-R12-FIX3-GATE1)",
     "single_direct_child_only": true
+  },
+  "protocol_recovery_authorization": {
+    "schema_version": 1,
+    "parent_sha": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+    "parent_workstream": "U1R18-R12-FIX3-GATE1",
+    "parent_commit_subject": "ci: admit R12 durable receipt repair chain (U1R18-R12-FIX3-GATE1)",
+    "corrective_controller_review_id": 4888344128,
+    "corrective_classification": "RED_U1R18_R12_FIX3_GATE1_PROTOCOL_INTEGRITY_BREACH",
+    "unauthorized_controller_review_id": 4888334695,
+    "unauthorized_review_gate_run_id": 31244379661,
+    "unauthorized_review_gate_jobs": ["Review Gate", "Advance Gate", "Submission Gate"],
+    "historical_worker_report_comment_id": 5224935457,
+    "historical_submission_run_id": 31244286734,
+    "required_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1",
+    "required_commit_subject": "ci: quarantine unauthorized GATE1 closure (U1R18-R12-FIX3-GATE1-RECOVERY1)",
+    "single_direct_child_only": true,
+    "allowed_exact_paths": [
+      ".github/workstage-review-gate-policy.json",
+      "scripts/workstage-review-gate.py",
+      "scripts/test-workstage-review-gate.sh",
+      "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+      "scripts/workstage-review-gate-fixtures/apply-source-mutation.py"
+    ],
+    "allowed_path_prefixes": [
+      "scripts/workstage-review-gate-fixtures/"
+    ]
   },
   "core_ci": {
     "required_jobs": [

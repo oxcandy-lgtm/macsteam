@@ -119,6 +119,17 @@ CHAIN_FIX1_WS = "U1R18-R12-FIX1"
 CHAIN_FIX2_WS = "U1R18-R12-FIX2"
 CHAIN_FIX3_WS = "U1R18-R12-FIX3"
 
+# === Protocol recovery authorization constants (GATE1-RECOVERY1) ===
+RECOVERY_PARENT = "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f"
+RECOVERY_HEAD = "aa11bb22cc33dd44ee55ff6677880099aa99ee11"
+RECOVERY_SUBJECT = "ci: quarantine unauthorized GATE1 closure (U1R18-R12-FIX3-GATE1-RECOVERY1)"
+RECOVERY_WORKSTREAM = "U1R18-R12-FIX3-GATE1-RECOVERY1"
+RECOVERY_CORRECTIVE_REVIEW_ID = 4888344128
+RECOVERY_UNAUTHORIZED_REVIEW_ID = 4888334695
+RECOVERY_REVIEW_RUN_ID = 31244379661
+RECOVERY_REVIEW_JOB_ID = 900000301
+RECOVERY_CORRECTIVE_CLASS = "RED_U1R18_R12_FIX3_GATE1_PROTOCOL_INTEGRITY_BREACH"
+
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "workstage-review-gate-policy.json")
 
 
@@ -2795,6 +2806,203 @@ def m_workflow_jobs_block_missing(d):
     save_workflow(d, doc)
 
 
+# === Protocol recovery authorization lane mutations (GATE1-RECOVERY1) ===
+# Base fixture: green/advance_protocol_recovery_authorization.
+#
+# The recovery lane has no PR comment — the policy object itself is the
+# authority. Every mutation below either breaks one of the proven breach
+# artifacts (corrective review, unauthorized review, unauthorized review run /
+# its REVIEW_COMPLETE_NX_REQUIRED final state), removes a quarantine binding,
+# or violates the single direct-child gate-only contract.
+
+def _recovery_policy(d):
+    path = os.path.join(d, "policy.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return load_policy()
+
+
+def _save_recovery_policy(d, p):
+    save_json(d, "policy.json", p)
+
+
+def _recovery_reviews(d):
+    data = load_json(d, "reviews.json")
+    return data if isinstance(data, list) else [data]
+
+
+def _recovery_runs(d):
+    return load_json(d, "runs.json")
+
+
+def _recovery_jobs(d):
+    return load_json(d, "jobs.json")
+
+
+def _recovery_job_logs(d):
+    return load_json(d, "job-logs.json")
+
+
+def _recovery_review_subject(d):
+    return load_json(d, "commit_HEAD.json")
+
+
+def m_protocol_recovery_corrective_review_missing(d):
+    reviews = _recovery_reviews(d)
+    reviews = [r for r in reviews if r.get("id") != RECOVERY_CORRECTIVE_REVIEW_ID]
+    save_json(d, "reviews.json", reviews)
+
+
+def m_protocol_recovery_corrective_review_wrong_classification(d):
+    reviews = _recovery_reviews(d)
+    for r in reviews:
+        if r.get("id") == RECOVERY_CORRECTIVE_REVIEW_ID:
+            r["body"] = r["body"].replace(RECOVERY_CORRECTIVE_CLASS, "RED_U1R18_WRONG_CLASSIFICATION")
+    save_json(d, "reviews.json", reviews)
+
+
+def m_protocol_recovery_corrective_review_quarantined(d):
+    p = _recovery_policy(d)
+    q = p.get("quarantined_review_ids", [])
+    if RECOVERY_CORRECTIVE_REVIEW_ID not in q:
+        q.append(RECOVERY_CORRECTIVE_REVIEW_ID)
+    _save_recovery_policy(d, p)
+
+
+def m_protocol_recovery_unauthorized_review_missing(d):
+    reviews = _recovery_reviews(d)
+    reviews = [r for r in reviews if r.get("id") != RECOVERY_UNAUTHORIZED_REVIEW_ID]
+    save_json(d, "reviews.json", reviews)
+
+
+def m_protocol_recovery_unauthorized_review_not_quarantined(d):
+    p = _recovery_policy(d)
+    q = p.get("quarantined_review_ids", [])
+    if RECOVERY_UNAUTHORIZED_REVIEW_ID in q:
+        q.remove(RECOVERY_UNAUTHORIZED_REVIEW_ID)
+    _save_recovery_policy(d, p)
+
+
+def m_protocol_recovery_review_run_missing(d):
+    runs = _recovery_runs(d)
+    runs["workflow_runs"] = [r for r in runs.get("workflow_runs", [])
+                             if r.get("id") != RECOVERY_REVIEW_RUN_ID]
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_review_run_not_success(d):
+    runs = _recovery_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == RECOVERY_REVIEW_RUN_ID:
+            r["conclusion"] = "failure"
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_review_run_wrong_head(d):
+    runs = _recovery_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == RECOVERY_REVIEW_RUN_ID:
+            r["head_sha"] = WRONG_SHA
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_review_run_not_quarantined(d):
+    p = _recovery_policy(d)
+    q = p.get("quarantined_review_run_ids", [])
+    if RECOVERY_REVIEW_RUN_ID in q:
+        q.remove(RECOVERY_REVIEW_RUN_ID)
+    _save_recovery_policy(d, p)
+
+
+def m_protocol_recovery_review_job_not_success(d):
+    data = _recovery_jobs(d)
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    for j in jobs:
+        if j.get("run_id") == RECOVERY_REVIEW_RUN_ID and j.get("name") == "Review Gate":
+            j["conclusion"] = "failure"
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_protocol_recovery_review_run_final_state_wrong(d):
+    logs = _recovery_job_logs(d)
+    key = str(RECOVERY_REVIEW_JOB_ID)
+    if key in logs:
+        logs[key] = logs[key].replace("REVIEW_COMPLETE_NX_REQUIRED",
+                                      "WAITING_FOR_CONTROLLER_REVIEW")
+    save_json(d, "job-logs.json", logs)
+
+
+def m_protocol_recovery_chronology_wrong(d):
+    reviews = _recovery_reviews(d)
+    for r in reviews:
+        if r.get("id") == RECOVERY_CORRECTIVE_REVIEW_ID:
+            r["submitted_at"] = "2026-08-08T06:30:00Z"
+    save_json(d, "reviews.json", reviews)
+
+
+def m_protocol_recovery_wrong_parent(d):
+    head = _recovery_review_subject(d)
+    head["parents"] = [{"sha": WRONG_SHA}]
+    save_json(d, "commit_HEAD.json", head)
+    p = _recovery_policy(d)
+    p["protocol_recovery_authorization"]["parent_sha"] = WRONG_SHA
+    _save_recovery_policy(d, p)
+    parent = load_json(d, "commit_PARENT.json")
+    parent["commit"]["message"] = "ci: not the recovery parent\n\nWorkstream: U1R18-R12-UNRELATED"
+    save_json(d, "commit_PARENT.json", parent)
+
+
+def m_protocol_recovery_wrong_subject(d):
+    head = _recovery_review_subject(d)
+    head["commit"]["message"] = "ci: wrong recovery subject\n\nWorkstream: " + RECOVERY_WORKSTREAM
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_protocol_recovery_wrong_workstream(d):
+    head = _recovery_review_subject(d)
+    head["commit"]["message"] = RECOVERY_SUBJECT + "\n\nWorkstream: U1R18-R12-WRONG-RECOVERY"
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_protocol_recovery_forbidden_path(d):
+    files = _bridge_files(d)
+    files.append("unknown/recovery/outside.txt")
+    save_json(d, "files.json", files)
+
+
+def m_protocol_recovery_merge_commit(d):
+    head = _recovery_review_subject(d)
+    head["parents"] = [{"sha": RECOVERY_PARENT}, {"sha": WRONG_SHA}]
+    save_json(d, "commit_HEAD.json", head)
+
+
+def _recovery_flag(d, flag):
+    reviews = _recovery_reviews(d)
+    for r in reviews:
+        if r.get("id") == RECOVERY_CORRECTIVE_REVIEW_ID:
+            r["body"] = r["body"].replace('"%s": false' % flag, '"%s": true' % flag)
+    save_json(d, "reviews.json", reviews)
+
+
+def m_protocol_recovery_ready_true(d):
+    _recovery_flag(d, "ready_authorized")
+
+
+def m_protocol_recovery_merge_true(d):
+    _recovery_flag(d, "merge_authorized")
+
+
+def m_protocol_recovery_release_true(d):
+    _recovery_flag(d, "release_authorized")
+
+
+def m_protocol_recovery_second_child(d):
+    p = _recovery_policy(d)
+    p["protocol_recovery_authorization"]["single_direct_child_only"] = False
+    _save_recovery_policy(d, p)
+
+
 # === Mutation registry ===
 
 MUTATIONS = {
@@ -3116,6 +3324,29 @@ MUTATIONS = {
     "workflow_yaml_unparseable": m_workflow_yaml_unparseable,
     "workflow_inputs_block_missing": m_workflow_inputs_block_missing,
     "workflow_jobs_block_missing": m_workflow_jobs_block_missing,
+
+# === GATE1-RECOVERY1: protocol recovery authorization lane ===
+    "protocol_recovery_corrective_review_missing": m_protocol_recovery_corrective_review_missing,
+    "protocol_recovery_corrective_review_wrong_classification": m_protocol_recovery_corrective_review_wrong_classification,
+    "protocol_recovery_corrective_review_quarantined": m_protocol_recovery_corrective_review_quarantined,
+    "protocol_recovery_unauthorized_review_missing": m_protocol_recovery_unauthorized_review_missing,
+    "protocol_recovery_unauthorized_review_not_quarantined": m_protocol_recovery_unauthorized_review_not_quarantined,
+    "protocol_recovery_review_run_missing": m_protocol_recovery_review_run_missing,
+    "protocol_recovery_review_run_not_success": m_protocol_recovery_review_run_not_success,
+    "protocol_recovery_review_run_wrong_head": m_protocol_recovery_review_run_wrong_head,
+    "protocol_recovery_review_run_not_quarantined": m_protocol_recovery_review_run_not_quarantined,
+    "protocol_recovery_review_job_not_success": m_protocol_recovery_review_job_not_success,
+    "protocol_recovery_review_run_final_state_wrong": m_protocol_recovery_review_run_final_state_wrong,
+    "protocol_recovery_chronology_wrong": m_protocol_recovery_chronology_wrong,
+    "protocol_recovery_wrong_parent": m_protocol_recovery_wrong_parent,
+    "protocol_recovery_wrong_subject": m_protocol_recovery_wrong_subject,
+    "protocol_recovery_wrong_workstream": m_protocol_recovery_wrong_workstream,
+    "protocol_recovery_forbidden_path": m_protocol_recovery_forbidden_path,
+    "protocol_recovery_merge_commit": m_protocol_recovery_merge_commit,
+    "protocol_recovery_ready_true": m_protocol_recovery_ready_true,
+    "protocol_recovery_merge_true": m_protocol_recovery_merge_true,
+    "protocol_recovery_release_true": m_protocol_recovery_release_true,
+    "protocol_recovery_second_child": m_protocol_recovery_second_child,
 }
 
 

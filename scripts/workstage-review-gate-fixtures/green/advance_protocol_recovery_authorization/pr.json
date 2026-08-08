@@ -1,0 +1,22 @@
+{
+  "number": 2,
+  "head": {
+    "ref": "feat/ultimate-cloverpit-u1",
+    "sha": "aa11bb22cc33dd44ee55ff6677880099aa99ee11",
+    "repo": {
+      "full_name": "oxcandy-lgtm/macsteam"
+    }
+  },
+  "base": {
+    "ref": "feat/public-oss-bootstrap",
+    "repo": {
+      "full_name": "oxcandy-lgtm/macsteam"
+    }
+  },
+  "state": "open",
+  "draft": true,
+  "merged": false,
+  "mergeable": "MERGEABLE",
+  "title": "MacsTeam R12 GATE1 Protocol Recovery",
+  "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2"
+}

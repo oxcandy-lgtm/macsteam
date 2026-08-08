@@ -706,6 +706,36 @@ class Gate:
                 raise GateError(EXIT_INFRA, "policy_malformed",
                                 f"Policy missing required field: {field}")
 
+        recovery = policy.get("protocol_recovery_authorization")
+        if recovery is not None:
+            if "quarantined_review_run_ids" not in policy:
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Policy missing required field: quarantined_review_run_ids")
+
+        qruns = policy.get("quarantined_review_run_ids", [])
+        if not isinstance(qruns, list):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Policy quarantined_review_run_ids must be an array")
+        if len(qruns) != len(set(qruns)):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Policy quarantined_review_run_ids contains duplicates")
+        for rid in qruns:
+            if not isinstance(rid, int) or isinstance(rid, bool) or rid < 1:
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                f"Policy quarantined_review_run_ids contains invalid id: {rid!r}")
+
+        qrevs = policy.get("quarantined_review_ids")
+        if not isinstance(qrevs, list):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Policy quarantined_review_ids must be an array")
+        if len(qrevs) != len(set(qrevs)):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Policy quarantined_review_ids contains duplicates")
+        for rid in qrevs:
+            if not isinstance(rid, int) or isinstance(rid, bool) or rid < 1:
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                f"Policy quarantined_review_ids contains invalid id: {rid!r}")
+
         bootstrap = policy.get("bootstrap", {})
         for field in ["head_sha", "only_child_head", "worker_report_comment_id",
                       "controller_review_id", "classification"]:
@@ -755,7 +785,50 @@ class Gate:
         if chain_bridge is not None:
             self._validate_chain_policy(chain_bridge)
 
+        recovery = policy.get("protocol_recovery_authorization")
+        if recovery is not None:
+            self._validate_recovery_policy(recovery)
+
         return policy
+
+    def _validate_recovery_policy(self, recovery):
+        """Validate the standalone protocol_recovery_authorization policy object.
+
+        The recovery lane admits EXACTLY ONE gate-only direct child (RECOVERY1)
+        whose parent is the unauthorized GATE1 closure commit. Every artifact of
+        the breach (the accepting controller review, the dispatched review-gate
+        run and its final REVIEW_COMPLETE_NX_REQUIRED state) plus the
+        corrective rejection must be proven and quarantined before the lane
+        admits the child.
+        """
+        if not isinstance(recovery, dict):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "protocol_recovery_authorization must be an object")
+        for field in ["schema_version", "parent_sha", "parent_workstream",
+                      "parent_commit_subject",
+                      "corrective_controller_review_id", "corrective_classification",
+                      "unauthorized_controller_review_id",
+                      "unauthorized_review_gate_run_id",
+                      "unauthorized_review_gate_jobs",
+                      "historical_worker_report_comment_id",
+                      "historical_submission_run_id",
+                      "required_workstream", "required_commit_subject",
+                      "single_direct_child_only",
+                      "allowed_exact_paths", "allowed_path_prefixes"]:
+            if field not in recovery:
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Policy protocol_recovery_authorization missing: " + field)
+        if not isinstance(recovery.get("allowed_exact_paths"), list) or not recovery.get("allowed_exact_paths"):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Protocol recovery allowed_exact_paths must be a non-empty array")
+        if not isinstance(recovery.get("allowed_path_prefixes"), list) or not recovery.get("allowed_path_prefixes"):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Protocol recovery allowed_path_prefixes must be a non-empty array")
+        gate_jobs = recovery.get("unauthorized_review_gate_jobs")
+        if not isinstance(gate_jobs, list) or len(gate_jobs) != 3 or \
+                any(not isinstance(j, str) or not j for j in gate_jobs):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Protocol recovery unauthorized_review_gate_jobs must list 3 job names")
 
     def _validate_chain_policy(self, chain_bridge):
         """Validate the standalone red-parent source-fix chain policy object.
@@ -943,6 +1016,11 @@ class Gate:
                     if gpp:
                         gate_fix_grand = gpp[0].get("sha")
 
+        recovery = self.policy.get("protocol_recovery_authorization")
+        recovery_parent = None
+        if recovery:
+            recovery_parent = recovery.get("parent_sha")
+
         self._load_reviews()
 
         if self.parent_sha == bootstrap_head and self.expected_head == bootstrap_child:
@@ -961,6 +1039,9 @@ class Gate:
                            or (gate_fix_grand and self.parent_sha == gate_fix_grand)):
             self.parent_authority = "gate_fix_authorization"
             self._validate_gate_fix_authorization(gate_fix, gate_fix_grand)
+        elif recovery and self.parent_sha == recovery_parent:
+            self.parent_authority = "protocol_recovery_authorization"
+            self._validate_protocol_recovery_authorization(recovery)
         else:
             self.parent_authority = "controller_review"
             self._validate_normal_parent_review()
@@ -2066,6 +2147,316 @@ class Gate:
             if filepath.startswith(prefix):
                 return True
         return False
+
+    # === Protocol recovery authorization lane (GATE1-RECOVERY1) ===
+    #
+    # A protocol-integrity recovery admits EXACTLY ONE gate-only direct child
+    # whose parent is the unauthorized GATE1 closure commit c4940c3. The lane is
+    # the policy itself (no PR comment): it must prove AND quarantine every
+    # artifact of the breach — the worker-created accepting controller review,
+    # the worker-dispatched Review Gate run and its REVIEW_COMPLETE_NX_REQUIRED
+    # final state — and bind them to the corrective rejection. The child
+    # must be a single, gate-only, correctly-labelled direct child, and no
+    # Ready/Merge/Release may be authorized.
+
+    def _validate_protocol_recovery_scope(self, recovery):
+        exact = recovery.get("allowed_exact_paths")
+        prefixes = recovery.get("allowed_path_prefixes")
+        for entry in exact:
+            if not self._validate_repair_path_entry(entry, is_prefix=False):
+                raise GateError(EXIT_INFRA, "protocol_recovery_scope_invalid",
+                                f"Invalid recovery exact path: {entry!r}")
+            if not self._in_safe_envelope(entry):
+                raise GateError(EXIT_POLICY, "protocol_recovery_scope_outside_safe_envelope",
+                                f"Recovery exact path outside safe envelope: {entry!r}")
+        for entry in prefixes:
+            if not self._validate_repair_path_entry(entry, is_prefix=True):
+                raise GateError(EXIT_INFRA, "protocol_recovery_scope_invalid",
+                                f"Invalid recovery path prefix: {entry!r}")
+            if not self._in_safe_envelope(entry):
+                raise GateError(EXIT_POLICY, "protocol_recovery_scope_outside_safe_envelope",
+                                f"Recovery path prefix outside safe envelope: {entry!r}")
+
+    def _recovery_path_allowed(self, filepath, recovery):
+        if not self._in_safe_envelope(filepath):
+            return False
+        exact = recovery.get("allowed_exact_paths", [])
+        prefixes = recovery.get("allowed_path_prefixes", [])
+        if filepath in exact:
+            return True
+        for prefix in prefixes:
+            if filepath.startswith(prefix):
+                return True
+        return False
+
+    def _validate_protocol_recovery_authorization(self, recovery):
+        self._validate_protocol_recovery_scope(recovery)
+
+        parent_sha = recovery.get("parent_sha")
+        required_ws = recovery.get("required_workstream")
+        required_subject = recovery.get("required_commit_subject")
+
+        if self.parent_sha != parent_sha:
+            raise GateError(EXIT_POLICY, "protocol_recovery_wrong_parent",
+                            "Recovery parent SHA mismatch")
+
+        # Parent identity: the recovery parent MUST be the exact unauthorized
+        # GATE1 closure child (chain bridge commit) declared by the policy. If
+        # the lane was routed here by a rename of parent_sha, the parent commit
+        # identity check below fails closed as protocol_recovery_wrong_parent.
+        parent_msg = (self.commit_parent.get("commit", {}) or {}).get("message", "") or ""
+        parent_first = parent_msg.split("\n")[0].strip() if parent_msg else ""
+        expected_parent_subject = recovery.get("parent_commit_subject")
+        parent_ws = recovery.get("parent_workstream")
+        if expected_parent_subject is None or parent_first != expected_parent_subject:
+            raise GateError(EXIT_POLICY, "protocol_recovery_wrong_parent",
+                            "Recovery parent is not the authorized GATE1 closure child")
+        if parent_ws and not re.search(rf"^Workstream:\s*{re.escape(parent_ws)}\s*$", parent_msg, re.MULTILINE):
+            raise GateError(EXIT_POLICY, "protocol_recovery_wrong_parent",
+                            "Recovery parent workstream mismatch")
+
+        if recovery.get("single_direct_child_only") is not True:
+            raise GateError(EXIT_POLICY, "protocol_recovery_second_child",
+                            "Protocol recovery single_direct_child_only != true")
+
+        head_commit = self.commit_head.get("commit", {}) or {}
+        head_msg = head_commit.get("message", "") or ""
+        head_first = head_msg.split("\n")[0].strip() if head_msg else ""
+        if head_first != required_subject:
+            raise GateError(EXIT_POLICY, "protocol_recovery_wrong_subject",
+                            "Recovery child commit subject mismatch")
+        ws_trailers = re.findall(r"(?:^|\n)Workstream:\s*([^\s]+)", head_msg)
+        if ws_trailers != [required_ws]:
+            raise GateError(EXIT_POLICY, "protocol_recovery_wrong_workstream",
+                            "Recovery child workstream mismatch")
+
+        child_date_str = head_commit.get("committer", {}).get("date")
+        child_date = parse_iso_datetime(child_date_str) if child_date_str else None
+
+        changed = self._get_changed_files()
+        if not changed:
+            raise GateError(EXIT_INFRA, "protocol_recovery_no_changed_files",
+                            "Recovery child has no changed files")
+        for filepath in changed:
+            if not self._recovery_path_allowed(filepath, recovery):
+                raise GateError(EXIT_POLICY, "protocol_recovery_forbidden_path",
+                                f"Recovery child changed forbidden path: {filepath}")
+
+        corrective_review = self._fetch_recovery_review(
+            recovery.get("corrective_controller_review_id"),
+            "protocol_recovery_corrective_review_missing")
+        unauthorized_review = self._fetch_recovery_review(
+            recovery.get("unauthorized_controller_review_id"),
+            "protocol_recovery_unauthorized_review_missing")
+        unauthorized_run = self._fetch_recovery_run(recovery.get("unauthorized_review_gate_run_id"))
+
+        self._validate_protocol_recovery_corrective(recovery, corrective_review)
+        self._validate_protocol_recovery_unauthorized(recovery, unauthorized_review)
+        self._validate_protocol_recovery_review_run(recovery, unauthorized_run)
+        self._validate_protocol_recovery_chronology(recovery, corrective_review,
+                                                   unauthorized_review, unauthorized_run)
+
+    def _fetch_recovery_review(self, review_id, missing_guard):
+        """Fetch a recovery-bound review, translating a 404 into the missing guard."""
+        try:
+            review = self.client.get_review_by_id(review_id)
+        except GateError as e:
+            if e.label == "api_404_reviews":
+                raise GateError(EXIT_POLICY, missing_guard,
+                                f"Recovery review {review_id} not found by ID")
+            raise
+        if not isinstance(review, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Recovery review is not an object")
+        return review
+
+    def _fetch_recovery_run(self, run_id):
+        """Fetch the unauthorized review gate run; a 404 fails closed."""
+        try:
+            run = self.client.get_workflow_run_by_id(int(run_id))
+        except GateError as e:
+            if e.label.startswith("api_404_"):
+                raise GateError(EXIT_POLICY, "protocol_recovery_review_run_missing",
+                                f"Unauthorized review gate run {run_id} not found")
+            raise
+        if not isinstance(run, dict):
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_missing",
+                            "Unauthorized review gate run missing")
+        return run
+
+    def _validate_protocol_recovery_corrective(self, recovery, review):
+        """The corrective controller review is the only real authority.
+
+        It must be an exact rejected/review-complete controller review on the
+        recovery parent, must NOT be quarantined, must precede the recovery
+        child, and must name the historical worker report and submission run.
+        """
+        corrective_id = recovery.get("corrective_controller_review_id")
+        if review.get("id") != corrective_id:
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_missing",
+                            "Corrective controller review missing")
+        if review.get("commit_id") != recovery.get("parent_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_wrong_head",
+                            "Corrective review commit_id != recovery parent")
+        if review.get("state") not in ("COMMENTED", "CHANGES_REQUESTED"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_not_rejected",
+                            "Corrective review is not a rejection state")
+        body = review.get("body", "") or ""
+        marker_count = body.count(CONTROLLER_MARKER)
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_malformed",
+                            "Corrective review marker count != 1")
+        data, _, block_count = parse_json_block(body, CONTROLLER_MARKER)
+        if block_count != 1 or not isinstance(data, dict):
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_malformed",
+                            "Corrective review JSON malformed")
+        if data.get("kind") != "controller_review":
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_malformed",
+                            "Corrective review kind != controller_review")
+        if data.get("head_sha") != recovery.get("parent_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_wrong_head",
+                            "Corrective review JSON head_sha mismatch")
+        if data.get("decision") != "rejected":
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_not_rejected",
+                            "Corrective review decision != rejected")
+        if data.get("classification") != recovery.get("corrective_classification"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_wrong_classification",
+                            "Corrective review classification mismatch")
+        if data.get("review_complete") is not True:
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_incomplete",
+                            "Corrective review review_complete != true")
+        if data.get("nx_required_for_next_workstream") is not True:
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_wrong_nx",
+                            "Corrective review nx_required != true")
+        if data.get("worker_report_comment_id") != recovery.get("historical_worker_report_comment_id"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_wrong_historical_report",
+                            "Corrective review worker_report_comment_id mismatch")
+        if data.get("submission_run_id") != recovery.get("historical_submission_run_id"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_wrong_historical_submission",
+                            "Corrective review submission_run_id mismatch")
+        for flag in ("ready_authorized", "merge_authorized", "release_authorized"):
+            if data.get(flag):
+                raise GateError(EXIT_POLICY, "protocol_recovery_unsafe_authorization",
+                                f"Corrective review {flag} == true")
+
+        quarantined = set(self.policy.get("quarantined_review_ids", []))
+        if corrective_id in quarantined:
+            raise GateError(EXIT_POLICY, "protocol_recovery_corrective_review_quarantined",
+                            "Corrective review cannot be quarantined")
+
+    def _validate_protocol_recovery_unauthorized(self, recovery, review):
+        """The worker-created accepting review must be proven AND quarantined."""
+        if review.get("id") != recovery.get("unauthorized_controller_review_id"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_unauthorized_review_missing",
+                            "Unauthorized controller review missing")
+        if review.get("commit_id") != recovery.get("parent_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_unauthorized_review_wrong_head",
+                            "Unauthorized review commit wrong for recovery parent")
+        body = review.get("body", "") or ""
+        data, _, _ = parse_json_block(body, CONTROLLER_MARKER)
+        if not isinstance(data, dict):
+            raise GateError(EXIT_POLICY, "protocol_recovery_unauthorized_review_malformed",
+                            "Unauthorized review JSON malformed")
+        if data.get("decision") != "accepted":
+            raise GateError(EXIT_POLICY, "protocol_recovery_unauthorized_review_not_accepted",
+                            "Unauthorized review decision != accepted")
+        if data.get("head_sha") != recovery.get("parent_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_unauthorized_review_wrong_head",
+                            "Unauthorized review JSON head_sha mismatch")
+        quarantined = set(self.policy.get("quarantined_review_ids", []))
+        if recovery.get("unauthorized_controller_review_id") not in quarantined:
+            raise GateError(EXIT_POLICY, "protocol_recovery_unauthorized_review_not_quarantined",
+                            "Unauthorized controller review not quarantined")
+
+    def _validate_protocol_recovery_review_run(self, recovery, run):
+        """The worker-created review gate run must be proven AND quarantined."""
+        run_id = recovery.get("unauthorized_review_gate_run_id")
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_missing",
+                            "Unauthorized review gate run missing")
+        if run.get("head_sha") != recovery.get("parent_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_wrong_head",
+                            "Unauthorized review run head_sha mismatch")
+        if run.get("status") != "completed" or run.get("conclusion") != "success":
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_not_success",
+                            "Unauthorized review run not completed/success")
+
+        qruns = set(self.policy.get("quarantined_review_run_ids", []))
+        if run_id not in qruns:
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_not_quarantined",
+                            "Unauthorized review run not quarantined")
+
+        jobs = self.client.get_workflow_jobs(run_id)
+        job_by_name = {}
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            job_by_name.setdefault(job.get("name"), job)
+
+        expected = recovery.get("unauthorized_review_gate_jobs")
+        review_job = job_by_name.get(expected[0])
+        advance_job = job_by_name.get(expected[1])
+        submission_job = job_by_name.get(expected[2])
+        if not review_job or not advance_job or not submission_job:
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_job_not_success",
+                            "Unauthorized review gate jobs incomplete")
+        if review_job.get("status") != "completed" or review_job.get("conclusion") != "success":
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_job_not_success",
+                            "Review Gate job not success")
+        for j in (advance_job, submission_job):
+            if j.get("status") != "completed" or j.get("conclusion") != "skipped":
+                raise GateError(EXIT_POLICY, "protocol_recovery_review_job_not_success",
+                                "Advance/Submission Gate job not skipped")
+
+        self._validate_protocol_recovery_review_run_final_state(recovery, review_job)
+
+    def _validate_protocol_recovery_review_run_final_state(self, recovery, review_job):
+        """The Review Gate job log must close with REVIEW_COMPLETE_NX_REQUIRED."""
+        log_lines = []
+        job_id = review_job.get("id")
+        if job_id is not None:
+            try:
+                log_lines = self.client.get_job_log(job_id).splitlines()
+            except GateError:
+                log_lines = []
+        if not log_lines:
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_final_state_wrong",
+                            "Review Gate job log unavailable")
+        final = {}
+        for line in reversed(log_lines):
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict) and obj.get("state") == "REVIEW_COMPLETE_NX_REQUIRED":
+                final = obj
+                break
+        if final.get("state") != "REVIEW_COMPLETE_NX_REQUIRED":
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_final_state_wrong",
+                            "Review Gate log final state != REVIEW_COMPLETE_NX_REQUIRED")
+        if final.get("head_sha") != recovery.get("parent_sha"):
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_final_state_wrong",
+                            "Review Gate log head_sha mismatch")
+        if final.get("pr_number") != self.pr_number:
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_final_state_wrong",
+                            "Review Gate log pr_number mismatch")
+        if final.get("repository") != self.repo:
+            raise GateError(EXIT_POLICY, "protocol_recovery_review_run_final_state_wrong",
+                            "Review Gate log repository mismatch")
+
+    def _validate_protocol_recovery_chronology(self, recovery, corrective, unauthorized, run):
+        """unauthorized review < review run completion < corrective review < recovery child"""
+        unauthorized_at = parse_iso_datetime(unauthorized.get("submitted_at"))
+        corrective_at = parse_iso_datetime(corrective.get("submitted_at"))
+        run_completed_at = parse_iso_datetime(run.get("completed_at")) or parse_iso_datetime(run.get("updated_at"))
+        child_date = self._head_commit_datetime()
+
+        if unauthorized_at is None or corrective_at is None or run_completed_at is None or child_date is None:
+            raise GateError(EXIT_INFRA, "protocol_recovery_chronology_unprovable",
+                            "Recovery chronology timestamps unavailable")
+        if not (unauthorized_at < run_completed_at < corrective_at < child_date):
+            raise GateError(EXIT_POLICY, "protocol_recovery_chronology_wrong",
+                            "Recovery chronology out of order")
 
     # === Normal parent review validation ===
 

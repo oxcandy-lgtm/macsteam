@@ -246,6 +246,7 @@ GREEN_FIXTURES=(
   "advance_red_parent_source_fix_bridge|advance|"
   "advance_red_parent_source_fix_chain_bridge|advance|"
   "advance_gate_fix_authorization|advance|"
+  "advance_protocol_recovery_authorization|advance|"
   "gate1_report_matches_head_trailer|submission|--worker-report-comment-id 5161887211"
   "future_product_report_uses_fix1|submission|--worker-report-comment-id 5161887211"
   "latest_accept_after_reject|review|--worker-report-comment-id 5161887211"
@@ -435,6 +436,27 @@ ADVANCE_MUTATIONS=(
   "red_chain_bridge_forbidden_path|1|red_chain_bridge_forbidden_path|advance_red_parent_source_fix_chain_bridge"
   "red_chain_bridge_wrong_subject|1|red_chain_bridge_wrong_subject|advance_red_parent_source_fix_chain_bridge"
   "red_chain_bridge_wrong_workstream|1|red_chain_bridge_wrong_workstream|advance_red_parent_source_fix_chain_bridge"
+  "protocol_recovery_corrective_review_missing|1|protocol_recovery_corrective_review_missing|advance_protocol_recovery_authorization"
+  "protocol_recovery_corrective_review_wrong_classification|1|protocol_recovery_corrective_review_wrong_classification|advance_protocol_recovery_authorization"
+  "protocol_recovery_corrective_review_quarantined|1|protocol_recovery_corrective_review_quarantined|advance_protocol_recovery_authorization"
+  "protocol_recovery_unauthorized_review_missing|1|protocol_recovery_unauthorized_review_missing|advance_protocol_recovery_authorization"
+  "protocol_recovery_unauthorized_review_not_quarantined|1|protocol_recovery_unauthorized_review_not_quarantined|advance_protocol_recovery_authorization"
+  "protocol_recovery_review_run_missing|1|protocol_recovery_review_run_missing|advance_protocol_recovery_authorization"
+  "protocol_recovery_review_run_not_success|1|protocol_recovery_review_run_not_success|advance_protocol_recovery_authorization"
+  "protocol_recovery_review_run_wrong_head|1|protocol_recovery_review_run_wrong_head|advance_protocol_recovery_authorization"
+  "protocol_recovery_review_run_not_quarantined|1|protocol_recovery_review_run_not_quarantined|advance_protocol_recovery_authorization"
+  "protocol_recovery_review_job_not_success|1|protocol_recovery_review_job_not_success|advance_protocol_recovery_authorization"
+  "protocol_recovery_review_run_final_state_wrong|1|protocol_recovery_review_run_final_state_wrong|advance_protocol_recovery_authorization"
+  "protocol_recovery_chronology_wrong|1|protocol_recovery_chronology_wrong|advance_protocol_recovery_authorization"
+  "protocol_recovery_wrong_parent|1|protocol_recovery_wrong_parent|advance_protocol_recovery_authorization"
+  "protocol_recovery_wrong_subject|1|protocol_recovery_wrong_subject|advance_protocol_recovery_authorization"
+  "protocol_recovery_wrong_workstream|1|protocol_recovery_wrong_workstream|advance_protocol_recovery_authorization"
+  "protocol_recovery_forbidden_path|1|protocol_recovery_forbidden_path|advance_protocol_recovery_authorization"
+  "protocol_recovery_merge_commit|1|merge_commit_rejected|advance_protocol_recovery_authorization"
+  "protocol_recovery_ready_true|1|protocol_recovery_unsafe_authorization|advance_protocol_recovery_authorization"
+  "protocol_recovery_merge_true|1|protocol_recovery_unsafe_authorization|advance_protocol_recovery_authorization"
+  "protocol_recovery_release_true|1|protocol_recovery_unsafe_authorization|advance_protocol_recovery_authorization"
+  "protocol_recovery_second_child|1|protocol_recovery_second_child|advance_protocol_recovery_authorization"
 )
 
 for entry in "${ADVANCE_MUTATIONS[@]}"; do
@@ -834,6 +856,9 @@ SOURCE_MUTATIONS=(
   "bypass_source_auth_chronology|advance_red_parent_source_fix_bridge|advance|"
   "gate_fix_scope_read_from_policy|advance_gate_fix_authorization|advance|"
   "gate_fix_chronology_bypassed|advance_gate_fix_authorization|advance|"
+  "recovery_quarantine_run_bypassed|advance_protocol_recovery_authorization|advance|"
+  "recovery_unauthorized_review_quarantine_inverted|advance_protocol_recovery_authorization|advance|"
+  "recovery_chronology_inverted|advance_protocol_recovery_authorization|advance|"
 )
 
 for entry in "${SOURCE_MUTATIONS[@]}"; do

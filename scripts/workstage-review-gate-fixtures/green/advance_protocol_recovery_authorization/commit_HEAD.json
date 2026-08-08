@@ -1,0 +1,21 @@
+{
+  "sha": "aa11bb22cc33dd44ee55ff6677880099aa99ee11",
+  "parents": [
+    {
+      "sha": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f"
+    }
+  ],
+  "commit": {
+    "message": "ci: quarantine unauthorized GATE1 closure (U1R18-R12-FIX3-GATE1-RECOVERY1)\n\nWorkstream: U1R18-R12-FIX3-GATE1-RECOVERY1",
+    "committer": {
+      "date": "2026-08-08T07:10:00Z",
+      "name": "T",
+      "email": "t@example.com"
+    },
+    "author": {
+      "date": "2026-08-08T07:10:00Z",
+      "name": "T",
+      "email": "t@example.com"
+    }
+  }
+}

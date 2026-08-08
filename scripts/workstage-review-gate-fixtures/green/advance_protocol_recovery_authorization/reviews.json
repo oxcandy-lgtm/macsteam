@@ -1,0 +1,24 @@
+[
+  {
+    "id": 4888344128,
+    "user": {
+      "login": "oxcandy-lgtm"
+    },
+    "commit_id": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+    "state": "CHANGES_REQUESTED",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"c4940c37956efb0ae92740e9ef1bcb91c6d3d92f\",\n  \"worker_report_comment_id\": 5224935457,\n  \"submission_run_id\": 31244286734,\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R12_FIX3_GATE1_PROTOCOL_INTEGRITY_BREACH\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n",
+    "submitted_at": "2026-08-08T06:45:49Z",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4888344128"
+  },
+  {
+    "id": 4888334695,
+    "user": {
+      "login": "oxcandy-lgtm"
+    },
+    "commit_id": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+    "state": "APPROVED",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"c4940c37956efb0ae92740e9ef1bcb91c6d3d92f\",\n  \"worker_report_comment_id\": 5224935457,\n  \"submission_run_id\": 31244286734,\n  \"decision\": \"accepted\",\n  \"classification\": \"GREEN_U1R18_R12_FIX3_CHAIN_BRIDGE_CONTROLLER_REVIEW_ACCEPTED\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n",
+    "submitted_at": "2026-08-08T06:38:28Z",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4888334695"
+  }
+]
