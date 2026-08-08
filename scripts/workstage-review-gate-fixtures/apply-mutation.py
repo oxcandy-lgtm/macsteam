@@ -149,6 +149,22 @@ FIX_HISTORICAL_EXPECTED_STATE = "REVIEW_COMPLETE_NX_REQUIRED"
 FIX_HISTORICAL_HEAD = "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f"
 FIX_CORRECTIVE_REVIEW = 4888344128
 
+# === Protocol recovery FIX2 authorization constants (RECOVERY1-FIX2) ===
+FIX2_MARKER = "<!-- macsteam-protocol-recovery-fix2-authorization:v1 -->"
+FIX2_PARENT_SHA = "c4fc9093e01df80fdd8ca600d7391baad58b0081"
+FIX2_HEAD_SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
+FIX2_COMMENT_ID = 5225497249
+FIX2_WORKSTREAM = "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2"
+FIX2_SUBJECT = "ci: select bounded final Review Gate state (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2)"
+FIX2_PARENT_WORKSTREAM = "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1"
+FIX2_PARENT_SUBJECT = "ci: parse timestamped Review Gate proof (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1)"
+FIX2_PARENT_ADVANCE_RUN = 31250113941
+FIX2_PARENT_ADVANCE_JOB = 93085031472
+FIX2_PARENT_ADVANCE_STATE = "CURRENT_WORKSTREAM_ACTIVE"
+FIX2_PARENT_ADVANCE_AUTHORITY = "protocol_recovery_fix_authorization"
+FIX2_PARENT_CORE_CI_RUN = 31250113951
+FIX2_PARENT_CORE_CI_JOBS = 5
+
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "workstage-review-gate-policy.json")
 
 
@@ -3254,7 +3270,16 @@ def m_protocol_recovery_fix_review_gate_final_state_missing(d):
     logs = _fix_job_logs(d)
     key = str(FIX_HISTORICAL_JOB)
     if key in logs:
-        logs[key] = logs[key].replace(FIX_HISTORICAL_EXPECTED_STATE, "WAITING_FOR_CONTROLLER_REVIEW")
+        out = []
+        for line in logs[key].splitlines():
+            payload = line
+            m = re.search(r"^\S+\s+", line)
+            if m:
+                payload = line[m.end():]
+            if payload.lstrip().startswith("{") and FIX_HISTORICAL_EXPECTED_STATE in payload:
+                continue
+            out.append(line)
+        logs[key] = "\n".join(out)
     save_json(d, "job-logs.json", logs)
 
 
@@ -3341,6 +3366,221 @@ def m_protocol_recovery_fix_chronology_wrong(d):
         if r.get("id") == FIX_CORRECTIVE_REVIEW:
             r["submitted_at"] = "2026-08-08T06:38:00Z"
     save_json(d, "reviews.json", reviews)
+
+
+# === Protocol recovery FIX2 authorization lane mutations (RECOVERY1-FIX2) ===
+# Base fixture: advance_protocol_recovery_fix2_authorization.
+
+def _fix2_comment(d):
+    return load_json(d, "comment.json")
+
+
+def _fix2_policy(d):
+    path = os.path.join(d, "policy.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return load_policy()
+
+
+def _fix2_save_policy(d, p):
+    save_json(d, "policy.json", p)
+
+
+def _fix2_jobs(d):
+    return load_json(d, "jobs.json")
+
+
+def m_protocol_recovery_fix2_auth_missing(d):
+    path = os.path.join(d, "comment.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def m_protocol_recovery_fix2_auth_edited(d):
+    c = _fix2_comment(d)
+    c["updated_at"] = "2026-08-08T09:23:00Z"
+    save_json(d, "comment.json", c)
+
+
+def m_protocol_recovery_fix2_auth_marker_duplicated(d):
+    c = _fix2_comment(d)
+    c["body"] = FIX2_MARKER + "\n" + c["body"]
+    save_json(d, "comment.json", c)
+
+
+def m_protocol_recovery_fix2_auth_json_duplicated(d):
+    c = _fix2_comment(d)
+    lead, _, rest = c["body"].partition(FIX2_MARKER)
+    c["body"] = lead + FIX2_MARKER + "\n```json\n{}\n```\n" + rest
+    save_json(d, "comment.json", c)
+
+
+def m_protocol_recovery_fix2_auth_policy_mismatch(d):
+    p = _fix2_policy(d)
+    p["protocol_recovery_fix2_authorization"]["required_workstream"] = "U1R18-R12-WRONG-FIX2"
+    _fix2_save_policy(d, p)
+
+
+def m_protocol_recovery_fix2_auth_after_child(d):
+    c = _fix2_comment(d)
+    c["created_at"] = "2026-08-08T09:40:00Z"
+    c["updated_at"] = "2026-08-08T09:40:00Z"
+    save_json(d, "comment.json", c)
+
+
+def m_protocol_recovery_fix2_auth_unsafe_authorization(d):
+    c = _fix2_comment(d)
+    c["body"] = c["body"].replace('"ready_authorized": false', '"ready_authorized": true')
+    save_json(d, "comment.json", c)
+
+
+def m_protocol_recovery_fix2_wrong_parent(d):
+    head = _fix_head(d)
+    head["parents"] = [{"sha": WRONG_SHA}]
+    save_json(d, "commit_HEAD.json", head)
+    p = _fix2_policy(d)
+    p["protocol_recovery_fix2_authorization"]["parent_sha"] = WRONG_SHA
+    _fix2_save_policy(d, p)
+    c = _fix2_comment(d)
+    c["body"] = c["body"].replace(FIX2_PARENT_SHA, WRONG_SHA)
+    save_json(d, "comment.json", c)
+    parent = load_json(d, "commit_PARENT.json")
+    parent["commit"]["message"] = "ci: not the fix2 parent\n\nWorkstream: U1R18-R12-UNRELATED"
+    save_json(d, "commit_PARENT.json", parent)
+
+
+def m_protocol_recovery_fix2_wrong_subject(d):
+    head = _fix_head(d)
+    head["commit"]["message"] = "ci: wrong subject\n\nWorkstream: %s" % FIX2_WORKSTREAM
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_protocol_recovery_fix2_wrong_workstream(d):
+    head = _fix_head(d)
+    head["commit"]["message"] = FIX2_SUBJECT + "\n\nWorkstream: U1R18-R12-WRONG-FIX2"
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_protocol_recovery_fix2_forbidden_path(d):
+    files = _bridge_files(d)
+    files.append("unknown/fix2/extra.txt")
+    save_json(d, "files.json", files)
+
+
+def m_protocol_recovery_fix2_second_child(d):
+    p = _fix2_policy(d)
+    p["protocol_recovery_fix2_authorization"]["single_direct_child_only"] = False
+    _fix2_save_policy(d, p)
+    c = _fix2_comment(d)
+    c["body"] = c["body"].replace('"single_direct_child_only": true',
+                                  '"single_direct_child_only": false')
+    save_json(d, "comment.json", c)
+
+
+def m_protocol_recovery_fix2_parent_advance_missing(d):
+    runs = _fix_runs(d)
+    runs["workflow_runs"] = [r for r in runs.get("workflow_runs", [])
+                             if r.get("id") != FIX2_PARENT_ADVANCE_RUN]
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix2_parent_advance_not_success(d):
+    runs = _fix_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == FIX2_PARENT_ADVANCE_RUN:
+            r["conclusion"] = "failure"
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix2_parent_advance_job_missing(d):
+    data = _fix2_jobs(d)
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    jobs = [j for j in jobs if j.get("id") != FIX2_PARENT_ADVANCE_JOB]
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_protocol_recovery_fix2_parent_advance_job_not_success(d):
+    data = _fix2_jobs(d)
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    for j in jobs:
+        if j.get("id") == FIX2_PARENT_ADVANCE_JOB:
+            j["conclusion"] = "failure"
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_protocol_recovery_fix2_parent_advance_wrong_head(d):
+    runs = _fix_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == FIX2_PARENT_ADVANCE_RUN:
+            r["head_sha"] = WRONG_SHA
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix2_parent_advance_state_wrong(d):
+    logs = _fix_job_logs(d)
+    key = str(FIX2_PARENT_ADVANCE_JOB)
+    if key in logs:
+        logs[key] = logs[key].replace('"state": "CURRENT_WORKSTREAM_ACTIVE"',
+                                      '"state": "REJECTED"')
+    save_json(d, "job-logs.json", logs)
+
+
+def m_protocol_recovery_fix2_parent_advance_authority_wrong(d):
+    logs = _fix_job_logs(d)
+    key = str(FIX2_PARENT_ADVANCE_JOB)
+    if key in logs:
+        logs[key] = logs[key].replace('"parent_authority": "%s"' % FIX2_PARENT_ADVANCE_AUTHORITY,
+                                      '"parent_authority": "wrong_authority"')
+    save_json(d, "job-logs.json", logs)
+
+
+def m_protocol_recovery_fix2_parent_advance_state_head_wrong(d):
+    logs = _fix_job_logs(d)
+    key = str(FIX2_PARENT_ADVANCE_JOB)
+    if key in logs:
+        logs[key] = logs[key].replace(FIX2_PARENT_SHA, WRONG_SHA)
+    save_json(d, "job-logs.json", logs)
+
+
+def m_protocol_recovery_fix2_parent_core_ci_missing(d):
+    runs = _fix_runs(d)
+    runs["workflow_runs"] = [r for r in runs.get("workflow_runs", [])
+                             if r.get("id") != FIX2_PARENT_CORE_CI_RUN]
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix2_parent_core_ci_not_success(d):
+    runs = _fix_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == FIX2_PARENT_CORE_CI_RUN:
+            r["conclusion"] = "failure"
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix2_parent_core_ci_job_not_success(d):
+    data = _fix2_jobs(d)
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    for j in jobs:
+        if j.get("run_id") == FIX2_PARENT_CORE_CI_RUN:
+            j["conclusion"] = "failure"
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_protocol_recovery_fix2_parent_core_ci_required_jobs_missing(d):
+    data = _fix2_jobs(d)
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    jobs = [j for j in jobs
+            if not (j.get("run_id") == FIX2_PARENT_CORE_CI_RUN
+                    and j.get("name") == "Swift Build")]
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_protocol_recovery_fix2_chronology_wrong(d):
+    c = _fix2_comment(d)
+    c["created_at"] = "2026-08-08T08:00:00Z"
+    c["updated_at"] = "2026-08-08T08:00:00Z"
+    save_json(d, "comment.json", c)
 
 
 # === Mutation registry ===
@@ -3725,6 +3965,33 @@ MUTATIONS = {
     "protocol_recovery_fix_corrective_review_incomplete": m_protocol_recovery_fix_corrective_review_incomplete,
     "protocol_recovery_fix_unsafe_authorization": m_protocol_recovery_fix_unsafe_authorization,
     "protocol_recovery_fix_chronology_wrong": m_protocol_recovery_fix_chronology_wrong,
+
+# === GATE1-RECOVERY1-FIX2: protocol recovery fix2 authorization lane ===
+    "protocol_recovery_fix2_auth_missing": m_protocol_recovery_fix2_auth_missing,
+    "protocol_recovery_fix2_auth_edited": m_protocol_recovery_fix2_auth_edited,
+    "protocol_recovery_fix2_auth_marker_duplicated": m_protocol_recovery_fix2_auth_marker_duplicated,
+    "protocol_recovery_fix2_auth_json_duplicated": m_protocol_recovery_fix2_auth_json_duplicated,
+    "protocol_recovery_fix2_auth_policy_mismatch": m_protocol_recovery_fix2_auth_policy_mismatch,
+    "protocol_recovery_fix2_auth_after_child": m_protocol_recovery_fix2_auth_after_child,
+    "protocol_recovery_fix2_auth_unsafe_authorization": m_protocol_recovery_fix2_auth_unsafe_authorization,
+    "protocol_recovery_fix2_wrong_parent": m_protocol_recovery_fix2_wrong_parent,
+    "protocol_recovery_fix2_wrong_subject": m_protocol_recovery_fix2_wrong_subject,
+    "protocol_recovery_fix2_wrong_workstream": m_protocol_recovery_fix2_wrong_workstream,
+    "protocol_recovery_fix2_forbidden_path": m_protocol_recovery_fix2_forbidden_path,
+    "protocol_recovery_fix2_second_child": m_protocol_recovery_fix2_second_child,
+    "protocol_recovery_fix2_parent_advance_missing": m_protocol_recovery_fix2_parent_advance_missing,
+    "protocol_recovery_fix2_parent_advance_not_success": m_protocol_recovery_fix2_parent_advance_not_success,
+    "protocol_recovery_fix2_parent_advance_job_missing": m_protocol_recovery_fix2_parent_advance_job_missing,
+    "protocol_recovery_fix2_parent_advance_job_not_success": m_protocol_recovery_fix2_parent_advance_job_not_success,
+    "protocol_recovery_fix2_parent_advance_wrong_head": m_protocol_recovery_fix2_parent_advance_wrong_head,
+    "protocol_recovery_fix2_parent_advance_state_wrong": m_protocol_recovery_fix2_parent_advance_state_wrong,
+    "protocol_recovery_fix2_parent_advance_authority_wrong": m_protocol_recovery_fix2_parent_advance_authority_wrong,
+    "protocol_recovery_fix2_parent_advance_state_head_wrong": m_protocol_recovery_fix2_parent_advance_state_head_wrong,
+    "protocol_recovery_fix2_parent_core_ci_missing": m_protocol_recovery_fix2_parent_core_ci_missing,
+    "protocol_recovery_fix2_parent_core_ci_not_success": m_protocol_recovery_fix2_parent_core_ci_not_success,
+    "protocol_recovery_fix2_parent_core_ci_job_not_success": m_protocol_recovery_fix2_parent_core_ci_job_not_success,
+    "protocol_recovery_fix2_parent_core_ci_required_jobs_missing": m_protocol_recovery_fix2_parent_core_ci_required_jobs_missing,
+    "protocol_recovery_fix2_chronology_wrong": m_protocol_recovery_fix2_chronology_wrong,
 }
 
 

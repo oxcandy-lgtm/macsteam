@@ -1,0 +1,21 @@
+{
+ "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+ "parents": [
+  {
+   "sha": "c4fc9093e01df80fdd8ca600d7391baad58b0081"
+  }
+ ],
+ "commit": {
+  "message": "ci: select bounded final Review Gate state (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2)\n\nWorkstream: U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2",
+  "committer": {
+   "date": "2026-08-08T09:30:00Z",
+   "name": "T",
+   "email": "t@example.com"
+  },
+  "author": {
+   "date": "2026-08-08T09:30:00Z",
+   "name": "T",
+   "email": "t@example.com"
+  }
+ }
+}

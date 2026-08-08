@@ -157,6 +157,42 @@
       "release_authorized": false,
       "next_product_workstream_authorized": false
     },
+  "protocol_recovery_fix2_authorization": {
+      "schema_version": 1,
+      "authorization_comment_id": 5225497249,
+      "parent_sha": "c4fc9093e01df80fdd8ca600d7391baad58b0081",
+      "parent_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1",
+      "parent_commit_subject": "ci: parse timestamped Review Gate proof (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1)",
+      "parent_advance_run_id": 31250113941,
+      "parent_advance_job_id": 93085031472,
+      "parent_advance_state": "CURRENT_WORKSTREAM_ACTIVE",
+      "parent_advance_authority": "protocol_recovery_fix_authorization",
+      "parent_core_ci_run_id": 31250113951,
+      "parent_core_ci_required_jobs": 5,
+      "sai_technical_classification": "RED_U1R18_R12_FIX3_GATE1_RECOVERY1_FIX1_FINAL_STATE_SELECTION_INCOMPLETE",
+      "required_fixes": [
+        "select_last_relevant_gate_state_before_expected_state_validation",
+        "reject_earlier_expected_state_when_later_relevant_state_contradicts",
+        "bound_gate_log_scan_by_finite_suffix_bytes_and_or_lines"
+      ],
+      "required_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2",
+      "required_commit_subject": "ci: select bounded final Review Gate state (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2)",
+      "single_direct_child_only": true,
+      "allowed_exact_paths": [
+        ".github/workstage-review-gate-policy.json",
+        "scripts/workstage-review-gate.py",
+        "scripts/test-workstage-review-gate.sh",
+        "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+        "scripts/workstage-review-gate-fixtures/apply-source-mutation.py"
+      ],
+      "allowed_path_prefixes": [
+        "scripts/workstage-review-gate-fixtures/"
+      ],
+      "ready_authorized": false,
+      "merge_authorized": false,
+      "release_authorized": false,
+      "next_product_workstream_authorized": false
+    },
   "core_ci": {
     "required_jobs": [
       "Swift Build",
