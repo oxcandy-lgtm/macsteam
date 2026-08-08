@@ -165,6 +165,24 @@ FIX2_PARENT_ADVANCE_AUTHORITY = "protocol_recovery_fix_authorization"
 FIX2_PARENT_CORE_CI_RUN = 31250113951
 FIX2_PARENT_CORE_CI_JOBS = 5
 
+# === Protocol recovery FIX3 authorization constants (RECOVERY1-FIX3) ===
+RECOVERY_FIX3_MARKER = "<!-- macsteam-protocol-recovery-fix3-authorization:v1 -->"
+RECOVERY_FIX3_PARENT_SHA = "4eeb31ca84f1fda9f50611e6a1486d00eaafe0dd"
+RECOVERY_FIX3_GRANDPARENT_SHA = "c4fc9093e01df80fdd8ca600d7391baad58b0081"
+RECOVERY_FIX3_HEAD_SHA = "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5"
+RECOVERY_FIX3_COMMENT_ID = 5226011784
+RECOVERY_FIX3_REPORT_ID = 5225996101
+RECOVERY_FIX3_WORKSTREAM = "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX3"
+RECOVERY_FIX3_SUBJECT = "ci: bound Review Gate log before line materialization (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX3)"
+RECOVERY_FIX3_PARENT_WORKSTREAM = "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2"
+RECOVERY_FIX3_PARENT_SUBJECT = "ci: select bounded final Review Gate state (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2)"
+RECOVERY_FIX3_PARENT_ADVANCE_RUN = 31255264930
+RECOVERY_FIX3_PARENT_ADVANCE_JOB = 93097599438
+RECOVERY_FIX3_PARENT_ADVANCE_STATE = "CURRENT_WORKSTREAM_ACTIVE"
+RECOVERY_FIX3_PARENT_ADVANCE_AUTHORITY = "protocol_recovery_fix2_authorization"
+RECOVERY_FIX3_PARENT_CORE_CI_RUN = 31255262627
+RECOVERY_FIX3_PARENT_CORE_CI_JOBS = 5
+
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "workstage-review-gate-policy.json")
 
 
@@ -3583,6 +3601,255 @@ def m_protocol_recovery_fix2_chronology_wrong(d):
     save_json(d, "comment.json", c)
 
 
+# === Protocol recovery FIX3 authorization mutations (RECOVERY1-FIX3) ===
+# Base fixture: advance_protocol_recovery_fix3_authorization.
+
+def _fix3_auth_file():
+    return "comment_%d.json" % RECOVERY_FIX3_COMMENT_ID
+
+
+def _fix3_report_file():
+    return "comment_%d.json" % RECOVERY_FIX3_REPORT_ID
+
+
+def _fix3_comment(d):
+    return load_json(d, _fix3_auth_file())
+
+
+def _fix3_save_comment(d, c):
+    save_json(d, _fix3_auth_file(), c)
+
+
+def _fix3_report(d):
+    return load_json(d, _fix3_report_file())
+
+
+def _fix3_save_report(d, c):
+    save_json(d, _fix3_report_file(), c)
+
+
+def _fix3_policy(d):
+    path = os.path.join(d, "policy.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return load_policy()
+
+
+def _fix3_save_policy(d, p):
+    save_json(d, "policy.json", p)
+
+
+def _fix3_jobs(d):
+    return load_json(d, "jobs.json")
+
+
+def m_protocol_recovery_fix3_auth_missing(d):
+    path = os.path.join(d, _fix3_auth_file())
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def m_protocol_recovery_fix3_auth_edited(d):
+    c = _fix3_comment(d)
+    c["updated_at"] = "2026-08-08T12:03:00Z"
+    _fix3_save_comment(d, c)
+
+
+def m_protocol_recovery_fix3_auth_wrong_kind(d):
+    c = _fix3_comment(d)
+    c["body"] = c["body"].replace('"kind": "protocol_recovery_fix3_authorization"',
+                                  '"kind": "wrong_kind"')
+    _fix3_save_comment(d, c)
+
+
+def m_protocol_recovery_fix3_auth_policy_mismatch(d):
+    p = _fix3_policy(d)
+    p["protocol_recovery_fix3_authorization"]["required_workstream"] = "U1R18-R12-WRONG-FIX3"
+    _fix3_save_policy(d, p)
+
+
+def m_protocol_recovery_fix3_auth_required_fixes_mismatch(d):
+    p = _fix3_policy(d)
+    p["protocol_recovery_fix3_authorization"]["required_fixes"] = ["wrong_fix"]
+    _fix3_save_policy(d, p)
+
+
+def m_protocol_recovery_fix3_auth_wrong_classification(d):
+    c = _fix3_comment(d)
+    c["body"] = re.sub(r'"sai_technical_classification": "[^"]*"',
+                       '"sai_technical_classification": null', c["body"])
+    _fix3_save_comment(d, c)
+    p = _fix3_policy(d)
+    p["protocol_recovery_fix3_authorization"]["sai_technical_classification"] = None
+    _fix3_save_policy(d, p)
+
+
+def m_protocol_recovery_fix3_auth_after_child(d):
+    c = _fix3_comment(d)
+    c["created_at"] = "2026-08-08T12:20:00Z"
+    c["updated_at"] = "2026-08-08T12:20:00Z"
+    _fix3_save_comment(d, c)
+
+
+def m_protocol_recovery_fix3_ready_authorized(d):
+    c = _fix3_comment(d)
+    c["body"] = c["body"].replace('"ready_authorized": false', '"ready_authorized": true')
+    _fix3_save_comment(d, c)
+
+
+def m_protocol_recovery_fix3_merge_authorized(d):
+    c = _fix3_comment(d)
+    c["body"] = c["body"].replace('"merge_authorized": false', '"merge_authorized": true')
+    _fix3_save_comment(d, c)
+
+
+def m_protocol_recovery_fix3_release_authorized(d):
+    c = _fix3_comment(d)
+    c["body"] = c["body"].replace('"release_authorized": false', '"release_authorized": true')
+    _fix3_save_comment(d, c)
+
+
+def m_protocol_recovery_fix3_wrong_parent(d):
+    head = _fix_head(d)
+    head["parents"] = [{"sha": WRONG_SHA}]
+    save_json(d, "commit_HEAD.json", head)
+    p = _fix3_policy(d)
+    p["protocol_recovery_fix3_authorization"]["parent_sha"] = WRONG_SHA
+    _fix3_save_policy(d, p)
+    c = _fix3_comment(d)
+    c["body"] = c["body"].replace(RECOVERY_FIX3_PARENT_SHA, WRONG_SHA)
+    _fix3_save_comment(d, c)
+    parent = load_json(d, "commit_PARENT.json")
+    parent["commit"]["message"] = "ci: not the fix3 parent\n\nWorkstream: U1R18-R12-UNRELATED"
+    save_json(d, "commit_PARENT.json", parent)
+
+
+def m_protocol_recovery_fix3_wrong_subject(d):
+    head = _fix_head(d)
+    head["commit"]["message"] = "ci: wrong subject\n\nWorkstream: %s" % RECOVERY_FIX3_WORKSTREAM
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_protocol_recovery_fix3_wrong_workstream(d):
+    head = _fix_head(d)
+    head["commit"]["message"] = RECOVERY_FIX3_SUBJECT + "\n\nWorkstream: U1R18-R12-WRONG-FIX3"
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_protocol_recovery_fix3_merge_commit(d):
+    head = _fix_head(d)
+    head["parents"] = [{"sha": RECOVERY_FIX3_PARENT_SHA}, {"sha": WRONG_SHA}]
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_protocol_recovery_fix3_forbidden_path(d):
+    files = _bridge_files(d)
+    files.append("unknown/fix3/extra.txt")
+    save_json(d, "files.json", files)
+
+
+def m_protocol_recovery_fix3_second_child(d):
+    p = _fix3_policy(d)
+    p["protocol_recovery_fix3_authorization"]["single_direct_child_only"] = False
+    _fix3_save_policy(d, p)
+    c = _fix3_comment(d)
+    c["body"] = c["body"].replace('"single_direct_child_only": true',
+                                  '"single_direct_child_only": false')
+    _fix3_save_comment(d, c)
+
+
+def m_protocol_recovery_fix3_parent_report_missing(d):
+    c = _fix3_report(d)
+    c["body"] = ""
+    _fix3_save_report(d, c)
+
+
+def m_protocol_recovery_fix3_parent_report_wrong_head(d):
+    c = _fix3_report(d)
+    c["body"] = c["body"].replace(RECOVERY_FIX3_PARENT_SHA, WRONG_SHA)
+    _fix3_save_report(d, c)
+
+
+def m_protocol_recovery_fix3_parent_report_wrong_workstream(d):
+    c = _fix3_report(d)
+    c["body"] = c["body"].replace(RECOVERY_FIX3_PARENT_WORKSTREAM, "U1R18-R12-WRONG-FIX3")
+    _fix3_save_report(d, c)
+
+
+def m_protocol_recovery_fix3_parent_advance_missing(d):
+    runs = _fix_runs(d)
+    runs["workflow_runs"] = [r for r in runs.get("workflow_runs", [])
+                             if r.get("id") != RECOVERY_FIX3_PARENT_ADVANCE_RUN]
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix3_parent_advance_wrong_head(d):
+    runs = _fix_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == RECOVERY_FIX3_PARENT_ADVANCE_RUN:
+            r["head_sha"] = WRONG_SHA
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix3_parent_advance_wrong_state(d):
+    logs = _fix_job_logs(d)
+    key = str(RECOVERY_FIX3_PARENT_ADVANCE_JOB)
+    if key in logs:
+        logs[key] = logs[key].replace('"state": "%s"' % RECOVERY_FIX3_PARENT_ADVANCE_STATE,
+                                      '"state": "REJECTED"')
+    save_json(d, "job-logs.json", logs)
+
+
+def m_protocol_recovery_fix3_parent_advance_wrong_authority(d):
+    logs = _fix_job_logs(d)
+    key = str(RECOVERY_FIX3_PARENT_ADVANCE_JOB)
+    if key in logs:
+        logs[key] = logs[key].replace(
+            '"parent_authority": "%s"' % RECOVERY_FIX3_PARENT_ADVANCE_AUTHORITY,
+            '"parent_authority": "wrong_authority"')
+    save_json(d, "job-logs.json", logs)
+
+
+def m_protocol_recovery_fix3_parent_ci_missing(d):
+    runs = _fix_runs(d)
+    runs["workflow_runs"] = [r for r in runs.get("workflow_runs", [])
+                             if r.get("id") != RECOVERY_FIX3_PARENT_CORE_CI_RUN]
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix3_parent_ci_wrong_head(d):
+    runs = _fix_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == RECOVERY_FIX3_PARENT_CORE_CI_RUN:
+            r["head_sha"] = WRONG_SHA
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix3_parent_ci_job_missing(d):
+    data = _fix3_jobs(d)
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    jobs = [j for j in jobs
+            if not (j.get("run_id") == RECOVERY_FIX3_PARENT_CORE_CI_RUN
+                    and j.get("name") == "Swift Build")]
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_protocol_recovery_fix3_parent_ci_red(d):
+    runs = _fix_runs(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == RECOVERY_FIX3_PARENT_CORE_CI_RUN:
+            r["conclusion"] = "failure"
+    save_json(d, "runs.json", runs)
+
+
+def m_protocol_recovery_fix3_chronology_wrong(d):
+    c = _fix3_comment(d)
+    c["created_at"] = "2026-08-08T11:00:00Z"
+    c["updated_at"] = "2026-08-08T11:00:00Z"
+    _fix3_save_comment(d, c)
+
+
 # === Mutation registry ===
 
 MUTATIONS = {
@@ -3992,6 +4259,34 @@ MUTATIONS = {
     "protocol_recovery_fix2_parent_core_ci_job_not_success": m_protocol_recovery_fix2_parent_core_ci_job_not_success,
     "protocol_recovery_fix2_parent_core_ci_required_jobs_missing": m_protocol_recovery_fix2_parent_core_ci_required_jobs_missing,
     "protocol_recovery_fix2_chronology_wrong": m_protocol_recovery_fix2_chronology_wrong,
+    "protocol_recovery_fix3_auth_missing": m_protocol_recovery_fix3_auth_missing,
+    "protocol_recovery_fix3_auth_edited": m_protocol_recovery_fix3_auth_edited,
+    "protocol_recovery_fix3_auth_wrong_kind": m_protocol_recovery_fix3_auth_wrong_kind,
+    "protocol_recovery_fix3_auth_policy_mismatch": m_protocol_recovery_fix3_auth_policy_mismatch,
+    "protocol_recovery_fix3_auth_required_fixes_mismatch": m_protocol_recovery_fix3_auth_required_fixes_mismatch,
+    "protocol_recovery_fix3_auth_wrong_classification": m_protocol_recovery_fix3_auth_wrong_classification,
+    "protocol_recovery_fix3_auth_after_child": m_protocol_recovery_fix3_auth_after_child,
+    "protocol_recovery_fix3_ready_authorized": m_protocol_recovery_fix3_ready_authorized,
+    "protocol_recovery_fix3_merge_authorized": m_protocol_recovery_fix3_merge_authorized,
+    "protocol_recovery_fix3_release_authorized": m_protocol_recovery_fix3_release_authorized,
+    "protocol_recovery_fix3_wrong_parent": m_protocol_recovery_fix3_wrong_parent,
+    "protocol_recovery_fix3_wrong_subject": m_protocol_recovery_fix3_wrong_subject,
+    "protocol_recovery_fix3_wrong_workstream": m_protocol_recovery_fix3_wrong_workstream,
+    "protocol_recovery_fix3_merge_commit": m_protocol_recovery_fix3_merge_commit,
+    "protocol_recovery_fix3_forbidden_path": m_protocol_recovery_fix3_forbidden_path,
+    "protocol_recovery_fix3_second_child": m_protocol_recovery_fix3_second_child,
+    "protocol_recovery_fix3_parent_report_missing": m_protocol_recovery_fix3_parent_report_missing,
+    "protocol_recovery_fix3_parent_report_wrong_head": m_protocol_recovery_fix3_parent_report_wrong_head,
+    "protocol_recovery_fix3_parent_report_wrong_workstream": m_protocol_recovery_fix3_parent_report_wrong_workstream,
+    "protocol_recovery_fix3_parent_advance_missing": m_protocol_recovery_fix3_parent_advance_missing,
+    "protocol_recovery_fix3_parent_advance_wrong_head": m_protocol_recovery_fix3_parent_advance_wrong_head,
+    "protocol_recovery_fix3_parent_advance_wrong_state": m_protocol_recovery_fix3_parent_advance_wrong_state,
+    "protocol_recovery_fix3_parent_advance_wrong_authority": m_protocol_recovery_fix3_parent_advance_wrong_authority,
+    "protocol_recovery_fix3_parent_ci_missing": m_protocol_recovery_fix3_parent_ci_missing,
+    "protocol_recovery_fix3_parent_ci_wrong_head": m_protocol_recovery_fix3_parent_ci_wrong_head,
+    "protocol_recovery_fix3_parent_ci_job_missing": m_protocol_recovery_fix3_parent_ci_job_missing,
+    "protocol_recovery_fix3_parent_ci_red": m_protocol_recovery_fix3_parent_ci_red,
+    "protocol_recovery_fix3_chronology_wrong": m_protocol_recovery_fix3_chronology_wrong,
 }
 
 

@@ -304,6 +304,29 @@ def apply_mutation(source, mutation_name):
             'if (unauthorized_at < run_completed_at < corrective_at < child_date):',
             "Protocol recovery: invert chronology ordering (rejects valid chronology)"
         ),
+
+        # === GATE1-RECOVERY1-FIX3: caller-bound raw-log materialization guard ===
+        # These reintroduce full-log line materialization in the production
+        # caller before the bounded extractor. They may leave the functional
+        # fixture result unchanged; the static production-path guard must catch
+        # them, so they are asserted via the caller-bound guard, not a fixture.
+        "protocol_recovery_fix3_restore_caller_prebound_splitlines": (
+            '                log = self.client.get_job_log(job_id)\n            except GateError:\n                log = None',
+            '                log = "\\n".join(self.client.get_job_log(job_id).splitlines())\n            except GateError:\n                log = None',
+            "FIX3 caller: restore pre-bound full-log splitlines+join before the bounded extractor (static guard must catch)"
+        ),
+
+        "protocol_recovery_fix3_restore_caller_split_newline": (
+            '                log = self.client.get_job_log(job_id)\n            except GateError:\n                log = None',
+            '                log = self.client.get_job_log(job_id).split("\\n")\n            except GateError:\n                log = None',
+            "FIX3 caller: restore pre-bound full-log newline split before the bounded extractor (static guard must catch)"
+        ),
+
+        "protocol_recovery_fix3_bypass_bounded_extractor": (
+            '        final, _ = self._extract_last_relevant_gate_result_from_log(log)\n        if final is None or final.get("state") != "REVIEW_COMPLETE_NX_REQUIRED":',
+            '        final, _ = (None, None)  # bounded extractor bypassed\n        if final is None or final.get("state") != "REVIEW_COMPLETE_NX_REQUIRED":',
+            "FIX3 caller: bypass the bounded extractor entirely (static guard must catch missing extractor call)"
+        ),
     }
 
     if mutation_name not in mutations:

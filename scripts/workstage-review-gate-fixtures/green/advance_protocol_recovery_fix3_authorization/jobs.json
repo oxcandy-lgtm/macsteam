@@ -1,0 +1,77 @@
+{
+ "total_count": 8,
+ "jobs": [
+  {
+   "id": 93097599436,
+   "name": "Review Gate",
+   "status": "completed",
+   "conclusion": "success",
+   "run_id": 31255264930,
+   "started_at": "2026-08-08T11:34:05Z",
+   "completed_at": "2026-08-08T11:34:30Z"
+  },
+  {
+   "id": 93097599438,
+   "name": "Advance Gate",
+   "status": "completed",
+   "conclusion": "success",
+   "run_id": 31255264930,
+   "started_at": "2026-08-08T11:34:05Z",
+   "completed_at": "2026-08-08T11:34:30Z"
+  },
+  {
+   "id": 93097599440,
+   "name": "Submission Gate",
+   "status": "completed",
+   "conclusion": "success",
+   "run_id": 31255264930,
+   "started_at": "2026-08-08T11:34:05Z",
+   "completed_at": "2026-08-08T11:34:30Z"
+  },
+  {
+   "id": 93097599442,
+   "name": "Gitignore Validation",
+   "status": "completed",
+   "conclusion": "success",
+   "run_id": 31255262627,
+   "started_at": "2026-08-08T11:34:01Z",
+   "completed_at": "2026-08-08T11:40:00Z"
+  },
+  {
+   "id": 93097599444,
+   "name": "Recipe Validation",
+   "status": "completed",
+   "conclusion": "success",
+   "run_id": 31255262627,
+   "started_at": "2026-08-08T11:34:01Z",
+   "completed_at": "2026-08-08T11:40:00Z"
+  },
+  {
+   "id": 93097599446,
+   "name": "Swift Build",
+   "status": "completed",
+   "conclusion": "success",
+   "run_id": 31255262627,
+   "started_at": "2026-08-08T11:34:01Z",
+   "completed_at": "2026-08-08T11:40:00Z"
+  },
+  {
+   "id": 93097599448,
+   "name": "License Validation",
+   "status": "completed",
+   "conclusion": "success",
+   "run_id": 31255262627,
+   "started_at": "2026-08-08T11:34:01Z",
+   "completed_at": "2026-08-08T11:40:00Z"
+  },
+  {
+   "id": 93097599450,
+   "name": "Public Audit",
+   "status": "completed",
+   "conclusion": "success",
+   "run_id": 31255262627,
+   "started_at": "2026-08-08T11:34:01Z",
+   "completed_at": "2026-08-08T11:40:00Z"
+  }
+ ]
+}

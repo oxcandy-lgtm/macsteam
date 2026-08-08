@@ -1,0 +1,21 @@
+{
+ "sha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+ "parents": [
+  {
+   "sha": "4eeb31ca84f1fda9f50611e6a1486d00eaafe0dd"
+  }
+ ],
+ "commit": {
+  "message": "ci: bound Review Gate log before line materialization (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX3)\n\nWorkstream: U1R18-R12-FIX3-GATE1-RECOVERY1-FIX3",
+  "committer": {
+   "date": "2026-08-08T12:10:00Z",
+   "name": "T",
+   "email": "t@example.com"
+  },
+  "author": {
+   "date": "2026-08-08T12:10:00Z",
+   "name": "T",
+   "email": "t@example.com"
+  }
+ }
+}

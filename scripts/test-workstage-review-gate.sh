@@ -249,6 +249,7 @@ GREEN_FIXTURES=(
   "advance_protocol_recovery_authorization|advance|"
   "advance_protocol_recovery_fix_authorization|advance|"
   "advance_protocol_recovery_fix2_authorization|advance|"
+  "advance_protocol_recovery_fix3_authorization|advance|"
   "advance_review_gate_timestamp_prefixed_final_state|advance|"
   "gate1_report_matches_head_trailer|submission|--worker-report-comment-id 5161887211"
   "future_product_report_uses_fix1|submission|--worker-report-comment-id 5161887211"
@@ -521,6 +522,34 @@ ADVANCE_MUTATIONS=(
   "protocol_recovery_fix2_parent_core_ci_job_not_success|1|protocol_recovery_fix2_parent_core_ci_not_success|advance_protocol_recovery_fix2_authorization"
   "protocol_recovery_fix2_parent_core_ci_required_jobs_missing|1|protocol_recovery_fix2_parent_core_ci_required_jobs_missing|advance_protocol_recovery_fix2_authorization"
   "protocol_recovery_fix2_chronology_wrong|1|protocol_recovery_fix2_chronology_wrong|advance_protocol_recovery_fix2_authorization"
+  "protocol_recovery_fix3_auth_missing|2|fixture_missing|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_auth_edited|1|protocol_recovery_fix3_auth_edited|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_auth_wrong_kind|1|protocol_recovery_fix3_auth_wrong_kind|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_auth_policy_mismatch|1|protocol_recovery_fix3_auth_policy_mismatch|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_auth_required_fixes_mismatch|1|protocol_recovery_fix3_auth_required_fixes_mismatch|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_auth_wrong_classification|1|protocol_recovery_fix3_auth_wrong_classification|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_auth_after_child|1|protocol_recovery_fix3_auth_after_child|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_ready_authorized|1|protocol_recovery_fix3_auth_unsafe_authorization|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_merge_authorized|1|protocol_recovery_fix3_auth_unsafe_authorization|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_release_authorized|1|protocol_recovery_fix3_auth_unsafe_authorization|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_wrong_parent|1|protocol_recovery_fix3_wrong_parent|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_wrong_subject|1|protocol_recovery_fix3_wrong_subject|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_wrong_workstream|1|protocol_recovery_fix3_wrong_workstream|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_merge_commit|1|merge_commit_rejected|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_forbidden_path|1|protocol_recovery_fix3_forbidden_path|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_second_child|1|protocol_recovery_fix3_second_child|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_report_missing|1|protocol_recovery_fix3_parent_report_missing|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_report_wrong_head|1|protocol_recovery_fix3_parent_report_wrong_head|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_report_wrong_workstream|1|protocol_recovery_fix3_parent_report_wrong_workstream|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_advance_missing|2|protocol_recovery_fix3_chronology_unprovable|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_advance_wrong_head|1|protocol_recovery_fix3_parent_advance_wrong_head|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_advance_wrong_state|1|protocol_recovery_fix3_parent_advance_state_wrong|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_advance_wrong_authority|1|protocol_recovery_fix3_parent_advance_authority_wrong|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_ci_missing|1|protocol_recovery_fix3_parent_ci_missing|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_ci_wrong_head|1|protocol_recovery_fix3_parent_ci_wrong_head|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_ci_job_missing|1|protocol_recovery_fix3_parent_ci_job_missing|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_parent_ci_red|1|protocol_recovery_fix3_parent_ci_not_success|advance_protocol_recovery_fix3_authorization"
+  "protocol_recovery_fix3_chronology_wrong|1|protocol_recovery_fix3_chronology_wrong|advance_protocol_recovery_fix3_authorization"
 )
 
 for entry in "${ADVANCE_MUTATIONS[@]}"; do
@@ -932,6 +961,92 @@ for entry in "${SOURCE_MUTATIONS[@]}"; do
     echo "  PASS: ${mut_name} caught by ${fixture_name}:${phase}"
   else
     bad "${mut_name} not caught by ${fixture_name}:${phase}"
+  fi
+done
+
+# ================================================
+# TEST 3b: FIX3 caller-bound static production-path guard
+# ================================================
+# RECOVERY1-FIX3 §9: the production Review Gate final-state caller must perform
+# ZERO full-log line materialization before the bounded extractor, and the
+# bounded extractor must be the single raw-log slicing authority actually
+# invoked. This is AST/token-aware and scoped to the one production function so
+# other legitimate line handling is not falsely flagged.
+echo ""
+echo "=== FIX3 Caller-Bound Production-Path Guard (static) ==="
+
+caller_bound_guard() {
+  local gate="$1"
+  python3 - "$gate" <<'PYGUARD'
+import ast, sys
+path = sys.argv[1]
+try:
+    src = open(path).read()
+    tree = ast.parse(src)
+except Exception as e:
+    print("caller-bound guard: source unparseable: %s" % e)
+    sys.exit(1)
+target = None
+for node in ast.walk(tree):
+    if isinstance(node, ast.FunctionDef) and \
+            node.name == "_validate_protocol_recovery_review_run_final_state":
+        target = node
+        break
+if target is None:
+    print("caller-bound guard: target function missing")
+    sys.exit(1)
+violations = []
+calls_extractor = False
+for node in ast.walk(target):
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if func.attr == "splitlines":
+                violations.append("splitlines")
+            if func.attr == "join":
+                violations.append("join")
+            if func.attr == "split":
+                for a in node.args:
+                    if isinstance(a, ast.Constant) and isinstance(a.value, str) \
+                            and "\n" in a.value:
+                        violations.append("split_newline")
+            if func.attr == "_extract_last_relevant_gate_result_from_log":
+                calls_extractor = True
+if violations:
+    print("caller-bound guard: full-log line materialization present: %s"
+          % ",".join(sorted(set(violations))))
+    sys.exit(1)
+if not calls_extractor:
+    print("caller-bound guard: bounded extractor not invoked")
+    sys.exit(1)
+sys.exit(0)
+PYGUARD
+}
+
+if caller_bound_guard "$GATE"; then
+  ok
+  echo "  PASS: production Review Gate caller is bounded (no pre-bound line materialization)"
+else
+  bad "production Review Gate caller failed the bounded-call static guard"
+fi
+
+CALLER_BOUND_MUTATIONS=(
+  "protocol_recovery_fix3_restore_caller_prebound_splitlines"
+  "protocol_recovery_fix3_restore_caller_split_newline"
+  "protocol_recovery_fix3_bypass_bounded_extractor"
+)
+for mut_name in "${CALLER_BOUND_MUTATIONS[@]}"; do
+  mut_gate="${TEMP_BASE}/gate_cb_${mut_name}.py"
+  cp "$GATE" "$mut_gate"
+  if ! python3 "${FIXTURE_DIR}/apply-source-mutation.py" "$mut_name" "$mut_gate" >/dev/null 2>&1; then
+    bad "${mut_name} failed to apply to gate source"
+    continue
+  fi
+  if caller_bound_guard "$mut_gate"; then
+    bad "${mut_name} NOT caught by static production-path guard"
+  else
+    ok
+    echo "  PASS: ${mut_name} caught by static production-path guard"
   fi
 done
 
