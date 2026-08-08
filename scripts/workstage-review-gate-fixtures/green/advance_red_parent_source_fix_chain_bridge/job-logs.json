@@ -1,0 +1,5 @@
+{
+  "900000006": "{\"run\":\"advance\",\"head_sha\":\"f2455860634b47c4360e26669981ddb6693ef392\"}\n{\"state\":\"REJECTED\",\"repository\":\"oxcandy-lgtm/macsteam\",\"pr_number\":2,\"head_sha\":\"f2455860634b47c4360e26669981ddb6693ef392\",\"parent_sha\":\"917b7e637629ed98bf6fa22ce38fafbf2793bb90\",\"guard_label\":\"latest_rejected_overrides_old_green\",\"message\":\"rejected\"}\n",
+  "900000014": "{\"run\":\"advance\",\"head_sha\":\"e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4\"}\n{\"state\":\"REJECTED\",\"repository\":\"oxcandy-lgtm/macsteam\",\"pr_number\":2,\"head_sha\":\"e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4\",\"parent_sha\":\"f2455860634b47c4360e26669981ddb6693ef392\",\"guard_label\":\"parent_review_wrong_head\",\"message\":\"rejected\"}\n",
+  "900000022": "{\"run\":\"advance\",\"head_sha\":\"615455c88a4ddae1aa71739f228f609653ef61f4\"}\n{\"state\":\"REJECTED\",\"repository\":\"oxcandy-lgtm/macsteam\",\"pr_number\":2,\"head_sha\":\"615455c88a4ddae1aa71739f228f609653ef61f4\",\"parent_sha\":\"e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4\",\"guard_label\":\"parent_review_wrong_head\",\"message\":\"rejected\"}\n"
+}

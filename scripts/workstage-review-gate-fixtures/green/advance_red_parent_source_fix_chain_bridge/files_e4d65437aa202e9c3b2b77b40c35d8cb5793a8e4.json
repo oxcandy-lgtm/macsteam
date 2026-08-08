@@ -1,0 +1,8 @@
+[
+  "Sources/MacSteam/Acceptance/LocalAcceptanceReceiptStore.swift",
+  "Sources/MacSteam/Acceptance/LocalRuntimeAcceptanceAuthority.swift",
+  "Tests/MacSteamTests/LocalAcceptanceReceiptStoreTests.swift",
+  "Tests/MacSteamTests/LocalRuntimeAcceptanceTests.swift",
+  "scripts/local-runtime-acceptance-audit.py",
+  "scripts/test-local-runtime-acceptance-audit.sh"
+]

@@ -99,6 +99,26 @@ GATE_FIX_WORKSTREAM = "U1R18-R11-FIX1-GATE1-FIX1"
 GATE_FIX_PARENT_ADVANCE_RUN = 31141723135
 GATE_FIX_PARENT_CI_RUN = 31141723115
 
+# === Red parent source fix CHAIN bridge constants (R12-FIX3-GATE1) ===
+CHAIN_MARKER = "<!-- macsteam-red-parent-source-fix-chain-authorization:v1 -->"
+CHAIN_COMMENT_ID = 5216469207
+CHAIN_REJECTED_PARENT = "917b7e637629ed98bf6fa22ce38fafbf2793bb90"
+CHAIN_FIX1 = "f2455860634b47c4360e26669981ddb6693ef392"
+CHAIN_FIX2 = "e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4"
+CHAIN_FIX3 = "615455c88a4ddae1aa71739f228f609653ef61f4"
+CHAIN_BRIDGE_SUBJECT = "ci: admit R12 durable receipt repair chain (U1R18-R12-FIX3-GATE1)"
+CHAIN_BRIDGE_WORKSTREAM = "U1R18-R12-FIX3-GATE1"
+CHAIN_CI_FIX1 = 31167252858
+CHAIN_CI_FIX2 = 31170284028
+CHAIN_CI_FIX3 = 31172730810
+CHAIN_FAIL_FIX1 = 31167252882
+CHAIN_FAIL_FIX2 = 31170283805
+CHAIN_FAIL_FIX3 = 31172730722
+CHAIN_REJECTED_REVIEW_ID = 4881429281
+CHAIN_FIX1_WS = "U1R18-R12-FIX1"
+CHAIN_FIX2_WS = "U1R18-R12-FIX2"
+CHAIN_FIX3_WS = "U1R18-R12-FIX3"
+
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "workstage-review-gate-policy.json")
 
 
@@ -1193,6 +1213,301 @@ def m_gate_fix_merge_true(d):
 
 def m_gate_fix_release_true(d):
     _gate_fix_flag(d, "release_authorized")
+
+
+# === Red parent source fix CHAIN bridge mutations (R12-FIX3-GATE1) ===
+# Base fixture: advance_red_parent_source_fix_chain_bridge.
+#
+# The chain authorization lives in a single top-level comment whose body carries
+# the chain witness JSON.  Every node in the declared chain is individually
+# proven (identity, scope, core CI, failed advance) and the bridge child (HEAD)
+# must be the ONLY direct child of the terminal source fix.
+
+def _chain_comment(d):
+    return load_json(d, "comment.json")
+
+
+def _chain_auth(d):
+    return json.loads(re.search(r"```json\n(.*?)\n```", _chain_comment(d)["body"], re.S).group(1))
+
+
+def _save_chain_auth(d, auth):
+    c = _chain_comment(d)
+    body = c["body"]
+    new_block = "```json\n" + json.dumps(auth, indent=2) + "\n```"
+    body = re.sub(r"```json\n.*?\n```", lambda mblk: new_block, body, count=1, flags=re.S)
+    c["body"] = body
+    save_json(d, "comment.json", c)
+
+
+def _chain_policy(d):
+    path = os.path.join(d, "policy.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return load_policy()
+
+
+def _save_chain_policy(d, p):
+    save_json(d, "policy.json", p)
+
+
+def _chain_commit(d, sha):
+    return load_json(d, "commit_%s.json" % sha)
+
+
+def m_red_chain_auth_comment_missing(d):
+    path = os.path.join(d, "comment.json")
+    if os.path.exists(path):
+        os.remove(path)
+    save_json(d, "comments.json", [])
+
+
+def m_red_chain_auth_comment_edited(d):
+    c = _chain_comment(d)
+    c["updated_at"] = "2026-08-07T12:00:00Z"
+    save_json(d, "comment.json", c)
+
+
+def m_red_chain_auth_after_bridge(d):
+    c = _chain_comment(d)
+    c["created_at"] = "2026-08-07T13:00:00Z"
+    c["updated_at"] = "2026-08-07T13:00:00Z"
+    save_json(d, "comment.json", c)
+
+
+def m_red_chain_auth_marker_duplicated(d):
+    c = _chain_comment(d)
+    c["body"] = CHAIN_MARKER + "\n" + c["body"]
+    save_json(d, "comment.json", c)
+
+
+def m_red_chain_auth_json_duplicated(d):
+    c = _chain_comment(d)
+    lead, _, rest = c["body"].partition(CHAIN_MARKER)
+    c["body"] = lead + CHAIN_MARKER + "\n```json\n{}\n```\n" + rest
+    save_json(d, "comment.json", c)
+
+
+def m_red_chain_auth_schema_mismatch(d):
+    auth = _chain_auth(d)
+    auth["schema_version"] = 2
+    _save_chain_auth(d, auth)
+
+
+def m_red_chain_auth_policy_mismatch(d):
+    p = _chain_policy(d)
+    p["red_parent_source_fix_chain_bridge"]["bridge_workstream"] = "U1R18-R12-WRONG-GATE1"
+    _save_chain_policy(d, p)
+
+
+def m_red_chain_auth_unsafe_authorization(d):
+    auth = _chain_auth(d)
+    auth["ready_authorized"] = True
+    _save_chain_auth(d, auth)
+
+
+def m_red_chain_auth_single_child_required(d):
+    auth = _chain_auth(d)
+    auth["single_direct_child_only"] = False
+    _save_chain_auth(d, auth)
+
+
+def m_red_chain_auth_chain_length_mismatch(d):
+    auth = _chain_auth(d)
+    auth["source_fix_chain"] = auth["source_fix_chain"][:2]
+    _save_chain_auth(d, auth)
+
+
+def m_red_chain_wrong_root(d):
+    auth = _chain_auth(d)
+    auth["source_fix_chain"][0]["parent_sha"] = WRONG_SHA
+    _save_chain_auth(d, auth)
+    p = _chain_policy(d)
+    p["red_parent_source_fix_chain_bridge"]["source_fix_chain"][0]["parent_sha"] = WRONG_SHA
+    _save_chain_policy(d, p)
+
+
+def m_red_chain_wrong_link(d):
+    auth = _chain_auth(d)
+    auth["source_fix_chain"][1]["parent_sha"] = WRONG_SHA
+    _save_chain_auth(d, auth)
+    p = _chain_policy(d)
+    p["red_parent_source_fix_chain_bridge"]["source_fix_chain"][1]["parent_sha"] = WRONG_SHA
+    _save_chain_policy(d, p)
+
+
+def m_red_chain_wrong_terminal(d):
+    auth = _chain_auth(d)
+    auth["source_fix_chain"][2]["sha"] = WRONG_SHA
+    _save_chain_auth(d, auth)
+    p = _chain_policy(d)
+    p["red_parent_source_fix_chain_bridge"]["source_fix_chain"][2]["sha"] = WRONG_SHA
+    _save_chain_policy(d, p)
+
+
+def m_red_chain_fix1_wrong_parent(d):
+    commit = _chain_commit(d, CHAIN_FIX1)
+    commit["parents"] = [{"sha": WRONG_SHA}]
+    save_json(d, "commit_%s.json" % CHAIN_FIX1, commit)
+
+
+def m_red_chain_fix1_wrong_subject(d):
+    commit = _chain_commit(d, CHAIN_FIX1)
+    commit["commit"]["message"] = "fix: wrong subject\n\nWorkstream: U1R18-R12-FIX1"
+    save_json(d, "commit_%s.json" % CHAIN_FIX1, commit)
+
+
+def m_red_chain_fix1_wrong_workstream(d):
+    commit = _chain_commit(d, CHAIN_FIX1)
+    commit["commit"]["message"] = "fix: harden durable acceptance receipt I/O (U1R18-R12-FIX1)\n\nWorkstream: U1R18-R12-WRONG"
+    save_json(d, "commit_%s.json" % CHAIN_FIX1, commit)
+
+
+def m_red_chain_fix1_forbidden_path(d):
+    files = load_json(d, "files_%s.json" % CHAIN_FIX1)
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("unknown/path/outside.swift")
+    save_json(d, "files_%s.json" % CHAIN_FIX1, files)
+
+
+def m_red_chain_fix1_no_changed_files(d):
+    save_json(d, "files_%s.json" % CHAIN_FIX1, [])
+
+
+def m_red_chain_ci_wrong_sha(d):
+    runs = load_json(d, "runs.json")
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == CHAIN_CI_FIX1:
+            r["head_sha"] = WRONG_SHA
+    save_json(d, "runs.json", runs)
+
+
+def m_red_chain_ci_failed(d):
+    runs = load_json(d, "runs.json")
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == CHAIN_CI_FIX1:
+            r["conclusion"] = "failure"
+    save_json(d, "runs.json", runs)
+
+
+def m_red_chain_ci_required_job_missing(d):
+    jobs = load_json(d, "jobs.json")
+    jobs = jobs.get("jobs", [])
+    stop = False
+    kept = []
+    for j in jobs:
+        if j.get("run_id") == CHAIN_CI_FIX1 and j.get("name") == "License Validation" and not stop:
+            stop = True
+            continue
+        kept.append(j)
+    save_json(d, "jobs.json", {"total_count": len(kept), "jobs": kept})
+
+
+# --- chain node failed advance (targets the FIX1 node fail run) ---
+
+def _chain_fail_run(d):
+    return load_json(d, "runs.json")
+
+
+def _chain_jobs(d):
+    return load_json(d, "jobs.json")
+
+
+def _chain_job_logs(d):
+    return load_json(d, "job-logs.json")
+
+
+def _chain_advance_job_id():
+    return 900000006
+
+
+def m_red_chain_advance_incomplete(d):
+    runs = _chain_fail_run(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == CHAIN_FAIL_FIX1:
+            r["status"] = "in_progress"
+            r["conclusion"] = None
+    save_json(d, "runs.json", runs)
+
+
+def m_red_chain_advance_not_failed(d):
+    runs = _chain_fail_run(d)
+    for r in runs.get("workflow_runs", []):
+        if r.get("id") == CHAIN_FAIL_FIX1:
+            r["conclusion"] = "success"
+    save_json(d, "runs.json", runs)
+
+
+def m_red_chain_advance_job_missing(d):
+    jobs = _chain_jobs(d)
+    jobs = jobs.get("jobs", [])
+    jobs = [j for j in jobs if not (j.get("run_id") == CHAIN_FAIL_FIX1
+                                    and j.get("name") == "Advance Gate")]
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_red_chain_advance_job_not_failed(d):
+    jobs = _chain_jobs(d)
+    jobs = jobs.get("jobs", [])
+    for j in jobs:
+        if j.get("run_id") == CHAIN_FAIL_FIX1 and j.get("name") == "Advance Gate":
+            j["conclusion"] = "success"
+    save_json(d, "jobs.json", {"total_count": len(jobs), "jobs": jobs})
+
+
+def m_red_chain_advance_guard_missing(d):
+    logs = _chain_job_logs(d)
+    for k in logs:
+        logs[k] = "::group::advance\nnothing here\n::endgroup::\n"
+    save_json(d, "job-logs.json", logs)
+
+
+def _chain_replace_log_guard(d, old, new):
+    logs = _chain_job_logs(d)
+    for k in logs:
+        logs[k] = logs[k].replace(old, new)
+    save_json(d, "job-logs.json", logs)
+
+
+def m_red_chain_advance_guard_mismatch(d):
+    _chain_replace_log_guard(d, '"guard_label":"latest_rejected_overrides_old_green"',
+                             '"guard_label":"some_other_guard"')
+
+
+def m_red_chain_advance_wrong_head(d):
+    _chain_replace_log_guard(d, '"head_sha":"' + CHAIN_FIX1 + '"',
+                             '"head_sha":"' + WRONG_SHA + '"')
+
+
+def m_red_chain_advance_wrong_parent(d):
+    _chain_replace_log_guard(d, '"parent_sha":"' + CHAIN_REJECTED_PARENT + '"',
+                             '"parent_sha":"' + WRONG_SHA + '"')
+
+
+# --- chain bridge child (HEAD commit identity + scope) ---
+
+def m_red_chain_bridge_no_changed_files(d):
+    save_json(d, "files.json", [])
+
+
+def m_red_chain_bridge_forbidden_path(d):
+    files = _bridge_files(d)
+    files.append("unknown/gate/path.txt")
+    save_json(d, "files.json", files)
+
+
+def m_red_chain_bridge_wrong_subject(d):
+    head = load_json(d, "commit_HEAD.json")
+    head["commit"]["message"] = "ci: wrong chain bridge subject\n\nWorkstream: %s" % CHAIN_BRIDGE_WORKSTREAM
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_red_chain_bridge_wrong_workstream(d):
+    head = load_json(d, "commit_HEAD.json")
+    head["commit"]["message"] = CHAIN_BRIDGE_SUBJECT + "\n\nWorkstream: U1R18-R12-WRONG-BRIDGE"
+    save_json(d, "commit_HEAD.json", head)
 
 
 # === Worker report mutations (based on submission_historical_reports) ===
@@ -2605,6 +2920,41 @@ MUTATIONS = {
     "gate_fix_ready_true": m_gate_fix_ready_true,
     "gate_fix_merge_true": m_gate_fix_merge_true,
     "gate_fix_release_true": m_gate_fix_release_true,
+
+# === R12-FIX3-GATE1: red parent source fix CHAIN bridge ===
+    "red_chain_auth_comment_missing": m_red_chain_auth_comment_missing,
+    "red_chain_auth_comment_edited": m_red_chain_auth_comment_edited,
+    "red_chain_auth_after_bridge": m_red_chain_auth_after_bridge,
+    "red_chain_auth_marker_duplicated": m_red_chain_auth_marker_duplicated,
+    "red_chain_auth_json_duplicated": m_red_chain_auth_json_duplicated,
+    "red_chain_auth_schema_mismatch": m_red_chain_auth_schema_mismatch,
+    "red_chain_auth_policy_mismatch": m_red_chain_auth_policy_mismatch,
+    "red_chain_auth_unsafe_authorization": m_red_chain_auth_unsafe_authorization,
+    "red_chain_auth_single_child_required": m_red_chain_auth_single_child_required,
+    "red_chain_auth_chain_length_mismatch": m_red_chain_auth_chain_length_mismatch,
+    "red_chain_wrong_root": m_red_chain_wrong_root,
+    "red_chain_wrong_link": m_red_chain_wrong_link,
+    "red_chain_wrong_terminal": m_red_chain_wrong_terminal,
+    "red_chain_fix1_wrong_parent": m_red_chain_fix1_wrong_parent,
+    "red_chain_fix1_wrong_subject": m_red_chain_fix1_wrong_subject,
+    "red_chain_fix1_wrong_workstream": m_red_chain_fix1_wrong_workstream,
+    "red_chain_fix1_forbidden_path": m_red_chain_fix1_forbidden_path,
+    "red_chain_fix1_no_changed_files": m_red_chain_fix1_no_changed_files,
+    "red_chain_ci_wrong_sha": m_red_chain_ci_wrong_sha,
+    "red_chain_ci_failed": m_red_chain_ci_failed,
+    "red_chain_ci_required_job_missing": m_red_chain_ci_required_job_missing,
+    "red_chain_advance_incomplete": m_red_chain_advance_incomplete,
+    "red_chain_advance_not_failed": m_red_chain_advance_not_failed,
+    "red_chain_advance_job_missing": m_red_chain_advance_job_missing,
+    "red_chain_advance_job_not_failed": m_red_chain_advance_job_not_failed,
+    "red_chain_advance_guard_missing": m_red_chain_advance_guard_missing,
+    "red_chain_advance_guard_mismatch": m_red_chain_advance_guard_mismatch,
+    "red_chain_advance_wrong_head": m_red_chain_advance_wrong_head,
+    "red_chain_advance_wrong_parent": m_red_chain_advance_wrong_parent,
+    "red_chain_bridge_no_changed_files": m_red_chain_bridge_no_changed_files,
+    "red_chain_bridge_forbidden_path": m_red_chain_bridge_forbidden_path,
+    "red_chain_bridge_wrong_subject": m_red_chain_bridge_wrong_subject,
+    "red_chain_bridge_wrong_workstream": m_red_chain_bridge_wrong_workstream,
     "report_missing": m_report_missing,
     "report_malformed_current_head": m_report_malformed_current_head,
     "report_marker_duplicated": m_report_marker_duplicated,

@@ -54,6 +54,7 @@ EXIT_INFRA = 2
 WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
 CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 SOURCE_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-authorization:v1 -->"
+SOURCE_CHAIN_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-chain-authorization:v1 -->"
 GATE_FIX_MARKER = "<!-- macsteam-gate-fix-authorization:v1 -->"
 
 WORKER_SCHEMA_PATH = "Contracts/workstream-report.schema.json"
@@ -336,6 +337,9 @@ class GitHubClient:
 
     def get_commit(self, sha):
         if self.fixtures_dir:
+            exact = os.path.join(self.fixtures_dir, f"commit_{sha}.json")
+            if os.path.exists(exact):
+                return self._load(f"commit_{sha}.json")
             if sha == self._expected_head:
                 return self._load("commit_HEAD.json")
             return self._load("commit_PARENT.json")
@@ -343,6 +347,9 @@ class GitHubClient:
 
     def get_commit_files(self, sha):
         if self.fixtures_dir:
+            exact = os.path.join(self.fixtures_dir, f"files_{sha}.json")
+            if os.path.exists(exact):
+                return self._load(f"files_{sha}.json")
             if sha == self._expected_head:
                 return self._load("files.json")
             source_path = os.path.join(self.fixtures_dir, "source-fix.json")
@@ -744,7 +751,44 @@ class Gate:
                     raise GateError(EXIT_INFRA, "policy_malformed",
                                     "Policy gate_fix_authorization missing: {field}")
 
+        chain_bridge = policy.get("red_parent_source_fix_chain_bridge")
+        if chain_bridge is not None:
+            self._validate_chain_policy(chain_bridge)
+
         return policy
+
+    def _validate_chain_policy(self, chain_bridge):
+        """Validate the standalone red-parent source-fix chain policy object.
+
+        The chain lane admits exactly ONE gate-only child whose parent is the
+        terminal source-fix SHA. Its source_fix_chain must be a non-empty
+        ordered list of nodes (exactly three in this R12 repair chain).
+        """
+        if not isinstance(chain_bridge, dict):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "red_parent_source_fix_chain_bridge must be an object")
+        for field in ["authorization_schema_version", "authorization_comment_id",
+                      "rejected_parent_sha", "rejected_controller_review_id",
+                      "rejected_classification", "terminal_source_fix_sha",
+                      "source_fix_chain", "bridge_workstream", "bridge_commit_subject",
+                      "single_direct_child_only"]:
+            if field not in chain_bridge:
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Policy red_parent_source_fix_chain_bridge missing: " + field)
+        chain = chain_bridge.get("source_fix_chain")
+        if not isinstance(chain, list) or not chain:
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Policy chain source_fix_chain must be a non-empty array")
+        for node in chain:
+            if not isinstance(node, dict):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Policy chain node must be an object")
+            for field in ["sha", "parent_sha", "workstream", "commit_subject",
+                          "core_ci_run_id", "required_ci_jobs",
+                          "failed_advance_run_id", "failed_advance_guard"]:
+                if field not in node:
+                    raise GateError(EXIT_INFRA, "policy_malformed",
+                                    "Policy chain node missing: " + field)
 
     def run(self):
         try:
@@ -885,6 +929,9 @@ class Gate:
         bridge = self.policy.get("red_parent_source_fix_bridge", {})
         bridge_source_fix = bridge.get("source_fix_sha")
 
+        chain_bridge = self.policy.get("red_parent_source_fix_chain_bridge", {})
+        chain_terminal = chain_bridge.get("terminal_source_fix_sha")
+
         gate_fix = self.policy.get("gate_fix_authorization")
         gate_fix_grand = None
         if gate_fix:
@@ -907,6 +954,9 @@ class Gate:
         elif bridge and self.parent_sha == bridge_source_fix:
             self.parent_authority = "red_parent_source_fix_bridge"
             self._validate_red_parent_source_fix_bridge(bridge)
+        elif chain_bridge and self.parent_sha == chain_terminal:
+            self.parent_authority = "red_parent_source_fix_chain_bridge"
+            self._validate_red_parent_source_fix_chain_bridge(chain_bridge)
         elif gate_fix and (self.parent_sha == gate_fix.get("parent_sha")
                            or (gate_fix_grand and self.parent_sha == gate_fix_grand)):
             self.parent_authority = "gate_fix_authorization"
@@ -1312,6 +1362,211 @@ class Gate:
         if require_jobs is not None and len(required_jobs) != require_jobs:
             raise GateError(EXIT_POLICY, "red_source_ci_wrong_job_count",
                             f"Source fix CI required job count mismatch")
+
+    # === Red parent source fix CHAIN bridge authority ===
+    #
+    # A single authorization comment admits ONE bridge child for an already-
+    # pushed repair CHAIN (multiple source-fix commits) whose terminal commit
+    # was rejected. The chain lane only ever authorizes the current HEAD whose
+    # parent is the exact terminal source-fix SHA. Each chain node must carry
+    # its own core CI green proof and its own failed Advance proof. The lane
+    # does NOT widen the generic repair envelope and does NOT authorize
+    # Ready/Merge/Release.
+
+    def _validate_chain_comment(self, chain_bridge):
+        comment_id = chain_bridge.get("authorization_comment_id")
+        if not isinstance(comment_id, int) or isinstance(comment_id, bool) or comment_id < 1:
+            raise GateError(EXIT_INFRA, "red_chain_auth_comment_id_invalid",
+                            "Chain authorization comment ID is invalid")
+        comment = self.client.get_comment_by_id(comment_id)
+        if not isinstance(comment, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Chain authorization comment data is not an object")
+        if comment.get("in_reply_to_id"):
+            raise GateError(EXIT_POLICY, "red_chain_auth_top_level_required",
+                            "Chain authorization comment is a reply")
+        if comment.get("path") or comment.get("position"):
+            raise GateError(EXIT_POLICY, "red_chain_auth_top_level_required",
+                            "Chain authorization comment is inline")
+        if comment.get("created_at") != comment.get("updated_at"):
+            raise GateError(EXIT_POLICY, "red_chain_auth_comment_edited",
+                            "Chain authorization comment was edited after creation")
+        body = comment.get("body", "") or ""
+        marker_count = body.count(SOURCE_CHAIN_BRIDGE_MARKER)
+        if marker_count != 1:
+            raise GateError(EXIT_POLICY, "red_chain_auth_marker_duplicated",
+                            "Chain authorization marker count != 1")
+        json_data, _, block_count = parse_json_block(body, SOURCE_CHAIN_BRIDGE_MARKER)
+        if block_count != 1:
+            raise GateError(EXIT_POLICY, "red_chain_auth_json_duplicated",
+                            "Chain authorization JSON block count != 1")
+        if json_data is None:
+            raise GateError(EXIT_POLICY, "red_chain_auth_malformed_json",
+                            "Chain authorization JSON is malformed")
+        if json_data.get("kind") != "red_parent_source_fix_chain_authorization":
+            raise GateError(EXIT_POLICY, "red_chain_auth_wrong_kind",
+                            "Chain authorization JSON kind mismatch")
+        self.chain_auth = json_data
+        bridge_date = (self.commit_head.get("commit", {}) or {}).get("committer", {}).get("date")
+        if not self._check_comment_before_commit_ts(comment, bridge_date):
+            raise GateError(EXIT_POLICY, "red_chain_auth_after_bridge",
+                            "Chain authorization must precede the bridge commit")
+
+    def _validate_chain_scope_from_comment(self, chain_bridge):
+        """The chain comment JSON is the scope authority; policy must not widen it."""
+        auth = getattr(self, "chain_auth", None)
+        if not auth:
+            raise GateError(EXIT_INFRA, "red_chain_scope_unavailable",
+                            "Chain authorization JSON not loaded")
+        if auth.get("schema_version") != chain_bridge.get("authorization_schema_version"):
+            raise GateError(EXIT_POLICY, "red_chain_auth_schema_mismatch",
+                            "Chain authorization schema_version mismatch")
+        for field in ("rejected_parent_sha", "rejected_controller_review_id",
+                      "rejected_classification", "terminal_source_fix_sha",
+                      "bridge_workstream", "bridge_commit_subject"):
+            if auth.get(field) != chain_bridge.get(field):
+                raise GateError(EXIT_POLICY, "red_chain_auth_policy_mismatch",
+                                f"Chain authorization field mismatch: {field}")
+        auth_chain = auth.get("source_fix_chain")
+        if not isinstance(auth_chain, list) or not auth_chain:
+            raise GateError(EXIT_INFRA, "red_chain_auth_chain_malformed",
+                            "Chain authorization source_fix_chain must be a non-empty array")
+        policy_chain = chain_bridge.get("source_fix_chain")
+        if not isinstance(policy_chain, list) or not policy_chain:
+            raise GateError(EXIT_INFRA, "red_chain_auth_chain_malformed",
+                            "Chain policy source_fix_chain must be a non-empty array")
+        if len(auth_chain) != len(policy_chain):
+            raise GateError(EXIT_POLICY, "red_chain_auth_chain_length_mismatch",
+                            "Chain authorization node count differs from policy")
+        for i, node in enumerate(auth_chain):
+            if not isinstance(node, dict):
+                raise GateError(EXIT_INFRA, "red_chain_auth_chain_malformed",
+                                "Chain authorization node is not an object")
+            for field in ("sha", "parent_sha", "workstream", "commit_subject",
+                          "core_ci_run_id", "required_ci_jobs",
+                          "failed_advance_run_id", "failed_advance_guard"):
+                if node.get(field) != policy_chain[i].get(field):
+                    raise GateError(EXIT_POLICY, "red_chain_auth_policy_mismatch",
+                                    f"Chain authorization node {i} field mismatch: {field}")
+        for flag in ("ready_authorized", "merge_authorized", "release_authorized"):
+            if auth.get(flag):
+                raise GateError(EXIT_POLICY, "red_chain_auth_unsafe_authorization",
+                                f"Chain authorization {flag} == true")
+        if auth.get("single_direct_child_only") is not True:
+            raise GateError(EXIT_POLICY, "red_chain_auth_single_direct_child_required",
+                            "Chain authorization single_direct_child_only != true")
+
+        source_exact = auth.get("source_fix_chain_allowed_exact_paths", [])
+        source_prefixes = auth.get("source_fix_chain_allowed_path_prefixes", [])
+        bridge_exact = auth.get("bridge_allowed_exact_paths", [])
+        bridge_prefixes = auth.get("bridge_allowed_path_prefixes", [])
+        if not isinstance(source_exact, list) or not isinstance(source_prefixes, list):
+            raise GateError(EXIT_POLICY, "red_chain_auth_scope_invalid",
+                            "Chain authorization source scope must be arrays")
+        if not isinstance(bridge_exact, list) or not isinstance(bridge_prefixes, list):
+            raise GateError(EXIT_POLICY, "red_chain_auth_scope_invalid",
+                            "Chain authorization bridge scope must be arrays")
+        self._chain_source_scope = ("exact", source_exact, "prefix", source_prefixes)
+        self._chain_bridge_scope = ("exact", bridge_exact, "prefix", bridge_prefixes)
+
+    def _validate_chain_node(self, node, index):
+        """Validate one source-fix chain node's identity, scope, CI and failed advance."""
+        node_sha = node.get("sha")
+        node_parent = node.get("parent_sha")
+        workstream = node.get("workstream")
+        subject = node.get("commit_subject")
+        core_run = node.get("core_ci_run_id")
+        require_jobs = node.get("required_ci_jobs")
+        fail_run = node.get("failed_advance_run_id")
+        fail_guard = node.get("failed_advance_guard")
+
+        commit_obj = self.client.get_commit(node_sha)
+        if not isinstance(commit_obj, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            f"Chain node {node_sha} commit data is not an object")
+        parents = commit_obj.get("parents", [])
+        if not parents or parents[0].get("sha") != node_parent:
+            raise GateError(EXIT_POLICY, "red_chain_wrong_node_parent",
+                            f"Chain node {index} parent differs from declared parent")
+
+        msg = (commit_obj.get("commit", {}) or {}).get("message", "") or ""
+        first = msg.split("\n")[0].strip() if msg else ""
+        if first != subject:
+            raise GateError(EXIT_POLICY, "red_chain_node_wrong_subject",
+                            f"Chain node {index} commit subject mismatch")
+        if not re.search(rf"^Workstream:\s*{re.escape(workstream)}\s*$", msg, re.MULTILINE):
+            raise GateError(EXIT_POLICY, "red_chain_node_wrong_workstream",
+                            f"Chain node {index} workstream trailer mismatch")
+
+        node_files = self._source_fix_changed_files(node_sha)
+        if not node_files:
+            raise GateError(EXIT_INFRA, "red_chain_node_no_changed_files",
+                            f"Chain node {index} reported no changed files")
+        for filepath in node_files:
+            if not self._bridge_path_in_scope(filepath, self._chain_source_scope):
+                raise GateError(EXIT_POLICY, "red_chain_node_forbidden_path",
+                                f"Chain node {index} changed file outside scope: {filepath}")
+
+        self._validate_source_fix_ci(core_run, node_sha, require_jobs)
+        self._validate_failed_advance_run(fail_run, node_sha, fail_guard, node_parent)
+
+    def _validate_red_parent_source_fix_chain_bridge(self, chain_bridge):
+        self._validate_chain_comment(chain_bridge)
+        self._validate_chain_scope_from_comment(chain_bridge)
+
+        terminal_sha = chain_bridge.get("terminal_source_fix_sha")
+        rejected_parent = chain_bridge.get("rejected_parent_sha")
+        chain = chain_bridge.get("source_fix_chain", [])
+        bridge_ws = chain_bridge.get("bridge_workstream")
+        bridge_subject = chain_bridge.get("bridge_commit_subject")
+
+        if self.parent_sha != terminal_sha:
+            raise GateError(EXIT_POLICY, "red_chain_wrong_parent",
+                            "Chain bridge parent is not the terminal source fix")
+
+        # Topology: strict ordered chain rooted on the rejected parent.
+        if not isinstance(chain, list) or not chain:
+            raise GateError(EXIT_INFRA, "red_chain_chain_malformed",
+                            "Chain source_fix_chain is empty or malformed")
+        if chain[0].get("parent_sha") != rejected_parent:
+            raise GateError(EXIT_POLICY, "red_chain_wrong_root",
+                            "Chain first node does not descend from rejected parent")
+        for i in range(1, len(chain)):
+            if chain[i].get("parent_sha") != chain[i - 1].get("sha"):
+                raise GateError(EXIT_POLICY, "red_chain_wrong_link",
+                                f"Chain node {i} does not descend from previous node")
+        if chain[-1].get("sha") != terminal_sha:
+            raise GateError(EXIT_POLICY, "red_chain_wrong_terminal",
+                            "Chain terminal node is not the authorized terminal SHA")
+
+        # Every chain node must individually prove scope, CI and failed advance.
+        for i, node in enumerate(chain):
+            self._validate_chain_node(node, i)
+
+        # Bind the rejected controller review to its real object + chronology.
+        # The rejected review sits on the rejected parent, so it must precede
+        # the first chain node.
+        self._validate_rejected_controller_review(chain_bridge, chain[0].get("sha"))
+
+        # Bridge child (this HEAD) identity.
+        head_msg = self.commit_head.get("commit", {}).get("message", "") or ""
+        head_first = head_msg.split("\n")[0].strip()
+        if head_first != bridge_subject:
+            raise GateError(EXIT_POLICY, "red_chain_bridge_wrong_subject",
+                            "Chain bridge commit subject mismatch")
+        if not re.search(rf"^Workstream:\s*{re.escape(bridge_ws)}\s*$", head_msg, re.MULTILINE):
+            raise GateError(EXIT_POLICY, "red_chain_bridge_wrong_workstream",
+                            "Chain bridge workstream trailer mismatch")
+
+        # Bridge (gate-only) changed files must fit the bridge scope.
+        head_files = self._get_changed_files()
+        if not head_files:
+            raise GateError(EXIT_INFRA, "red_chain_bridge_no_changed_files",
+                            "Chain bridge commit reported no changed files")
+        for filepath in head_files:
+            if not self._bridge_path_in_scope(filepath, self._chain_bridge_scope):
+                raise GateError(EXIT_POLICY, "red_chain_bridge_forbidden_path",
+                                f"Chain bridge changed file outside scope: {filepath}")
 
     def _extract_gate_json_from_log(self, log):
         """Bounded extraction of the gate-emitted JSON from an Actions job log.

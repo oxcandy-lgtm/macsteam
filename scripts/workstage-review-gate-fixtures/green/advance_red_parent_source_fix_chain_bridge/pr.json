@@ -1,0 +1,22 @@
+{
+  "number": 2,
+  "head": {
+    "ref": "feat/ultimate-cloverpit-u1",
+    "sha": "5017eecb208e71e4ac6b6b5d6e7f9a1b2030d6f7",
+    "repo": {
+      "full_name": "oxcandy-lgtm/macsteam"
+    }
+  },
+  "base": {
+    "ref": "feat/public-oss-bootstrap",
+    "repo": {
+      "full_name": "oxcandy-lgtm/macsteam"
+    }
+  },
+  "state": "open",
+  "draft": true,
+  "merged": false,
+  "mergeable": "MERGEABLE",
+  "title": "MacsTeam Ultimate R12 FIX3 GATE1 Chain",
+  "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2"
+}

@@ -54,6 +54,49 @@
     "required_commit_subject": "ci: bind rejected review and failed advance evidence (U1R18-R11-FIX1-GATE1-FIX1)",
     "single_direct_child_only": true
   },
+  "red_parent_source_fix_chain_bridge": {
+    "authorization_schema_version": 1,
+    "authorization_comment_id": 5216469207,
+    "rejected_parent_sha": "917b7e637629ed98bf6fa22ce38fafbf2793bb90",
+    "rejected_controller_review_id": 4881429281,
+    "rejected_classification": "RED_U1R18_R12_DURABLE_RECEIPT_FAIL_CLOSED_INCOMPLETE",
+    "terminal_source_fix_sha": "615455c88a4ddae1aa71739f228f609653ef61f4",
+    "source_fix_chain": [
+      {
+        "sha": "f2455860634b47c4360e26669981ddb6693ef392",
+        "parent_sha": "917b7e637629ed98bf6fa22ce38fafbf2793bb90",
+        "workstream": "U1R18-R12-FIX1",
+        "commit_subject": "fix: harden durable acceptance receipt I/O (U1R18-R12-FIX1)",
+        "core_ci_run_id": 31167252858,
+        "required_ci_jobs": 5,
+        "failed_advance_run_id": 31167252882,
+        "failed_advance_guard": "latest_rejected_overrides_old_green"
+      },
+      {
+        "sha": "e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4",
+        "parent_sha": "f2455860634b47c4360e26669981ddb6693ef392",
+        "workstream": "U1R18-R12-FIX2",
+        "commit_subject": "fix: close bounded receipt POSIX transaction (U1R18-R12-FIX2)",
+        "core_ci_run_id": 31170284028,
+        "required_ci_jobs": 5,
+        "failed_advance_run_id": 31170283805,
+        "failed_advance_guard": "parent_review_wrong_head"
+      },
+      {
+        "sha": "615455c88a4ddae1aa71739f228f609653ef61f4",
+        "parent_sha": "e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4",
+        "workstream": "U1R18-R12-FIX3",
+        "commit_subject": "fix: recover bounded receipt probe EINTR (U1R18-R12-FIX3)",
+        "core_ci_run_id": 31172730810,
+        "required_ci_jobs": 5,
+        "failed_advance_run_id": 31172730722,
+        "failed_advance_guard": "parent_review_wrong_head"
+      }
+    ],
+    "bridge_workstream": "U1R18-R12-FIX3-GATE1",
+    "bridge_commit_subject": "ci: admit R12 durable receipt repair chain (U1R18-R12-FIX3-GATE1)",
+    "single_direct_child_only": true
+  },
   "core_ci": {
     "required_jobs": [
       "Swift Build",
