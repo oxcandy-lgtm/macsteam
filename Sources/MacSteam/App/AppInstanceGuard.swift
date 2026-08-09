@@ -124,23 +124,29 @@ final class AppInstanceGuard {
         return info.pid
     }
 
+    static func executableFingerprint(for data: Data) -> String {
+        // Simple FNV-1a hash for the fingerprint (not crypto-grade).
+        var hash: UInt64 = 14695981039346656037
+        for byte in data {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+
+        // Append scalar bytes directly. This preserves the existing native
+        // byte order without mutating an Array value's object representation.
+        var fingerprintBytes = [UInt8]()
+        fingerprintBytes.reserveCapacity(32)
+        let secondWord = hash ^ 0x9E3779B97F4A7C15
+        withUnsafeBytes(of: hash) { fingerprintBytes.append(contentsOf: $0) }
+        withUnsafeBytes(of: secondWord) { fingerprintBytes.append(contentsOf: $0) }
+        fingerprintBytes.append(contentsOf: repeatElement(UInt8(0), count: 16))
+
+        return Data(fingerprintBytes).base64EncodedString().prefix(16).description
+    }
+
     private func computeExecutableFingerprint() -> String {
         guard let execURL = Bundle.main.executableURL,
               let data = try? Data(contentsOf: execURL) else { return "unknown" }
-        var hash = [UInt8](repeating: 0, count: 32)
-        data.withUnsafeBytes { buf in
-            // Simple FNV-1a hash for the fingerprint (not crypto-grade)
-            var h: UInt64 = 14695981039346656037
-            for byte in buf.bindMemory(to: UInt8.self) {
-                h ^= UInt64(byte)
-                h &*= 1099511628211
-            }
-            withUnsafeMutableBytes(of: &hash) { hb in
-                let ptr = hb.bindMemory(to: UInt64.self)
-                ptr[0] = h
-                ptr[1] = h ^ 0x9E3779B97F4A7C15
-            }
-        }
-        return Data(hash).base64EncodedString().prefix(16).description
+        return Self.executableFingerprint(for: data)
     }
 }
