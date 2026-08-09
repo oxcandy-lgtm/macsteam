@@ -85,3 +85,23 @@ struct LaunchBreakdown: Equatable, Sendable {
         winePreparationMS > 0 || steamProcessMS > 0 || steamReadyMS > 0
     }
 }
+
+/// Read-only startup telemetry for the live meter (U1R18-R13-FIX1-FIX3 §5/§6).
+///
+/// No PID, path, account, session identity, credentials, or raw arguments.
+struct LaunchStartupTelemetry: Equatable, Sendable {
+    var stage: LaunchPipelineStage
+    var wineProgress: Double
+    var wineCompleted: Int
+    var wineTotal: Int
+    var steamElapsedMS: Int64?
+    var etaRemainingMS: Int64?
+    var hasSufficientEtaHistory: Bool
+    var validationPath: LaunchValidationPath?
+
+    /// Truthful validation-path label, or nil when no decision exists yet.
+    var pathLabel: String? {
+        guard let p = validationPath else { return nil }
+        return p == .fastValidation ? "Fast validation" : "Full validation"
+    }
+}

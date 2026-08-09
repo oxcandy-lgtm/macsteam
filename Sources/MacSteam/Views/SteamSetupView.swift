@@ -178,6 +178,9 @@ struct SteamSetupView: View {
             // Client lifecycle status (installing / interrupted)
             steamInstallStatusView
 
+            // Live Windows Steam startup meter (U1R18-R13-FIX1-FIX3 §5/§6)
+            launchMeter
+
             HStack(spacing: 12) {
                 Button(steamButtonLabel) {
                     Task { await coordinator.launchWindowsSteam() }
@@ -431,6 +434,116 @@ private enum StepUIState {
         case .ready:     return .blue
         case .working:   return .blue
         case .completed: return .green
+        }
+    }
+}
+
+// MARK: - Live Steam startup meter (U1R18-R13-FIX1-FIX3 §5/§6)
+
+private extension SteamSetupView {
+    /// True while the Steam client is actively starting (the long wait).
+    var steamIsStarting: Bool {
+        coordinator.launchPipelineStage == .startingSteam
+            || coordinator.launchPipelineStage == .waitingForSteam
+    }
+
+    /// Read-only live startup meter. TimelineView refreshes ONLY the monotonic
+    /// elapsed presentation — it never mutates milestones, readiness, stage,
+    /// timing samples, or cache admission.
+    @ViewBuilder
+    var launchMeter: some View {
+        if steamIsStarting || coordinator.launchPipelineStage == .ready {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Windows Steam startup")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+
+                TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+                    let telemetry = coordinator.startupTelemetry
+                    meterRows(telemetry)
+                }
+            }
+            .padding(12)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    private func meterRows(_ t: LaunchStartupTelemetry) -> some View {
+        // Wine milestone meter (real evidence only, no fake timer).
+        HStack(spacing: 8) {
+            Text("Wine")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ProgressView(value: t.wineProgress)
+                .tint(.blue)
+            Text("\(t.wineCompleted) / \(t.wineTotal)  \(Int((t.wineProgress * 100).rounded()))%")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+
+        // Stage
+        HStack {
+            Text("Stage")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(stageLabel(t.stage))
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+
+        // Live monotonic elapsed while waiting.
+        if let elapsed = t.steamElapsedMS {
+            HStack {
+                Text("Elapsed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "%.1f s", Double(elapsed) / 1000.0))
+                    .font(.caption.monospaced())
+            }
+            if t.hasSufficientEtaHistory, let remaining = t.etaRemainingMS {
+                HStack {
+                    Text("Estimated")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("~\(String(format: "%.1f s", Double(remaining) / 1000.0)) remaining")
+                        .font(.caption.monospaced())
+                }
+            } else {
+                HStack {
+                    Text("Estimated")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Measuring…")
+                        .font(.caption.monospaced())
+                }
+            }
+        }
+
+        // Truthful validation path (never rewritten by cache publication).
+        if let path = t.pathLabel {
+            HStack {
+                Text("Validation path")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(path)
+                    .font(.caption.monospaced())
+            }
+        }
+    }
+
+    private func stageLabel(_ stage: LaunchPipelineStage) -> String {
+        switch stage {
+        case .startingSteam: return "Starting Steam"
+        case .waitingForSteam: return "Waiting for Steam"
+        case .ready: return "Ready"
+        default: return "Launching"
         }
     }
 }
