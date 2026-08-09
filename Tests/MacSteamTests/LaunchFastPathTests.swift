@@ -79,6 +79,131 @@ struct LaunchFastPathTests {
             candidateRuntimeURL: root, candidateRuntimeType: "imported_wine"))
     }
 
+    // MARK: - U1R18-R13-FIX1-FIX5 §2: canonical first-full → second-fast proof
+
+    @MainActor
+    @Test func firstFullThenSecondFastUsesProductionDecisionOrchestrator() async {
+        // FIX5 canonical proof through the PRODUCTION validation orchestrator.
+        // The probe executor is the ONLY injected seam; the orchestrator itself
+        // decides full-vs-fast from cache state. First launch: full probe
+        // executed exactly once. Second exact matching launch: fast, probe
+        // count unchanged (exactly 1, never re-executed).
+        let root = tempPrefix()
+        let fake = FakeLaunchFileIdentityProvider()
+        let coordinator = makeCoordinatorAt(prefixRoot: root, fileIdentity: fake)
+        let runtimeURL = makeRuntimeDir(root.appendingPathComponent("wine-runtime"))
+        fake.identities[runtimeURL.appendingPathComponent("bin/wine").path] = fileID(inode: 1)
+        fake.identities[root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe").path] = fileID(inode: 5)
+        coordinator.runtimeURL = runtimeURL
+        coordinator.runtimeSourceType = "imported_wine"
+
+        var probeExecutions = 0
+        coordinator.realLoadProbeExecution = { _, _, _ in
+            probeExecutions += 1
+            return WineRealLoadResult(status: .healthy, detail: "production-counted", windowsVersion: nil, exitCode: 0)
+        }
+
+        // FIRST: same production orchestrator -> cache miss -> full validation.
+        let first = await coordinator.performValidationDecisionForTest(runtimeURL: runtimeURL)
+        #expect(first.path == .fullValidation)
+        #expect(first.healthy)
+        #expect(probeExecutions == 1)
+
+        // Production terminal: admitted ready -> cache publication.
+        coordinator.beginSteamAttempt()
+        coordinator.requireLaunchTransition(to: .startingSteam)
+        coordinator.requireLaunchTransition(to: .waitingForSteam)
+        let gen = coordinator.currentAttemptGeneration
+        let terminal = coordinator.completeSteamReadyIfCurrent(
+            generation: gen, observedState: .runningVisible, elapsedMS: 100
+        )
+        #expect(terminal == .admittedReady)
+        #expect(coordinator.lastLaunchPath == "full")
+        #expect(coordinator.lastValidationPath == .fullValidation)
+
+        // SECOND — same production orchestrator -> cache hit -> fast path.
+        let second = await coordinator.performValidationDecisionForTest(runtimeURL: runtimeURL)
+        #expect(second.path == .fastValidation)
+        #expect(second.healthy)
+        // The full probe is NEVER re-executed: count stays exactly 1.
+        #expect(probeExecutions == 1)
+        #expect(coordinator.lastLaunchPath == "fast")
+        #expect(coordinator.lastValidationPath == .fastValidation)
+    }
+
+    @MainActor
+    @Test func missingCurrentValidationFailsClosedAtTerminal() {
+        // FIX5 terminal proof: a `.runningVisible` Steam-ready observation with
+        // NO current validation decision must fail closed. No ready, no
+        // successful timing sample, no cache publication.
+        let root = tempPrefix()
+        let fake = FakeLaunchFileIdentityProvider()
+        let coordinator = makeCoordinatorAt(prefixRoot: root, fileIdentity: fake)
+        let runtimeURL = makeRuntimeDir(root.appendingPathComponent("wine-runtime"))
+        fake.identities[runtimeURL.appendingPathComponent("bin/wine").path] = fileID(inode: 1)
+        fake.identities[root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe").path] = fileID(inode: 5)
+        coordinator.runtimeURL = runtimeURL
+        coordinator.runtimeSourceType = "imported_wine"
+        // No decision established -> nothing may admit Steam ready.
+        coordinator.beginSteamAttempt()
+        coordinator.requireLaunchTransition(to: .startingSteam)
+        coordinator.requireLaunchTransition(to: .waitingForSteam)
+        let gen = coordinator.currentAttemptGeneration
+        let terminal = coordinator.completeSteamReadyIfCurrent(
+            generation: gen, observedState: .runningVisible, elapsedMS: 100
+        )
+        #expect(terminal == .failedValidationBinding)
+        #expect(coordinator.launchAuthority.failed)
+        #expect(coordinator.launchPipelineStage == .failed)
+        // No successful timing sample: history is empty so remaining is nil
+        // (fail-closed, nothing admitted).
+        #expect(coordinator.steamReadyETA?.remaining == nil)
+        #expect(coordinator.startupTelemetry.hasSufficientEtaHistory == false)
+        // No cache publication: fast path remains disabled.
+        #expect(!coordinator.shouldTakeLaunchFastPath(
+            candidateRuntimeURL: runtimeURL, candidateRuntimeType: "imported_wine"))
+    }
+
+    @MainActor
+    @Test func samePathSteamMutationFailsClosedBeforeAdmission() async {
+        // FIX5 terminal: a valid decision with the SAME path Steam material
+        // identity mutated BEFORE the ready boundary must fail closed. The
+        // terminal rebuilds the live fingerprint and requires an exact match,
+        // so a mutation invalidates the bound decision and nothing is admitted.
+        let root = tempPrefix()
+        let fake = FakeLaunchFileIdentityProvider()
+        let coordinator = makeCoordinatorAt(prefixRoot: root, fileIdentity: fake)
+        let runtimeURL = makeRuntimeDir(root.appendingPathComponent("wine-runtime"))
+        // SAME path: original identity.
+        let steamPath = root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe")
+        fake.identities[runtimeURL.appendingPathComponent("bin/wine").path] = fileID(inode: 1)
+        fake.identities[steamPath.path] = fileID(size: 100, mtime: 1000, inode: 7)
+        coordinator.runtimeURL = runtimeURL
+        coordinator.runtimeSourceType = "imported_wine"
+
+        // Establish a valid full decision through the production orchestrator.
+        let decision = await coordinator.performValidationDecisionForTest(runtimeURL: runtimeURL)
+        #expect(decision.path == .fullValidation)
+
+        coordinator.beginSteamAttempt()
+        coordinator.requireLaunchTransition(to: .startingSteam)
+        coordinator.requireLaunchTransition(to: .waitingForSteam)
+        // SAME PATH Steam mutation: only the material identity changes.
+        fake.identities[steamPath.path] = fileID(size: 100, mtime: 2000, inode: 7)
+        let gen = coordinator.currentAttemptGeneration
+        let terminal = coordinator.completeSteamReadyIfCurrent(
+            generation: gen, observedState: .runningVisible, elapsedMS: 100
+        )
+        #expect(terminal == .failedValidationBinding)
+        #expect(coordinator.launchPipelineStage == .failed)
+        #expect(coordinator.launchAuthority.failed)
+        // No timing sample, no cache publication: fast stays disabled.
+        #expect(coordinator.steamReadyETA?.remaining == nil)
+        #expect(coordinator.startupTelemetry.hasSufficientEtaHistory == false)
+        #expect(!coordinator.shouldTakeLaunchFastPath(
+            candidateRuntimeURL: runtimeURL, candidateRuntimeType: "imported_wine"))
+    }
+
     @MainActor
     @Test func candidateBoundFingerprintDoesNotUseOldSelectedRuntime() {
         // FIX D: the fast-path decision uses the candidate, not self.runtimeURL.

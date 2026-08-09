@@ -237,6 +237,23 @@ final class UltimateSetupCoordinator {
     /// probe per selection; tests inject a deterministic fake.
     var realLoadProbeProvider: @MainActor () -> WineRealLoadProbe = { WineRealLoadProbe() }
 
+    /// U1R18-R13-FIX1-FIX5: the real-load probe EXECUTION boundary used by the
+    /// production validation orchestrator's full branch.
+    ///
+    /// Production default is exactly the previous behaviour: build a fresh
+    /// ``WineRealLoadProbe`` and run it against the candidate. Tests inject a
+    /// deterministic executor whose invocations can be counted, so a FIX5 test
+    /// observes how many times the full branch really executed the probe —
+    /// without any test deciding whether the orchestrator takes full/fast.
+    var realLoadProbeExecution: @MainActor (URL, URL, URL) async -> WineRealLoadResult = {
+        runtimeURL, wineURL, scratchPrefixRoot in
+        await WineRealLoadProbe().probe(
+            runtimeURL: runtimeURL,
+            wineURL: wineURL,
+            scratchPrefixRoot: scratchPrefixRoot
+        )
+    }
+
     /// Result of the most recent real-load preflight (nil before any run).
     private(set) var realLoadResult: WineRealLoadResult?
 
@@ -683,6 +700,19 @@ final class UltimateSetupCoordinator {
         return steamReadyStopwatch?.elapsedMS()
     }
 
+    /// U1R18-R13-FIX1-FIX5: deterministic launcher for the live Steam-ready
+    /// wait interval. ``observeSteamReadyBoundary`` arms the same stopwatch in
+    /// production; this seam lets a FIX5 test prove the active ``steamReadyETA``
+    /// advances with a controllable monotonic clock. It only starts the wait
+    /// interval — it never mutates decisions, milestones, stage, samples, or
+    /// cache.
+    @discardableResult
+    func armSteamReadyWaitForTesting() -> Bool {
+        guard launchPipelineStage == .waitingForSteam else { return false }
+        steamReadyStopwatch = LaunchStopwatch(clock: launchClock)
+        return true
+    }
+
     /// Launch telemetry for the startup meter (FIX E/F).
     var startupTelemetry: LaunchStartupTelemetry {
         LaunchStartupTelemetry(
@@ -1122,8 +1152,7 @@ final class UltimateSetupCoordinator {
     func performRealLoadPreflightOrFastPath(
         runtimeURL: URL,
         wineURL: URL,
-        runtimeType: String?,
-        probeProvider: @MainActor () -> WineRealLoadProbe = { WineRealLoadProbe() }
+        runtimeType: String?
     ) async -> (result: WineRealLoadResult, path: LaunchValidationPath) {
         let candidateURL = runtimeURL
         let candidateType = runtimeType ?? runtimeSourceType
@@ -1161,11 +1190,8 @@ final class UltimateSetupCoordinator {
         }
 
         // Full validation: the probe actually executes.
-        let probe = probeProvider()
-        let result = await probe.probe(
-            runtimeURL: runtimeURL,
-            wineURL: wineURL,
-            scratchPrefixRoot: prefixManager.prefixesRoot
+        let result = await realLoadProbeExecution(
+            runtimeURL, wineURL, prefixManager.prefixesRoot
         )
         self.realLoadResult = result
         self.realLoadHealthy = result.isHealthy
