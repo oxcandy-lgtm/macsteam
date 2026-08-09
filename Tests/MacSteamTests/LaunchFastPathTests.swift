@@ -79,15 +79,18 @@ struct LaunchFastPathTests {
             candidateRuntimeURL: root, candidateRuntimeType: "imported_wine"))
     }
 
-    // MARK: - U1R18-R13-FIX1-FIX5 §2: canonical first-full → second-fast proof
+    // MARK: - U1R18-R13-FIX1-FIX6 §4/§5: exact production prelaunch proof
 
     @MainActor
-    @Test func firstFullThenSecondFastUsesProductionDecisionOrchestrator() async {
-        // FIX5 canonical proof through the PRODUCTION validation orchestrator.
-        // The probe executor is the ONLY injected seam; the orchestrator itself
-        // decides full-vs-fast from cache state. First launch: full probe
-        // executed exactly once. Second exact matching launch: fast, probe
-        // count unchanged (exactly 1, never re-executed).
+    @Test func firstFullThenSecondFastUsesExactProductionPrelaunchOrchestration() async throws {
+        // FIX6 canonical proof: BOTH launches call
+        // `ensureCurrentValidationDecisionBeforeLaunch()` — the EXACT method
+        // `launchWindowsSteam()` invokes. The probe executor is the ONLY
+        // injected seam; the exact production method itself decides full-vs-fast
+        // from launch-cache state. FIRST launch: cache miss -> full validation,
+        // full probe executed exactly once. SECOND exact matching launch: the
+        // SAME production method consults the successful cache -> fast path,
+        // probe count still exactly 1 (never re-executed).
         let root = tempPrefix()
         let fake = FakeLaunchFileIdentityProvider()
         let coordinator = makeCoordinatorAt(prefixRoot: root, fileIdentity: fake)
@@ -103,13 +106,14 @@ struct LaunchFastPathTests {
             return WineRealLoadResult(status: .healthy, detail: "production-counted", windowsVersion: nil, exitCode: 0)
         }
 
-        // FIRST: same production orchestrator -> cache miss -> full validation.
-        let first = await coordinator.performValidationDecisionForTest(runtimeURL: runtimeURL)
-        #expect(first.path == .fullValidation)
-        #expect(first.healthy)
+        // FIRST: exact production prelaunch orchestration -> cache miss -> full.
+        let firstEnsured = try await coordinator.ensureCurrentValidationDecisionBeforeLaunch()
+        #expect(firstEnsured)
+        #expect(coordinator.lastValidationPath == .fullValidation)
         #expect(probeExecutions == 1)
 
-        // Production terminal: admitted ready -> cache publication.
+        // Production terminal: admitted ready -> cache publication, decision
+        // consumed.
         coordinator.beginSteamAttempt()
         coordinator.requireLaunchTransition(to: .startingSteam)
         coordinator.requireLaunchTransition(to: .waitingForSteam)
@@ -118,17 +122,17 @@ struct LaunchFastPathTests {
             generation: gen, observedState: .runningVisible, elapsedMS: 100
         )
         #expect(terminal == .admittedReady)
+        // The current decision is consumed by a successful terminal (single-use).
         #expect(coordinator.lastLaunchPath == "full")
         #expect(coordinator.lastValidationPath == .fullValidation)
 
-        // SECOND — same production orchestrator -> cache hit -> fast path.
-        let second = await coordinator.performValidationDecisionForTest(runtimeURL: runtimeURL)
-        #expect(second.path == .fastValidation)
-        #expect(second.healthy)
-        // The full probe is NEVER re-executed: count stays exactly 1.
+        // SECOND — the same exact production method -> cache hit -> fast path.
+        let secondEnsured = try await coordinator.ensureCurrentValidationDecisionBeforeLaunch()
+        #expect(secondEnsured)
+        #expect(coordinator.lastValidationPath == .fastValidation)
+        // The full probe is NEVER re-executed: total count stays exactly 1.
         #expect(probeExecutions == 1)
         #expect(coordinator.lastLaunchPath == "fast")
-        #expect(coordinator.lastValidationPath == .fastValidation)
     }
 
     @MainActor

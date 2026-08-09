@@ -1095,7 +1095,11 @@ final class UltimateSetupCoordinator {
     /// re-sealed by the orchestrator for the exact current artifacts; the
     /// orchestrator itself takes the fast path when the launch cache proves an
     /// admissible prior healthy validation under the identical fingerprint.
-    private func ensureCurrentValidationDecisionBeforeLaunch() async throws -> Bool {
+    /// FIX6: narrowest module-internal visibility so the canonical FIX6 test
+    /// invokes the EXACT production prelaunch orchestration that
+    /// ``launchWindowsSteam`` uses. Semantics are unchanged from the private
+    /// method.
+    func ensureCurrentValidationDecisionBeforeLaunch() async throws -> Bool {
         guard let runtimeURL = runtimeURL else { return false }
         let wineURL = WineExecutableLayout.detect(from: runtimeURL).wine
         let outcome = await performRealLoadPreflightOrFastPath(
