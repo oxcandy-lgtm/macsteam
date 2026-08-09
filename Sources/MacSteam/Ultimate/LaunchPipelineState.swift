@@ -63,3 +63,105 @@ struct SystemLaunchClock: LaunchClock {
         Int64(DispatchTime.now().uptimeNanoseconds) / 1_000_000
     }
 }
+
+/// Result of an attempted launch-stage transition (U1R18-R13-FIX1-FIX1 §3.1).
+enum LaunchTransitionResult: Equatable, Sendable {
+    case admitted
+    case rejectedSkipped
+    case rejectedBackward
+    case rejectedSame
+}
+
+/// Single production launch transition + telemetry authority.
+///
+/// This is the ONLY place the coordinator may advance the launch stage, earn a
+/// Wine milestone, or record a timing segment. Arbitrary call sites cannot
+/// freely assign stage values. The authority:
+///   - resets a new attempt deterministically,
+///   - admits only defined forward transitions,
+///   - rejects illegal/out-of-order transitions (preserving the prior valid
+///     stage),
+///   - exposes failure explicitly,
+///   - never derives progress from a fake timer.
+struct LaunchTransitionAuthority: Sendable {
+    private(set) var stage: LaunchPipelineStage = .idle
+    private(set) var wineMilestones = WineMilestones()
+    private(set) var timing = LaunchTiming()
+    private(set) var failed = false
+
+    init() {}
+
+    /// Reset a new launch attempt. Clears stale milestones and timing.
+    mutating func reset() {
+        stage = .idle
+        wineMilestones = WineMilestones()
+        timing = LaunchTiming()
+        failed = false
+    }
+
+    /// Advance to a strictly later stage. Illegal transitions are rejected and
+    /// the prior valid stage is preserved.
+    @discardableResult
+    mutating func transition(to next: LaunchPipelineStage) -> LaunchTransitionResult {
+        guard !failed else { return .rejectedSkipped }
+        if next == .failed {
+            stage = .failed
+            failed = true
+            wineMilestones = WineMilestones()
+            return .admitted
+        }
+        // A fresh or reset attempt always allows moving forward from idle.
+        if next.rawValue <= stage.rawValue {
+            return next.rawValue == stage.rawValue ? .rejectedSame : .rejectedBackward
+        }
+        // Skip admitting: move to the immediately next defined stage only.
+        guard next.rawValue == stage.rawValue + 1 else {
+            return .rejectedSkipped
+        }
+        stage = next
+        return .admitted
+    }
+
+    /// Earn a Wine milestone from real production evidence. Never optimistic.
+    mutating func earn(_ key: WineMilestoneKey) {
+        guard !failed else { return }
+        switch key {
+        case .runtimeResolved: wineMilestones.runtimeResolved = true
+        case .runtimeCapabilityValidated: wineMilestones.runtimeCapabilityValidated = true
+        case .realLoadProbeComplete: wineMilestones.realLoadProbeComplete = true
+        case .canonicalPrefixBound: wineMilestones.canonicalPrefixBound = true
+        case .wineEnvironmentReady: wineMilestones.wineEnvironmentReady = true
+        }
+    }
+
+    /// Record a timing segment duration (monotonic, never negative).
+    mutating func record(_ segment: LaunchTimingSegment, milliseconds ms: Int64) {
+        guard !failed else { return }
+        timing.record(segment, milliseconds: max(0, ms))
+    }
+
+    /// Mark the attempt failed: clears stale milestones deterministically.
+    mutating func fail() {
+        failed = true
+        stage = .failed
+        wineMilestones = WineMilestones()
+    }
+
+    var progress: Double { wineMilestones.progress }
+}
+
+/// Named Wine milestone keys (U1R18-R13-FIX1 §5.1).
+enum WineMilestoneKey: Sendable {
+    case runtimeResolved
+    case runtimeCapabilityValidated
+    case realLoadProbeComplete
+    case canonicalPrefixBound
+    case wineEnvironmentReady
+}
+
+/// Named timing segments (U1R18-R13-FIX1 §6).
+enum LaunchTimingSegment: Sendable {
+    case winePreparation
+    case steamProcessStart
+    case steamReady
+}

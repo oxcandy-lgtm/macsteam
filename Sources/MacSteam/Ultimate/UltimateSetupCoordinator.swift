@@ -306,6 +306,10 @@ final class UltimateSetupCoordinator {
         let inspector = prefixInspectorProvider()
         let inspection = inspector.inspect(url: layout.root)
         self.prefixInspection = inspection
+        // U1R18-R13-FIX1-FIX1 §3.2: canonical current-prefix evidence is bound.
+        if canonicalPrefixEvidenceValid {
+            launchAuthority.earn(.canonicalPrefixBound)
+        }
         log("Prefix evidence [\(source.rawValue)]: root=\(layout.root.path) isValid=\(inspection.isValid) bound=\(canonicalPrefixEvidenceValid)")
         return inspection
     }
@@ -380,36 +384,73 @@ final class UltimateSetupCoordinator {
         log("Installer session: #\(installerID)")
     }
 
-    /// U1R18-R13-FIX1 §4/§5/§6: launch telemetry.
+    /// U1R18-R13-FIX1-FIX1 §3: single production launch telemetry authority.
     ///
     /// The wine progress meter is derived from completed production milestones
-    /// (never a fake timer). The Steam timing is measured with a monotonic
-    /// clock and the ETA comes from a bounded median history.
-    private(set) var launchPipelineStage: LaunchPipelineStage = .idle
-    private(set) var wineMilestones = WineMilestones()
-    private(set) var launchTiming = LaunchTiming()
-    private(set) var timingStore = LaunchTimingStore()
+    /// (never a fake timer). Steam timing is measured with a monotonic clock and
+    /// the ETA comes from a bounded median history. Arbitrary call sites cannot
+    /// freely assign stage values — only the methods here advance the authority.
+    private(set) var launchAuthority = LaunchTransitionAuthority()
+
+    var launchPipelineStage: LaunchPipelineStage { launchAuthority.stage }
+    var wineMilestones: WineMilestones { launchAuthority.wineMilestones }
+    var launchTiming: LaunchTiming { launchAuthority.timing }
+
+    /// Production owner of the safe fast-path cache (§7).
+    private(set) var launchCache = LaunchValidationCache()
+
+    private var timingStore = LaunchTimingStore()
+
+    /// Launcher monotonic clock (injectable for tests).
+    private let launchClock: any LaunchClock
+
+    /// Monotonic stopwatch start for the pending Steam-ready boundary.
+    private var steamReadyStopwatch: LaunchStopwatch?
+
+    /// Launch path label ("warm"/"cold"/nil) for the last attempt breakdown.
     private(set) var lastLaunchPath: String?
 
-    /// Record a wine milestone completion (drives the deterministic meter).
-    func markWineMilestone(_ milestone: WineMilestones) {
-        wineMilestones = milestone
+    /// Reset a new launch attempt (deterministic). Clears stale milestones.
+    func resetLaunchAttempt() {
+        launchAuthority.reset()
+        launchCache.invalidateIfFailed()
     }
 
-    /// Record a launch timing segment (monotonic, bounded).
-    func recordLaunchTiming(_ timing: LaunchTiming, succeeded: Bool) {
-        launchTiming = timing
-        if succeeded {
-            timingStore.record(.wineMS, milliseconds: timing.winePreparationMS)
-            timingStore.record(.steamProcessMS, milliseconds: timing.steamProcessStartMS)
-            timingStore.record(.steamReadyMS, milliseconds: timing.steamReadyMS)
-            timingStore.record(.totalMS, milliseconds: timing.totalToSteamReadyMS)
-        }
+    /// Advance the launch stage through the single authority.
+    @discardableResult
+    func advanceLaunch(to stage: LaunchPipelineStage) -> LaunchTransitionResult {
+        launchAuthority.transition(to: stage)
     }
 
-    /// Bounded ETA estimate for Steam readiness, or nil when history is thin.
+    /// Earn a Wine milestone from real production evidence.
+    func earnWineMilestone(_ key: WineMilestoneKey) {
+        launchAuthority.earn(key)
+    }
+
+    /// Record a timing segment from a production boundary.
+    func recordLaunchTimingSegment(_ segment: LaunchTimingSegment, milliseconds ms: Int64) {
+        launchAuthority.record(segment, milliseconds: ms)
+    }
+
+    /// Mark the launch attempt failed (clears stale milestones).
+    func failLaunchAttempt() {
+        launchAuthority.fail()
+        launchCache.invalidate()
+    }
+
+    /// Record a successful (admitted Steam-ready) timing sample into history.
+    func recordSuccessfulTimingSample() {
+        let t = launchAuthority.timing
+        timingStore.record(.wineMS, milliseconds: t.winePreparationMS)
+        timingStore.record(.steamProcessMS, milliseconds: t.steamProcessStartMS)
+        timingStore.record(.steamReadyMS, milliseconds: t.steamReadyMS)
+        timingStore.record(.totalMS, milliseconds: t.totalToSteamReadyMS)
+    }
+
+    /// Bounded ETA estimate for Steam readiness, derived from the live
+    /// monotonic attempt (never a frozen zero-valued timing).
     var steamReadyETA: (elapsed: Int64, remaining: Int64?)? {
-        let elapsed = launchTiming.totalToSteamReadyMS
+        let elapsed = launchAuthority.timing.totalToSteamReadyMS
         return (elapsed, timingStore.remainingMS(.totalMS, elapsedMS: elapsed))
     }
 
@@ -418,13 +459,27 @@ final class UltimateSetupCoordinator {
         timingStore.persistencePayload
     }
 
+    /// U1R18-R13-FIX1-FIX1 §7: last-attempt breakdown from the live authority.
+    var lastAttemptBreakdown: LaunchBreakdown {
+        let t = launchAuthority.timing
+        return LaunchBreakdown(
+            winePreparationMS: t.winePreparationMS,
+            steamProcessMS: t.steamProcessStartMS,
+            steamReadyMS: t.steamReadyMS,
+            totalMS: t.totalToSteamReadyMS,
+            path: lastLaunchPath,
+            failed: launchAuthority.failed
+        )
+    }
+
     // MARK: - Init
 
     init(
         sessionSupervisor: any GameSessionSupervising = GameSessionSupervisor(),
         installerSupervisor: any InstallerLifecycleSupervising = InstallerSupervisor(),
         prefixManager: PrefixManager = PrefixManager(),
-        receiptStore: LocalAcceptanceReceiptStore = LocalAcceptanceReceiptStore()
+        receiptStore: LocalAcceptanceReceiptStore = LocalAcceptanceReceiptStore(),
+        launchClock: any LaunchClock = SystemLaunchClock()
     ) {
         // Read MACSTEAM_RENDER_PROFILE env var for non-persistent profile override.
         // didSet does not fire during init, so this is safe to set before log().
@@ -446,6 +501,7 @@ final class UltimateSetupCoordinator {
         self.prefixManager = prefixManager
         self.localAcceptanceReceiptStore = receiptStore
         self.buildIdentity = BuildIdentity.current()
+        self.launchClock = launchClock
     }
 
     // MARK: - Plan builders
@@ -537,7 +593,7 @@ final class UltimateSetupCoordinator {
         // command (and thus steam-client capability) BEFORE the capability gate.
         if let url = preferred.url {
             let wineURL = WineExecutableLayout.detect(from: url).wine
-            let result = await performRealLoadPreflight(runtimeURL: url, wineURL: wineURL)
+            let result = await performRealLoadPreflightOrFastPath(runtimeURL: url, wineURL: wineURL)
             if !result.isHealthy {
                 state = .runtimeInvalid
                 error = .runtimeInspectionFailed(
@@ -608,6 +664,8 @@ final class UltimateSetupCoordinator {
         self.runtimeInspection = candidate.inspection
         self.activeRuntime = candidate.runtime
         self.runtimeURL = candidate.url
+        // U1R18-R13-FIX1-FIX1 §3.2: runtime resolved from real production evidence.
+        launchAuthority.earn(.runtimeResolved)
 
         // U1R18: Recipe-required capability gate — deterministic rejection
         // when the runtime's effective capabilities cannot satisfy the recipe.
@@ -629,6 +687,8 @@ final class UltimateSetupCoordinator {
             runtimeRegistry.preferredRuntimeID = nil
             return
         }
+        // U1R18-R13-FIX1-FIX1 §3.2: capability gate actually passed.
+        launchAuthority.earn(.runtimeCapabilityValidated)
         log("Capability gate passed for \(candidate.displayName) (effective=\(effective))")
 
         switch candidate.runtimeType {
@@ -671,7 +731,53 @@ final class UltimateSetupCoordinator {
         }
     }
 
-    /// Run the real-load preflight against the given runtime URL.
+    /// U1R18-R13-FIX1-FIX1 §7: build the current production fingerprint from
+    /// validated evidence. Uses bounded safe identities, never raw paths.
+    private func buildLaunchFingerprint() -> LaunchValidationFingerprint? {
+        guard let runtimeURL = runtimeURL,
+              let prefix = prefixLayout?.root else { return nil }
+        let imported = runtimeSourceType == "imported_wine"
+        let steamPath = prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe")
+        let steamPresent = FileManager.default.fileExists(atPath: steamPath.path)
+        return LaunchValidationFingerprint(
+            runtimeSafeID: LaunchSafeID.of(runtimeURL.path),
+            prefixSafeID: LaunchSafeID.of(prefix.path),
+            steamSafeID: steamPresent ? LaunchSafeID.of(steamPath.path) : nil,
+            importedWine: imported
+        )
+    }
+
+    /// U1R18-R13-FIX1-FIX1 §7: whether the expensive real-load probe may be
+    /// skipped because a prior successful validation is still admissible under
+    /// the exact current fingerprint. All security/ownership checks still run.
+    func shouldTakeLaunchFastPath() -> Bool {
+        guard let fp = buildLaunchFingerprint() else { return false }
+        return launchCache.matchesAdmissible(fp)
+    }
+
+    /// U1R18-R13-FIX1-FIX1 §7: record a successful full validation + admitted
+    /// Steam-ready boundary so a later identical attempt may use the fast path.
+    func recordLaunchCacheSuccess() {
+        guard let fp = buildLaunchFingerprint() else { return }
+        launchCache.recordSuccess(fingerprint: fp)
+    }
+
+    /// U1R18-R13-FIX1-FIX1 §7: run the real-load probe unless an admissible
+    /// fast path allows skipping it. Always returns a healthy result on the
+    /// fast path (the prior healthy result remains valid under the exact
+    /// fingerprint).
+    @discardableResult
+    func performRealLoadPreflightOrFastPath(runtimeURL: URL, wineURL: URL) async -> WineRealLoadResult {
+        if shouldTakeLaunchFastPath() {
+            lastLaunchPath = "warm"
+            return WineRealLoadResult(status: .healthy, detail: "fast-path", windowsVersion: nil, exitCode: 0)
+        }
+        lastLaunchPath = "cold"
+        return await performRealLoadPreflight(runtimeURL: runtimeURL, wineURL: wineURL)
+    }
+
+    /// U1R18-R13-FIX1-FIX1 §7: run the real-load preflight against the given
+    /// runtime URL.
     ///
     /// Proves the runtime can actually execute a Windows command in a fresh
     /// null-prefix with its dependency layout. The result drives both the
@@ -686,6 +792,11 @@ final class UltimateSetupCoordinator {
         )
         self.realLoadResult = result
         self.realLoadHealthy = result.isHealthy
+        // U1R18-R13-FIX1-FIX1 §3.2: healthy production real-load evidence earns
+        // the probe milestone (not merely "probe was called").
+        if result.isHealthy {
+            launchAuthority.earn(.realLoadProbeComplete)
+        }
         log("Real-load preflight: \(result.status.rawValue) — \(result.detail)")
         if let version = result.windowsVersion {
             log("Real-load Windows version: \(version)")
@@ -820,7 +931,7 @@ final class UltimateSetupCoordinator {
 
         // U1R18: Real-load preflight before the capability gate.
         let wineURL = WineExecutableLayout.detect(from: url).wine
-        let result = await performRealLoadPreflight(runtimeURL: url, wineURL: wineURL)
+        let result = await performRealLoadPreflightOrFastPath(runtimeURL: url, wineURL: wineURL)
         if !result.isHealthy {
             state = .runtimeInvalid
             error = .runtimeInspectionFailed(
@@ -1318,6 +1429,10 @@ final class UltimateSetupCoordinator {
 
         log("Launching Windows Steam (idempotent)…")
         steamClientState = .launching
+        // U1R18-R13-FIX1-FIX1 §4: begin a fresh monotonic launch attempt.
+        resetLaunchAttempt()
+        advanceLaunch(to: .startingSteam)
+        let wineStopwatch = LaunchStopwatch(clock: launchClock)
 
         do {
             // Build safe environment with DYLD_LIBRARY_PATH etc.
@@ -1331,7 +1446,11 @@ final class UltimateSetupCoordinator {
                 environment: environment,
                 renderArguments: steamUIRenderProfile.launchArguments
             )
+            // U1R18-R13-FIX1-FIX1 §4: wine preparation boundary (produale env).
+            recordLaunchTimingSegment(.winePreparation, milliseconds: wineStopwatch.elapsedMS())
 
+            advanceLaunch(to: .waitingForSteam)
+            let processStopwatch = LaunchStopwatch(clock: launchClock)
             let _ = try await sessionSupervisor.launch(
                 plan: plan,
                 runtimeControl: runtimeControl,
@@ -1340,18 +1459,53 @@ final class UltimateSetupCoordinator {
                 runtimeID: runtimeSourceType ?? "unknown",
                 purpose: .steamSetup
             )
+            // U1R18-R13-FIX1-FIX1 §4: steam process-launch boundary (spawn).
+            recordLaunchTimingSegment(.steamProcessStart, milliseconds: processStopwatch.elapsedMS())
 
             log("Windows Steam session started: purpose=steamSetup, profile=\(steamUIRenderProfile.rawValue)")
             // U1R18 R1: visibility is MEASURED from the WindowServer via the
-            // supervisor's observer, never guessed. Right after launch the
-            // supervisor reports runningUnknown; the observer drives it to
-            // runningVisible/runningHidden. Mark as launching here.
+            // supervisor's observer, never guessed. Do NOT call Steam ready here.
             steamClientState = .launching
             state = .steamReady
+            // U1R18-R13-FIX1-FIX1 §4: observe the actual admitted Steam-ready
+            // boundary (runningVisible) before recording a successful sample.
+            observeSteamReadyBoundary()
         } catch {
             self.error = .launchFailed(error.localizedDescription)
             steamClientState = .stopped
             state = .steamReady
+            failLaunchAttempt()
+        }
+    }
+
+    /// U1R18-R13-FIX1-FIX1 §4: bounded observer for the real Steam-ready
+    /// boundary. Steam ready is only admitted when the supervisor reports
+    /// `.runningVisible` (WindowServer evidence), never a manual assignment.
+    private func observeSteamReadyBoundary() {
+        steamReadyStopwatch = LaunchStopwatch(clock: launchClock)
+        let clock = launchClock
+        let start = steamReadyStopwatch
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let deadline = clock.nowMilliseconds() + 120_000
+            while !Task.isCancelled {
+                if self.sessionSupervisor.state == .runningVisible {
+                    let elapsed = start?.elapsedMS() ?? 0
+                    self.recordLaunchTimingSegment(.steamReady, milliseconds: elapsed)
+                    self.advanceLaunch(to: .ready)
+                    self.recordSuccessfulTimingSample()
+                    self.recordLaunchCacheSuccess()
+                    self.lastLaunchPath = self.launchCache.isFastPathAdmissible ? "warm" : "cold"
+                    self.steamReadyStopwatch = nil
+                    return
+                }
+                if clock.nowMilliseconds() > deadline {
+                    self.failLaunchAttempt()
+                    self.steamReadyStopwatch = nil
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
         }
     }
 
@@ -1374,11 +1528,15 @@ final class UltimateSetupCoordinator {
                 if fm.fileExists(atPath: fcDir.path) {
                     env["FONTCONFIG_PATH"] = fcDir.path
                 }
+                // U1R18-R13-FIX1-FIX1 §3.2: production launch environment for the
+                // selected runtime/prefix was actually constructed.
+                launchAuthority.earn(.wineEnvironmentReady)
                 return env
             }
         }
 
         log("Warning: RuntimeDependencyLayout unavailable, using basic environment")
+        launchAuthority.earn(.wineEnvironmentReady)
         return buildBasicEnvironment()
     }
 

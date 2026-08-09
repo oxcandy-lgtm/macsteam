@@ -18,6 +18,16 @@ struct LaunchTiming: Equatable, Sendable {
         winePreparationMS + steamProcessStartMS + steamReadyMS
     }
 
+    /// Record a named segment duration (monotonic, clamped non-negative).
+    mutating func record(_ segment: LaunchTimingSegment, milliseconds ms: Int64) {
+        let v = max(0, ms)
+        switch segment {
+        case .winePreparation: winePreparationMS = v
+        case .steamProcessStart: steamProcessStartMS = v
+        case .steamReady: steamReadyMS = v
+        }
+    }
+
     var totalToCloverpitVisibleMS: Int64? {
         guard let submit = cloverpitLaunchSubmittedMS, let visible = cloverpitWindowVisibleMS else {
             return nil
@@ -55,5 +65,23 @@ struct LaunchStopwatch: Sendable {
     /// Elapsed milliseconds since start; clamped to never be negative.
     func elapsedMS() -> Int64 {
         max(0, clock.nowMilliseconds() - startMS)
+    }
+}
+
+/// Production-derived last-attempt startup breakdown (U1R18-R13-FIX1-FIX1 §6).
+///
+/// No PID, path, account, session identity, credentials, or raw arguments.
+struct LaunchBreakdown: Equatable, Sendable {
+    var winePreparationMS: Int64
+    var steamProcessMS: Int64
+    var steamReadyMS: Int64
+    var totalMS: Int64
+    var path: String?
+    var failed: Bool
+
+    /// Whether a segment has actually been measured (non-zero or explicitly
+    /// begun). Zero with no prior attempt should be shown as pending.
+    var anySegmentRecorded: Bool {
+        winePreparationMS > 0 || steamProcessMS > 0 || steamReadyMS > 0
     }
 }

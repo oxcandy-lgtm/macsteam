@@ -47,6 +47,20 @@ struct LaunchValidationCache: Equatable, Sendable {
         lastLaunchSucceeded = false
     }
 
+    /// Invalidate only when a previous launch failed (used on a new-attempt
+    /// reset). Leaves a clean prior success untouched.
+    mutating func invalidateIfFailed() {
+        if !lastLaunchSucceeded {
+            invalidated = true
+        }
+    }
+
+    /// Record a failed launch: invalidates and clears the success flag.
+    mutating func recordFailure() {
+        lastLaunchSucceeded = false
+        invalidated = true
+    }
+
     /// Whether the given fingerprint matches the cached one and the fast path
     /// is admissible. Returns false on any mismatch or invalidation.
     func matchesAdmissible(_ fingerprint: LaunchValidationFingerprint) -> Bool {
