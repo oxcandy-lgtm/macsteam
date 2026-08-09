@@ -71,12 +71,19 @@ struct SteamSetupView: View {
     // MARK: - Installer surface (page .steamInstaller)
 
     private var installerContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let stepPolicy = SteamInstallerStepPolicy(
+            hasInstallerSelection: installerURL != nil,
+            isVerified: isVerified,
+            setupState: coordinator.state,
+            installLifecycle: coordinator.steamInstallLifecycle
+        )
+
+        return VStack(alignment: .leading, spacing: 12) {
             stepView(
                 number: 1,
                 title: "Download Steam Installer",
                 detail: "Open the Valve download page in your browser",
-                state: installerURL == nil ? .pending : .completed,
+                state: stepPolicy.downloadState,
                 action: { openDownloadPage() }
             )
 
@@ -84,7 +91,7 @@ struct SteamSetupView: View {
                 number: 2,
                 title: "Select SteamSetup.exe",
                 detail: fileDetail,
-                state: installerURL == nil ? .pending : (isVerified ? .completed : .ready),
+                state: stepPolicy.selectState,
                 action: { selectInstaller() }
             )
 
@@ -92,7 +99,7 @@ struct SteamSetupView: View {
                 number: 3,
                 title: "Install Windows Steam",
                 detail: step3Detail,
-                state: step3State,
+                state: stepPolicy.installState,
                 action: {
                     isWorking = true
                     Task {
@@ -101,7 +108,7 @@ struct SteamSetupView: View {
                     }
                 }
             )
-            .disabled(!isVerified || coordinator.state == .steamInstallationPending)
+            .disabled(!stepPolicy.installActionEnabled)
 
             installerErrorSection
         }
@@ -218,21 +225,6 @@ struct SteamSetupView: View {
         return insp.steamInstalled
             ? "Steam executable detected in canonical prefix"
             : "Steam executable not found yet"
-    }
-
-    // MARK: - Step state helpers
-
-    private var step3State: StepUIState {
-        switch coordinator.state {
-        case .steamInstallationPending:
-            return .working
-        case .steamReady:
-            return .completed
-        case .steamInstallerVerified:
-            return .ready
-        default:
-            return isVerified ? .ready : .pending
-        }
     }
 
     private var step3Detail: String {
@@ -422,7 +414,7 @@ private extension SteamSetupView {
     }
 }
 
-private enum StepUIState {
+enum StepUIState: Equatable {
     case pending
     case ready
     case working
@@ -435,6 +427,46 @@ private enum StepUIState {
         case .working:   return .blue
         case .completed: return .green
         }
+    }
+}
+
+/// Bounded presentation policy for the user-selected Steam installer flow.
+///
+/// This policy only maps current selection/verification and existing
+/// coordinator lifecycle truth to step presentation. It does not select a
+/// file, download an installer, verify a file, or mutate coordinator state.
+struct SteamInstallerStepPolicy: Equatable {
+    let downloadState: StepUIState
+    let selectState: StepUIState
+    let installState: StepUIState
+    let installActionEnabled: Bool
+
+    init(
+        hasInstallerSelection: Bool,
+        isVerified: Bool,
+        setupState: UltimateSetupState,
+        installLifecycle: SteamInstallLifecycle
+    ) {
+        downloadState = hasInstallerSelection ? .completed : .ready
+        selectState = isVerified ? .completed : .ready
+
+        switch setupState {
+        case .steamInstallationPending:
+            installState = .working
+        case .steamReady:
+            installState = .completed
+        default:
+            switch installLifecycle {
+            case .installing:
+                installState = .working
+            case .verifiedComplete:
+                installState = .completed
+            case .absent, .interrupted:
+                installState = isVerified ? .ready : .pending
+            }
+        }
+
+        installActionEnabled = installState == .ready && isVerified
     }
 }
 
