@@ -163,21 +163,21 @@ struct LaunchFastPathTests {
         fake.identities[root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe").path] = fileID(inode: 5)
 
         // First launch: establish a full validation decision (no real probe).
+        coordinator.runtimeURL = runtimeURL
+        coordinator.runtimeSourceType = "imported_wine"
         coordinator.setValidationDecisionForTesting(path: .fullValidation, healthy: true, runtimeURL: runtimeURL)
         #expect(coordinator.lastValidationPath == .fullValidation)
 
-        // Real terminal success via the production seam -> records cache.
+        // Real terminal success via the production seam -> consumes the sealed
+        // decision and records the cache.
         coordinator.beginSteamAttempt()
         coordinator.requireLaunchTransition(to: .startingSteam)
         coordinator.requireLaunchTransition(to: .waitingForSteam)
         let gen = coordinator.currentAttemptGeneration
-        let fp = coordinator.attemptFingerprintForTest
         let result = coordinator.completeSteamReadyIfCurrent(
             generation: gen,
             observedState: .runningVisible,
-            elapsedMS: 100,
-            fingerprint: fp,
-            path: .fullValidation
+            elapsedMS: 100
         )
         #expect(result == .admittedReady)
         #expect(coordinator.lastLaunchPath == "full")
@@ -200,9 +200,7 @@ struct LaunchFastPathTests {
         let result = coordinator.completeSteamReadyIfCurrent(
             generation: oldGen,
             observedState: .runningVisible,
-            elapsedMS: 50,
-            fingerprint: coordinator.attemptFingerprintForTest,
-            path: .fullValidation
+            elapsedMS: 50
         )
         #expect(result == .ignoredStale)
         #expect(coordinator.launchPipelineStage != .ready)
@@ -214,18 +212,23 @@ struct LaunchFastPathTests {
         let root = tempPrefix()
         let fake = FakeLaunchFileIdentityProvider()
         let coordinator = makeCoordinatorAt(prefixRoot: root, fileIdentity: fake)
+        let runtimeURL = makeRuntimeDir(root.appendingPathComponent("wine-runtime"))
+        fake.identities[runtimeURL.appendingPathComponent("bin/wine").path] = fileID(inode: 1)
+        fake.identities[root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe").path] = fileID(inode: 5)
+        coordinator.runtimeURL = runtimeURL
+        coordinator.runtimeSourceType = "imported_wine"
+        coordinator.setValidationDecisionForTesting(path: .fullValidation, healthy: true, runtimeURL: runtimeURL)
         coordinator.beginSteamAttempt()
         let gen = coordinator.currentAttemptGeneration
         // Force an illegal ready transition (from idle -> ready is rejected).
         let result = coordinator.completeSteamReadyIfCurrent(
             generation: gen,
             observedState: .runningVisible,
-            elapsedMS: 100,
-            fingerprint: coordinator.attemptFingerprintForTest,
-            path: .fullValidation
+            elapsedMS: 100
         )
         #expect(result == .failedTransition)
         #expect(coordinator.launchAuthority.failed)
+        #expect(coordinator.lastValidationPath == nil)
     }
 
     @MainActor
@@ -326,9 +329,6 @@ extension UltimateSetupCoordinator {
             runtimeURL: runtimeURL, wineURL: wineURL, runtimeType: "imported_wine")
         return (outcome.path, outcome.result.isHealthy)
     }
-
-    /// Test-only access to the attempt-bound fingerprint.
-    var attemptFingerprintForTest: LaunchValidationFingerprint? { attemptFingerprint }
 }
 
 extension LaunchValidationCache {

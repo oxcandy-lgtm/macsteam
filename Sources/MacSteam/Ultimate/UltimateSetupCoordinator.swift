@@ -463,13 +463,23 @@ final class UltimateSetupCoordinator {
     /// Begin a new Steam timing attempt. Resets stage/timing/failure and the
     /// attempt generation, reconciles still-current Wine evidence (FIX C).
     ///
-    /// FIX A: the validation decision (attemptFingerprint + lastValidationPath)
-    /// established by the pre-launch validation is PRESERVED across the attempt
-    /// reset — the ready observer freezes the same decision plus its generation.
+    /// FIX A (FIX4 §4): a sealed but UNCONSUMED current-attempt decision —
+    /// e.g. one established by runtime selection before this attempt — is
+    /// transferred into exactly the next single attempt by re-sealing its
+    /// generation to the current attempt generation. A completed or failed
+    /// attempt's decision is always nil here (consumed/cleared), so it can
+    /// never be resurrected as authority for this attempt.
     func beginSteamAttempt() {
         reconcileMilestoneEvidence()
         launchAuthority.beginSteamAttempt()
         attemptGeneration &+= 1
+        if let sealed = currentAttemptValidation {
+            currentAttemptValidation = CurrentAttemptValidation(
+                fingerprint: sealed.fingerprint,
+                path: sealed.path,
+                generation: attemptGeneration
+            )
+        }
         launchCache.invalidateIfFailed()
     }
 
@@ -479,6 +489,7 @@ final class UltimateSetupCoordinator {
         attemptGeneration &+= 1
         attemptFingerprint = nil
         lastValidationPath = nil
+        currentAttemptValidation = nil // no stale authority past a reset (FIX4 §4)
         milestoneRuntimeIdentity = nil
         milestonePrefixIdentity = nil
     }
@@ -493,6 +504,7 @@ final class UltimateSetupCoordinator {
             launchAuthority.fail()
             launchCache.invalidate()
             lastValidationPath = nil
+            currentAttemptValidation = nil // cleared on failure (FIX4 §4)
         }
         return result
     }
@@ -528,6 +540,7 @@ final class UltimateSetupCoordinator {
         launchCache.invalidate()
         lastValidationPath = nil
         attemptFingerprint = nil
+        currentAttemptValidation = nil // cleared on failure (FIX4 §4)
     }
 
     /// Record a successful (admitted Steam-ready) timing sample into history.
@@ -541,9 +554,24 @@ final class UltimateSetupCoordinator {
 
     /// Bounded ETA estimate for Steam readiness, derived from the live
     /// monotonic attempt (never a frozen zero-valued timing).
+    ///
+    /// U1R18-R13-FIX1-FIX4 §6 (FIX D): while `.waitingForSteam`, the elapsed
+    /// authority is the LIVE monotonic total:
+    ///
+    /// ```text
+    /// live_total_ms =
+    ///     recorded winePreparationMS
+    ///   + recorded steamProcessStartMS
+    ///   + current monotonic steam-ready wait elapsedMS
+    /// ```
+    ///
+    /// Elapsed is monotonic and never decreases; remaining never increases
+    /// solely because time advanced; insufficient history yields nil remaining.
     var steamReadyETA: (elapsed: Int64, remaining: Int64?)? {
-        let elapsed = launchAuthority.timing.totalToSteamReadyMS
-        return (elapsed, timingStore.remainingMS(.totalMS, elapsedMS: elapsed))
+        let timing = launchAuthority.timing
+        let liveWait = steamReadyStopwatch?.elapsedMS()
+        let liveTotal = timing.winePreparationMS + timing.steamProcessStartMS + (liveWait ?? 0)
+        return (liveTotal, timingStore.remainingMS(.totalMS, elapsedMS: liveTotal))
     }
 
     /// U1R18-R13-FIX1-FIX3 §7: bounded result of the Steam-ready terminal
@@ -552,39 +580,97 @@ final class UltimateSetupCoordinator {
     enum SteamReadyTerminal: Equatable, Sendable {
         case ignoredStale
         case stillWaiting
+        case failedValidationBinding
         case admittedReady
         case failedTransition
     }
 
-    /// U1R18-R13-FIX1-FIX3 §7/§2: deterministic production terminal seam.
+    /// U1R18-R13-FIX1-FIX4 §4: single-use, generation-bound validation decision
+    /// for the CURRENT attempt. Separated from the historical
+    /// ``lastValidationPath``/``lastLaunchPath`` display:
     ///
-    /// Consumes the current generation, observed supervisor state, monotonic
-    /// elapsed boundary, and the attempt-bound validation decision. Proves:
-    ///   - expected/current generation,
-    ///   - observed supervisor state,
-    ///   - monotonic elapsed boundary,
-    ///   - bound validation decision.
-    /// Cache/timing publication happens ONLY after `.runningVisible` on the
-    /// current generation with an admitted `.ready` transition.
+    /// ```yaml
+    /// current_attempt_validation:
+    ///   contains: exact fingerprint, exact path, attempt generation
+    ///   single_use: true
+    ///   consumed_after_terminal_success: true
+    ///   cleared_on_failure: true
+    ///   may_not_be_reconstructed_from_lastValidationPath: true
+    /// ```
+    ///
+    /// The terminal consumes exactly this decision; a prior attempt's
+    /// completed decision is never resurrected as authority for a later
+    /// launch. Established ONLY by the production validation orchestration
+    /// (``performRealLoadPreflightOrFastPath``), or the test seam.
+    private struct CurrentAttemptValidation: Equatable, Sendable {
+        let fingerprint: LaunchValidationFingerprint
+        let path: LaunchValidationPath
+        let generation: UInt64
+    }
+
+    /// The authoritative current-attempt decision (nil once established outside
+    /// the attempt). Single-use: set by the decision orchestrator, cleared on
+    /// failure, consumed by the terminal.
+    private var currentAttemptValidation: CurrentAttemptValidation?
+
+    /// U1R18-R13-FIX1-FIX4 §4: deterministic production terminal seam.
+    ///
+    /// Consumes the current generation, monotonic elapsed boundary, observed
+    /// supervisor state, and the coordinator-held generation-bound validation
+    /// decision (FIX4 FIX C). Caller-supplied fingerprint/path are NOT trusted:
+    /// the terminal rebuilds the current production fingerprint and requires it
+    /// to equal the bound decision fingerprint. Success is published ONLY after
+    /// the full ordered proof:
+    ///
+    ///   generation exact
+    ///   → runningVisible
+    ///   → current decision exists
+    ///   → decision generation exact
+    ///   → live fingerprint exact (material match)
+    ///   → .ready transition admitted
+    ///   → success timing recorded
+    ///   → timing history sample
+    ///   → cache success publication
+    ///   → last path/history publication
+    ///   → current decision consumed
+    ///
+    /// Any binding or transition failure fails closed: no timing sample, no
+    /// cache publication, no ready success.
     @discardableResult
     func completeSteamReadyIfCurrent(
         generation: UInt64,
         observedState: GameSessionState,
-        elapsedMS: Int64,
-        fingerprint: LaunchValidationFingerprint?,
-        path: LaunchValidationPath?
+        elapsedMS: Int64
     ) -> SteamReadyTerminal {
         guard attemptGeneration == generation else { return .ignoredStale }
         guard observedState == .runningVisible else { return .stillWaiting }
-        recordLaunchTimingSegment(.steamReady, milliseconds: elapsedMS)
+        guard let decision = currentAttemptValidation else {
+            failLaunchAttempt()
+            return .failedValidationBinding
+        }
+        guard decision.generation == attemptGeneration else {
+            failLaunchAttempt()
+            return .failedValidationBinding
+        }
+        // Rebuild the CURRENT production fingerprint and require an exact
+        // material match with the bound decision (mutations fail closed).
+        guard let liveFingerprint = buildLaunchFingerprint(
+            candidateRuntimeURL: runtimeURL,
+            candidateRuntimeType: runtimeSourceType
+        ), liveFingerprint == decision.fingerprint else {
+            failLaunchAttempt()
+            return .failedValidationBinding
+        }
         guard requireLaunchTransition(to: .ready) == .admitted else {
             failLaunchAttempt()
             return .failedTransition
         }
+        recordLaunchTimingSegment(.steamReady, milliseconds: elapsedMS)
         recordSuccessfulTimingSample()
-        recordLaunchCacheSuccess(fingerprint: fingerprint)
-        lastValidationPath = path
-        lastLaunchPath = path == .fastValidation ? "fast" : "full"
+        recordLaunchCacheSuccess(fingerprint: decision.fingerprint)
+        lastValidationPath = decision.path
+        lastLaunchPath = decision.path == .fastValidation ? "fast" : "full"
+        currentAttemptValidation = nil // consumed
         steamReadyStopwatch = nil
         return .admittedReady
     }
@@ -971,20 +1057,17 @@ final class UltimateSetupCoordinator {
         return launchCache.matchesAdmissible(fp)
     }
 
-    /// U1R18-R13-FIX1-FIX3 §5: current exact validation decision for the exact
-    /// artifacts that will launch. Reuses an already current decision only when
-    /// it provably binds the same current runtime/prefix/Steam material
-    /// fingerprint; otherwise performs the required full/fast validation.
+    /// U1R1-8-R13-FIX1-FIX3 §5: current exact validation decision for the exact
+    /// artifacts that will launch.
+    ///
+    /// FIX4: NEVER short-circuits on ``attemptFingerprint``/``lastValidationPath``
+    /// (the eliminated double-duty legacy storage). The decision is always
+    /// re-sealed by the orchestrator for the exact current artifacts; the
+    /// orchestrator itself takes the fast path when the launch cache proves an
+    /// admissible prior healthy validation under the identical fingerprint.
     private func ensureCurrentValidationDecisionBeforeLaunch() async throws -> Bool {
         guard let runtimeURL = runtimeURL else { return false }
         let wineURL = WineExecutableLayout.detect(from: runtimeURL).wine
-        let current = buildLaunchFingerprint(
-            candidateRuntimeURL: runtimeURL,
-            candidateRuntimeType: runtimeSourceType
-        )
-        if current == attemptFingerprint, lastValidationPath != nil {
-            return true // decision already binds the exact current artifacts
-        }
         let outcome = await performRealLoadPreflightOrFastPath(
             runtimeURL: runtimeURL,
             wineURL: wineURL,
@@ -1003,13 +1086,25 @@ final class UltimateSetupCoordinator {
 
     /// Test-only seam: establish a validation decision for a candidate without
     /// running a real probe. Binds the attempt fingerprint to the candidate.
-    @MainActor
+@MainActor
     func setValidationDecisionForTesting(
         path: LaunchValidationPath, healthy: Bool, runtimeURL: URL?
     ) {
-        attemptFingerprint = buildLaunchFingerprint(
+        let fp = buildLaunchFingerprint(
             candidateRuntimeURL: runtimeURL, candidateRuntimeType: "imported_wine")
+        attemptFingerprint = fp
         lastValidationPath = path
+        if let fp {
+            // FIX4 §4: the test seam seals the SAME generation-bound current
+            // decision the production orchestrator seals, so the terminal
+            // consumes an identical contract. `beginSteamAttempt()` transfers
+            // an un-consumed seal into exactly the next attempt.
+            currentAttemptValidation = CurrentAttemptValidation(
+                fingerprint: fp,
+                path: path,
+                generation: attemptGeneration
+            )
+        }
         realLoadHealthy = healthy
         realLoadResult = WineRealLoadResult(
             status: healthy ? .healthy : .launchFailed,
@@ -1044,12 +1139,22 @@ final class UltimateSetupCoordinator {
                 status: .healthy, detail: "fast-path", windowsVersion: nil, exitCode: 0
             )
             launchAuthority.earn(.realLoadProbeComplete)
-            attemptFingerprint = buildLaunchFingerprint(
+            let fastFP = buildLaunchFingerprint(
                 candidateRuntimeURL: candidateURL,
                 candidateRuntimeType: candidateType
             )
+            attemptFingerprint = fastFP
             lastValidationPath = .fastValidation
             lastLaunchPath = "fast"
+            if let fastFP {
+                // FIX4 §4: seal the authoritative current-attempt decision
+                // (fast) bound to the current attempt generation.
+                currentAttemptValidation = CurrentAttemptValidation(
+                    fingerprint: fastFP,
+                    path: .fastValidation,
+                    generation: attemptGeneration
+                )
+            }
             return (result: self.realLoadResult ?? WineRealLoadResult(
                 status: .healthy, detail: "fast-path", windowsVersion: nil, exitCode: 0
             ), path: .fastValidation)
@@ -1071,12 +1176,22 @@ final class UltimateSetupCoordinator {
         } else {
             launchCache.invalidate()
         }
-        attemptFingerprint = buildLaunchFingerprint(
+        let fullFP = buildLaunchFingerprint(
             candidateRuntimeURL: candidateURL,
             candidateRuntimeType: candidateType
         )
+        attemptFingerprint = fullFP
         lastValidationPath = .fullValidation
         lastLaunchPath = "full"
+        if let fullFP {
+            // FIX4 §4: seal the authoritative current-attempt decision (full),
+            // generated-bound, before cache publication (never relabelled fast).
+            currentAttemptValidation = CurrentAttemptValidation(
+                fingerprint: fullFP,
+                path: .fullValidation,
+                generation: attemptGeneration
+            )
+        }
         log("Real-load preflight: \(result.status.rawValue) — \(result.detail)")
         if let version = result.windowsVersion {
             log("Real-load Windows version: \(version)")
@@ -1822,9 +1937,6 @@ final class UltimateSetupCoordinator {
         let clock = launchClock
         let start = steamReadyStopwatch
         let generation = attemptGeneration
-        // Freeze the attempt-bound validation decision now (FIX A/FIX F).
-        let frozenFingerprint = attemptFingerprint
-        let frozenPath = lastValidationPath
         Task { @MainActor [weak self] in
             guard let self else { return }
             let deadline = clock.nowMilliseconds() + 120_000
@@ -1836,9 +1948,7 @@ final class UltimateSetupCoordinator {
                     _ = self.completeSteamReadyIfCurrent(
                         generation: generation,
                         observedState: self.sessionSupervisor.state,
-                        elapsedMS: elapsed,
-                        fingerprint: frozenFingerprint,
-                        path: frozenPath
+                        elapsedMS: elapsed
                     )
                     self.steamReadyStopwatch = nil
                     return
