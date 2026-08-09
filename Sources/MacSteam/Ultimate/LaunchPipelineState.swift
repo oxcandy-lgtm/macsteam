@@ -77,11 +77,15 @@ enum LaunchTransitionResult: Equatable, Sendable {
 /// This is the ONLY place the coordinator may advance the launch stage, earn a
 /// Wine milestone, or record a timing segment. Arbitrary call sites cannot
 /// freely assign stage values. The authority:
-///   - resets a new attempt deterministically,
-///   - admits only defined forward transitions,
+///   - begins a new timing attempt deterministically,
+///   - admits only explicit allowed transitions (an explicit graph, NEVER enum
+///     numeric adjacency),
 ///   - rejects illegal/out-of-order transitions (preserving the prior valid
 ///     stage),
 ///   - exposes failure explicitly,
+///   - separates identity-bound validation evidence (Wine milestones) from the
+///     per-attempt timing, so a new Steam timing attempt does not erase still
+///     current validated evidence,
 ///   - never derives progress from a fake timer.
 struct LaunchTransitionAuthority: Sendable {
     private(set) var stage: LaunchPipelineStage = .idle
@@ -91,7 +95,26 @@ struct LaunchTransitionAuthority: Sendable {
 
     init() {}
 
-    /// Reset a new launch attempt. Clears stale milestones and timing.
+    /// Explicit allowed-transition graph. Enum numeric adjacency is NOT
+    /// workflow authority; only these edges are legal. `.failed` may be entered
+    /// from any active stage (handled separately).
+    static let allowedTransitions: [LaunchPipelineStage: Set<LaunchPipelineStage>] = [
+        .idle: [.validatingRuntime, .startingSteam],
+        .validatingRuntime: [.probingWine],
+        .probingWine: [.resolvingPrefix],
+        .resolvingPrefix: [.validatingSteam],
+        .validatingSteam: [.preparingWine],
+        .preparingWine: [.startingSteam],
+        .startingSteam: [.waitingForSteam],
+        .waitingForSteam: [.ready, .launchingCloverPit],
+        .launchingCloverPit: [.waitingForCloverPit],
+        .waitingForCloverPit: [.ready],
+        .ready: [],
+        .failed: [],
+    ]
+
+    /// Full reset: clears stage, timing, failure flag, and ALL validation
+    /// evidence. Used only for a brand-new validation.
     mutating func reset() {
         stage = .idle
         wineMilestones = WineMilestones()
@@ -99,24 +122,44 @@ struct LaunchTransitionAuthority: Sendable {
         failed = false
     }
 
-    /// Advance to a strictly later stage. Illegal transitions are rejected and
-    /// the prior valid stage is preserved.
+    /// Begin a new Steam timing attempt. Resets stage/timing/failure but
+    /// PRESERVES still-current identity-bound Wine evidence (FIX C). Identity
+    /// changes must clear the corresponding milestone separately.
+    mutating func beginSteamAttempt() {
+        stage = .idle
+        timing = LaunchTiming()
+        failed = false
+    }
+
+    /// Clear a single validation-evidence milestone (called on identity
+    /// change so stale evidence is never carried across a runtime/prefix/Steam
+    /// change).
+    mutating func clearMilestone(_ key: WineMilestoneKey) {
+        guard !failed else { return }
+        switch key {
+        case .runtimeResolved: wineMilestones.runtimeResolved = false
+        case .runtimeCapabilityValidated: wineMilestones.runtimeCapabilityValidated = false
+        case .realLoadProbeComplete: wineMilestones.realLoadProbeComplete = false
+        case .canonicalPrefixBound: wineMilestones.canonicalPrefixBound = false
+        case .wineEnvironmentReady: wineMilestones.wineEnvironmentReady = false
+        }
+    }
+
+    /// Advance through the explicit transition graph. Illegal/out-of-order
+    /// transitions are rejected and the prior valid stage is preserved.
     @discardableResult
     mutating func transition(to next: LaunchPipelineStage) -> LaunchTransitionResult {
-        guard !failed else { return .rejectedSkipped }
+        guard !failed else {
+            return next == .failed ? .rejectedSame : .rejectedSkipped
+        }
         if next == .failed {
             stage = .failed
             failed = true
-            wineMilestones = WineMilestones()
             return .admitted
         }
-        // A fresh or reset attempt always allows moving forward from idle.
-        if next.rawValue <= stage.rawValue {
-            return next.rawValue == stage.rawValue ? .rejectedSame : .rejectedBackward
-        }
-        // Skip admitting: move to the immediately next defined stage only.
-        guard next.rawValue == stage.rawValue + 1 else {
-            return .rejectedSkipped
+        if next == stage { return .rejectedSame }
+        guard let allowed = Self.allowedTransitions[stage], allowed.contains(next) else {
+            return next.rawValue < stage.rawValue ? .rejectedBackward : .rejectedSkipped
         }
         stage = next
         return .admitted
@@ -140,11 +183,12 @@ struct LaunchTransitionAuthority: Sendable {
         timing.record(segment, milliseconds: max(0, ms))
     }
 
-    /// Mark the attempt failed: clears stale milestones deterministically.
+    /// Mark the attempt failed: exposes failure explicitly and clears stale
+    /// success timing, but preserves identity-bound Wine evidence (FIX C).
     mutating func fail() {
         failed = true
         stage = .failed
-        wineMilestones = WineMilestones()
+        timing = LaunchTiming()
     }
 
     var progress: Double { wineMilestones.progress }

@@ -69,24 +69,37 @@ struct LaunchPipelineStateTests {
         #expect(b != a)
     }
 
-    @Test func stageOrderViolationFailsClosed() {
-        // Behavioral transition test (U1R18-R13-FIX1-FIX1 §3.1), not an enum
-        // rawValue ordering test.
+    @Test func stageSteamOnlyRouteAdmitted() {
+        // FIX A: the explicit graph admits the Steam-only route directly.
         var authority = LaunchTransitionAuthority()
-        // Advance step-by-step to .startingSteam (adjacent transitions only).
-        for stage in [LaunchPipelineStage.validatingRuntime, .probingWine,
-                      .resolvingPrefix, .validatingSteam, .preparingWine,
-                      .startingSteam] {
-            #expect(authority.transition(to: stage) == .admitted)
-        }
+        #expect(authority.transition(to: .startingSteam) == .admitted)
+        #expect(authority.transition(to: .waitingForSteam) == .admitted)
+        #expect(authority.transition(to: .ready) == .admitted)
+        #expect(authority.stage == .ready)
+    }
+
+    @Test func stageIllegalSkipsRejected() {
+        // FIX A: rawValue is not workflow authority; illegal skips are rejected.
+        var authority = LaunchTransitionAuthority()
+        #expect(authority.transition(to: .ready) == .rejectedSkipped) // idle -> ready skip
+        #expect(authority.stage == .idle)
+        #expect(authority.transition(to: .startingSteam) == .admitted)
+        #expect(authority.transition(to: .ready) == .rejectedSkipped) // startingSteam -> ready skip
         #expect(authority.stage == .startingSteam)
-        // Backward transition is rejected and the prior valid stage is kept.
+        #expect(authority.transition(to: .waitingForSteam) == .admitted)
+        #expect(authority.transition(to: .startingSteam) == .rejectedBackward)
+        #expect(authority.stage == .waitingForSteam)
+        #expect(authority.transition(to: .waitingForSteam) == .rejectedSame)
+    }
+
+    @Test func stageOrderViolationFailsClosed() {
+        var authority = LaunchTransitionAuthority()
+        #expect(authority.transition(to: .startingSteam) == .admitted)
+        #expect(authority.stage == .startingSteam)
         #expect(authority.transition(to: .idle) == .rejectedBackward)
         #expect(authority.stage == .startingSteam)
-        // Forward-skip is rejected.
         #expect(authority.transition(to: .ready) == .rejectedSkipped)
         #expect(authority.stage == .startingSteam)
-        // Same stage is rejected.
         #expect(authority.transition(to: .startingSteam) == .rejectedSame)
     }
 
@@ -98,6 +111,17 @@ struct LaunchPipelineStateTests {
                       .waitingForCloverPit, .ready] {
             #expect(authority.transition(to: stage) == .admitted)
         }
+    }
+
+    @Test func failedCanOnlyEnterFromActiveStage() {
+        var authority = LaunchTransitionAuthority()
+        #expect(authority.transition(to: .startingSteam) == .admitted)
+        #expect(authority.transition(to: .failed) == .admitted)
+        #expect(authority.failed)
+        #expect(authority.stage == .failed)
+        // Once failed, no further transitions are admitted (except failed itself).
+        #expect(authority.transition(to: .failed) == .rejectedSame)
+        #expect(authority.transition(to: .ready) == .rejectedSkipped)
     }
 
     @Test func resetClearsStaleMilestonesAndStage() {
@@ -112,15 +136,41 @@ struct LaunchPipelineStateTests {
         #expect(!authority.failed)
     }
 
-    @Test func failedAttemptClearsStaleMilestones() {
+    @Test func beginSteamAttemptPreservesCurrentEvidence() {
+        // FIX C: a new Steam timing attempt preserves still-current evidence.
+        var authority = LaunchTransitionAuthority()
+        authority.earn(.runtimeResolved)
+        authority.earn(.runtimeCapabilityValidated)
+        #expect(authority.progress > 0)
+        authority.beginSteamAttempt()
+        #expect(authority.progress > 0)
+        #expect(authority.wineMilestones.runtimeResolved)
+        #expect(authority.stage == .idle)
+        #expect(!authority.failed)
+    }
+
+    @Test func clearMilestoneRemovesStaleEvidenceOnIdentityChange() {
+        // FIX C: identity change clears the corresponding evidence.
         var authority = LaunchTransitionAuthority()
         authority.earn(.runtimeResolved)
         authority.earn(.canonicalPrefixBound)
-        #expect(authority.progress > 0)
+        authority.clearMilestone(.runtimeResolved)
+        #expect(!authority.wineMilestones.runtimeResolved)
+        #expect(authority.wineMilestones.canonicalPrefixBound)
+    }
+
+    @Test func failedAttemptMarksFailedAndClearsTiming() {
+        // FIX C/§18: a failed attempt marks failure and clears timing, but does
+        // not erase identity-bound evidence (evidence is cleared on identity
+        // change, not on timing failure).
+        var authority = LaunchTransitionAuthority()
+        authority.earn(.runtimeResolved)
+        authority.record(.winePreparation, milliseconds: 100)
         authority.fail()
         #expect(authority.failed)
-        #expect(authority.progress == 0)
         #expect(authority.stage == .failed)
+        #expect(authority.timing.winePreparationMS == 0)
+        #expect(authority.wineMilestones.runtimeResolved) // evidence preserved
     }
 
     @Test func failExplicitlyExposed() {
@@ -128,8 +178,6 @@ struct LaunchPipelineStateTests {
         authority.transition(to: .failed)
         #expect(authority.failed)
         #expect(authority.stage == .failed)
-        // Once failed, no further transitions are admitted.
-        #expect(authority.transition(to: .ready) == .rejectedSkipped)
     }
 }
 
@@ -277,13 +325,23 @@ struct LaunchTimingStoreTests {
 
 struct LaunchValidationCacheTests {
 
+    private func fileID(size: UInt64 = 100, mtime: Int64 = 1000, inode: UInt64 = 1) -> LaunchFileIdentity {
+        LaunchFileIdentity(isRegularFile: true, size: size, mtimeNanos: mtime, inode: inode, device: 1)
+    }
+
     private func fp(
-        runtime: String? = "r", prefix: String? = "p",
-        steam: String? = "s", imported: Bool = true
+        runtime: LaunchFileIdentity? = nil,
+        prefix: String? = "p",
+        prefixValid: Bool = true,
+        steam: LaunchFileIdentity? = nil,
+        imported: Bool = true
     ) -> LaunchValidationFingerprint {
         LaunchValidationFingerprint(
-            runtimeSafeID: runtime, prefixSafeID: prefix,
-            steamSafeID: steam, importedWine: imported)
+            runtimeIdentity: runtime ?? fileID(),
+            prefixSafeID: prefix,
+            prefixEvidenceValid: prefixValid,
+            steamIdentity: steam ?? fileID(),
+            importedWine: imported)
     }
 
     @Test func sameVerifiedRuntimePrefixAllowsFastPath() {
@@ -294,24 +352,41 @@ struct LaunchValidationCacheTests {
 
     @Test func runtimeChangeInvalidates() {
         var cache = LaunchValidationCache()
-        cache.recordSuccess(fingerprint: fp())
-        cache.invalidate()
-        #expect(!cache.isFastPathAdmissible)
-        #expect(!cache.matchesAdmissible(fp()))
+        cache.recordSuccess(fingerprint: fp(runtime: fileID(inode: 1)))
+        #expect(!cache.matchesAdmissible(fp(runtime: fileID(inode: 2))))
+    }
+
+    @Test func runtimeSamePathDifferentMaterialIdentityMisses() {
+        // FIX E: same runtime path, replaced/modified file -> fingerprint changes.
+        var cache = LaunchValidationCache()
+        cache.recordSuccess(fingerprint: fp(runtime: fileID(size: 100, mtime: 1000)))
+        #expect(!cache.matchesAdmissible(fp(runtime: fileID(size: 100, mtime: 2000))))
+        #expect(!cache.matchesAdmissible(fp(runtime: fileID(size: 200, mtime: 1000))))
     }
 
     @Test func prefixChangeInvalidates() {
         var cache = LaunchValidationCache()
-        cache.recordSuccess(fingerprint: fp())
-        cache.invalidate()
+        cache.recordSuccess(fingerprint: fp(prefix: "p"))
         #expect(!cache.matchesAdmissible(fp(prefix: "p2")))
+    }
+
+    @Test func prefixEvidenceInvalidInvalidates() {
+        var cache = LaunchValidationCache()
+        cache.recordSuccess(fingerprint: fp(prefixValid: true))
+        #expect(!cache.matchesAdmissible(fp(prefixValid: false)))
     }
 
     @Test func steamInstallMutationInvalidates() {
         var cache = LaunchValidationCache()
-        cache.recordSuccess(fingerprint: fp())
-        cache.invalidate()
-        #expect(!cache.matchesAdmissible(fp(steam: "s2")))
+        cache.recordSuccess(fingerprint: fp(steam: fileID(inode: 1)))
+        #expect(!cache.matchesAdmissible(fp(steam: fileID(inode: 2))))
+    }
+
+    @Test func steamSamePathDifferentMaterialIdentityMisses() {
+        // FIX E: same Steam path, replaced/modified executable -> fingerprint changes.
+        var cache = LaunchValidationCache()
+        cache.recordSuccess(fingerprint: fp(steam: fileID(size: 100, mtime: 1000)))
+        #expect(!cache.matchesAdmissible(fp(steam: fileID(size: 100, mtime: 3000))))
     }
 
     @Test func failedLaunchInvalidates() {
@@ -352,9 +427,39 @@ struct LaunchValidationCacheTests {
         // Same admissible fingerprint -> fast path allowed.
         #expect(cache.matchesAdmissible(fp()))
         // A mutated fingerprint component forces full validation again.
-        #expect(!cache.matchesAdmissible(fp(runtime: "r2")))
+        #expect(!cache.matchesAdmissible(fp(runtime: fileID(inode: 99))))
         #expect(!cache.matchesAdmissible(fp(prefix: "p2")))
-        #expect(!cache.matchesAdmissible(fp(steam: "s2")))
+        #expect(!cache.matchesAdmissible(fp(steam: fileID(inode: 98))))
+    }
+
+    @Test func missingArtifactCannotMatchCachedRealIdentity() {
+        // A missing/non-regular artifact yields a nil/absent identity, so its
+        // fingerprint cannot match a cached real identity (no fast path).
+        var cache = LaunchValidationCache()
+        cache.recordSuccess(fingerprint: fp(runtime: fileID(), steam: fileID()))
+        let missingRuntime = LaunchValidationFingerprint(
+            runtimeIdentity: nil, prefixSafeID: "p", prefixEvidenceValid: true,
+            steamIdentity: fileID(), importedWine: true)
+        #expect(!cache.matchesAdmissible(missingRuntime))
+    }
+
+    @Test func nonRegularArtifactFingerprintDiffers() {
+        // A non-regular artifact exposes a different bounded identity, so a
+        // cached regular identity cannot admit it.
+        let regular = fp(runtime: fileID(), steam: fileID())
+        let nonRegular = LaunchValidationFingerprint(
+            runtimeIdentity: LaunchFileIdentity(isRegularFile: false, size: 0, mtimeNanos: 0, inode: nil, device: nil),
+            prefixSafeID: "p", prefixEvidenceValid: true, steamIdentity: fileID(), importedWine: true)
+        #expect(regular != nonRegular)
+    }
+
+    @Test func safeIDIsBoundedAndNotAPath() {
+        let a = LaunchSafeID.of("/some/path/steam.exe")
+        let b = LaunchSafeID.of("/some/path/steam.exe")
+        let c = LaunchSafeID.of("/other/path/steam.exe")
+        #expect(a == b)
+        #expect(a != c)
+        #expect(a.count == 16)
     }
 
     @Test func cacheHitNeverBypassesSessionOwnershipSafety() {
@@ -380,7 +485,6 @@ struct LaunchValidationCacheTests {
         var cache = LaunchValidationCache()
         cache.recordSuccess(fingerprint: fp())
         #expect(cache.matchesAdmissible(fp()))
-        // There is no reusing of an unowned process: matching is fingerprint-only.
         #expect(cache.isFastPathAdmissible)
     }
 }
