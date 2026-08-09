@@ -26,8 +26,8 @@
             "scripts/workstage-review-gate-fixtures/"
         ]
     },
-  "quarantined_review_ids": [4841357081, 4888334695],
-  "quarantined_review_run_ids": [31244379661],
+  "quarantined_review_ids": [4841357081, 4888334695, 4891552433],
+  "quarantined_review_run_ids": [31244379661, 31317913446],
   "red_parent_source_fix_bridge": {
     "authorization_schema_version": 1,
     "authorization_comment_id": 5211174534,
@@ -269,6 +269,72 @@
       "release_authorized": false,
       "next_product_workstream_authorized": false
     },
+  "controller_schema_recovery_authorization": {
+    "schema_version": 1,
+    "authorization_comment_id": 5232263220,
+    "parent_sha": "ef38db6c0614becbee12097dc05d08ee29a9fe48",
+    "repository": "oxcandy-lgtm/macsteam",
+    "pull_request": 2,
+    "kind": "controller_schema_recovery_authorization",
+    "workstream": "U1R18-R13-ACCEPTANCE2-FIX1-GATE1",
+    "source_fix_sha": "ef38db6c0614becbee12097dc05d08ee29a9fe48",
+    "source_fix_parent_sha": "6b8cb7a583fd4991929a6ced70e98faf991defa5",
+    "source_fix_workstream": "U1R18-R13-ACCEPTANCE2-FIX1",
+    "source_fix_commit_subject": "fix: make AppInstanceGuard fingerprint memory-safe (U1R18-R13-ACCEPTANCE2-FIX1)",
+    "source_fix_core_ci_run_id": 31319822686,
+    "source_fix_required_ci_jobs": 5,
+    "failed_advance_run_id": 31319822696,
+    "failed_advance_job_id": 93260875931,
+    "failed_advance_guard": "parent_review_approved_with_bad_json",
+    "failed_advance_message": "Latest parent review invalid: schema_invalid",
+    "malformed_parent_controller_review_id": 4891552433,
+    "malformed_parent_review_head_sha": "6b8cb7a583fd4991929a6ced70e98faf991defa5",
+    "malformed_parent_review_extra_property": "next_workstream_admitted",
+    "malformed_parent_review_extra_property_value": false,
+    "false_green_review_gate_run_id": 31317913446,
+    "false_green_review_gate_job_id": 93256071223,
+    "false_green_review_gate_event": "workflow_dispatch",
+    "false_green_review_gate_attempt": 1,
+    "false_green_review_gate_run_conclusion": "success",
+    "false_green_review_gate_job_name": "Review Gate",
+    "false_green_review_gate_job_conclusion": "success",
+    "false_green_review_gate_advance_job_name": "Advance Gate",
+    "false_green_review_gate_advance_job_conclusion": "skipped",
+    "false_green_review_gate_submission_job_name": "Submission Gate",
+    "false_green_review_gate_submission_job_conclusion": "skipped",
+    "false_green_review_gate_expected_state": "REVIEW_COMPLETE_NX_REQUIRED",
+    "false_green_review_gate_controller_review_valid": true,
+    "false_green_review_gate_final_worker_report_valid": true,
+    "false_green_review_gate_final_controller_review_valid": true,
+    "false_green_review_gate_final_nx_required": true,
+    "false_green_review_gate_final_next_workstream_admitted": false,
+    "controller_review_schema_path": "Contracts/controller-review.schema.json",
+    "controller_review_schema_blob_sha": "7c6d292acf138b085fb3211707d73ffb489b438d",
+    "required_workstream": "U1R18-R13-ACCEPTANCE2-FIX1-GATE1",
+    "required_commit_subject": "ci: recover schema-invalid controller review gate (U1R18-R13-ACCEPTANCE2-FIX1-GATE1)",
+    "single_direct_child_only": true,
+    "source_fix_allowed_exact_paths": [
+      "Sources/MacSteam/App/AppInstanceGuard.swift",
+      "Tests/MacSteamTests/AppInstanceGuardFingerprintTests.swift"
+    ],
+    "source_fix_allowed_path_prefixes": [],
+    "bridge_allowed_exact_paths": [
+      ".github/workstage-review-gate-policy.json",
+      "scripts/workstage-review-gate.py",
+      "scripts/test-workstage-review-gate.sh"
+    ],
+    "bridge_allowed_path_prefixes": [
+      "scripts/workstage-review-gate-fixtures/"
+    ],
+    "quarantine_review_id": 4891552433,
+    "quarantine_review_gate_run_id": 31317913446,
+    "product_code_changes_authorized": false,
+    "controller_review_schema_mutation_authorized": false,
+    "ready_authorized": false,
+    "merge_authorized": false,
+    "release_authorized": false,
+    "next_product_workstream_authorized": false
+  },
   "core_ci": {
     "required_jobs": [
       "Swift Build",

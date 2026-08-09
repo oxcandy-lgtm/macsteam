@@ -1,0 +1,5 @@
+[
+  ".github/workstage-review-gate-policy.json",
+  "scripts/workstage-review-gate.py",
+  "scripts/test-workstage-review-gate.sh"
+]

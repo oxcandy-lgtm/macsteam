@@ -251,6 +251,7 @@ GREEN_FIXTURES=(
   "advance_protocol_recovery_fix_authorization|advance|"
   "advance_protocol_recovery_fix2_authorization|advance|"
   "advance_protocol_recovery_fix3_authorization|advance|"
+  "advance_controller_schema_recovery_authorization|advance|"
   "advance_review_gate_timestamp_prefixed_final_state|advance|"
   "gate1_report_matches_head_trailer|submission|--worker-report-comment-id 5161887211"
   "future_product_report_uses_fix1|submission|--worker-report-comment-id 5161887211"
@@ -287,6 +288,80 @@ for entry in "${GREEN_FIXTURES[@]}"; do
   else
     bad "green/${fixture} (${phase}) should pass"
   fi
+done
+
+# ================================================
+# TEST 1b: Canonical controller-review schema parity
+# ================================================
+echo ""
+echo "=== Controller-Review Schema Parity (Advance and Review) ==="
+
+SCHEMA_PARITY_MUTATIONS=(
+  "schema_parity_extra_property|parent_review_approved_with_bad_json|controller_review_schema_invalid"
+  "schema_parity_arbitrary_unknown_property|parent_review_approved_with_bad_json|controller_review_schema_invalid"
+  "schema_parity_missing_required_property|parent_review_approved_with_bad_json|controller_review_schema_invalid"
+  "schema_parity_wrong_property_type|parent_review_approved_with_bad_json|controller_review_schema_invalid"
+  "schema_parity_bad_head_sha_pattern|parent_review_approved_with_bad_json|controller_review_schema_invalid"
+)
+
+for entry in "${SCHEMA_PARITY_MUTATIONS[@]}"; do
+  IFS='|' read -r mut_name advance_guard review_guard <<< "$entry"
+
+  run_fixture_mutation "$mut_name" "advance" \
+    "${FIXTURE_DIR}/green/advance_normal_approved" "" || true
+  assert_rejected_exact "$mut_name" "1" "$advance_guard" "schema-parity/advance"
+
+  run_fixture_mutation "$mut_name" "review" \
+    "${FIXTURE_DIR}/green/review_commented_accepted" \
+    "--worker-report-comment-id 5161887211" || true
+  assert_rejected_exact "$mut_name" "1" "$review_guard" "schema-parity/review"
+done
+
+# ================================================
+# TEST 1c: Exact schema-recovery authorization/evidence matrix
+# ================================================
+echo ""
+echo "=== Controller Schema Recovery Authorization Matrix ==="
+
+SCHEMA_RECOVERY_MUTATIONS=(
+  "schema_recovery_auth_wrong_comment_id|controller_schema_recovery_auth_wrong_comment_id"
+  "schema_recovery_auth_edited|controller_schema_recovery_auth_edited"
+  "schema_recovery_auth_marker_duplicated|controller_schema_recovery_auth_marker_duplicated"
+  "schema_recovery_auth_json_duplicated|controller_schema_recovery_auth_json_duplicated"
+  "schema_recovery_auth_malformed|controller_schema_recovery_auth_malformed_json"
+  "schema_recovery_auth_policy_mismatch|controller_schema_recovery_auth_policy_mismatch"
+  "schema_recovery_source_wrong_sha|controller_schema_recovery_source_wrong_sha"
+  "schema_recovery_source_wrong_parent|controller_schema_recovery_source_wrong_parent"
+  "schema_recovery_source_wrong_subject|controller_schema_recovery_source_wrong_subject"
+  "schema_recovery_source_wrong_workstream|controller_schema_recovery_source_wrong_workstream"
+  "schema_recovery_source_forbidden_path|controller_schema_recovery_source_forbidden_path"
+  "schema_recovery_core_wrong_head|controller_schema_recovery_source_core_wrong_head"
+  "schema_recovery_core_missing_job|controller_schema_recovery_source_core_missing_job"
+  "schema_recovery_core_non_success|controller_schema_recovery_source_core_not_success"
+  "schema_recovery_failed_wrong_run|controller_schema_recovery_auth_policy_mismatch"
+  "schema_recovery_failed_wrong_head|controller_schema_recovery_failed_advance_wrong_head"
+  "schema_recovery_failed_wrong_guard|controller_schema_recovery_failed_advance_wrong_guard"
+  "schema_recovery_review_wrong_id|controller_schema_recovery_malformed_review_missing"
+  "schema_recovery_review_wrong_head|controller_schema_recovery_malformed_review_wrong_head"
+  "schema_recovery_review_unexpectedly_valid|controller_schema_recovery_malformed_review_unexpectedly_valid"
+  "schema_recovery_review_extra_beyond_authorized|controller_schema_recovery_malformed_review_not_exact_extra_property"
+  "schema_recovery_review_run_wrong_run|controller_schema_recovery_auth_policy_mismatch"
+  "schema_recovery_review_run_wrong_head|controller_schema_recovery_review_run_wrong_head"
+  "schema_recovery_review_run_not_success|controller_schema_recovery_review_run_not_success"
+  "schema_recovery_review_final_state_mismatch|controller_schema_recovery_review_final_state_mismatch"
+  "schema_recovery_review_controller_valid_false|controller_schema_recovery_review_final_controller_review_valid_mismatch"
+  "schema_recovery_review_quarantine_missing|controller_schema_recovery_review_not_quarantined"
+  "schema_recovery_run_quarantine_missing|controller_schema_recovery_run_not_quarantined"
+  "schema_recovery_second_child|controller_schema_recovery_second_child"
+  "schema_recovery_bridge_forbidden_path|controller_schema_recovery_forbidden_path"
+  "schema_recovery_auth_after_bridge|RED_U1R18_R13_ACCEPTANCE2_FIX1_GATE1_CHRONOLOGY_UNPROVABLE"
+)
+
+for entry in "${SCHEMA_RECOVERY_MUTATIONS[@]}"; do
+  IFS='|' read -r mut_name expected_guard <<< "$entry"
+  run_fixture_mutation "$mut_name" "advance" \
+    "${FIXTURE_DIR}/green/advance_controller_schema_recovery_authorization" "" || true
+  assert_rejected_exact "$mut_name" "1" "$expected_guard" "schema-recovery/advance"
 done
 
 # ================================================

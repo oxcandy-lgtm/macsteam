@@ -60,6 +60,24 @@ GATE_FIX_MARKER = "<!-- macsteam-gate-fix-authorization:v1 -->"
 PROTOCOL_RECOVERY_FIX_MARKER = "<!-- macsteam-protocol-recovery-fix-authorization:v1 -->"
 PROTOCOL_RECOVERY_FIX2_MARKER = "<!-- macsteam-protocol-recovery-fix2-authorization:v1 -->"
 PROTOCOL_RECOVERY_FIX3_MARKER = "<!-- macsteam-protocol-recovery-fix3-authorization:v1 -->"
+CONTROLLER_SCHEMA_RECOVERY_MARKER = (
+    "<!-- macsteam-controller-schema-recovery-authorization:v1 -->"
+)
+
+# U1R18-R13-ACCEPTANCE2-FIX1-GATE1 is a one-child protocol recovery lane.  The
+# immutable baseline identity is deliberately duplicated here as a routing
+# guard so a malformed or weakened policy cannot silently route a different
+# parent through this exceptional authority.
+SCHEMA_RECOVERY_PARENT_SHA = "ef38db6c0614becbee12097dc05d08ee29a9fe48"
+SCHEMA_RECOVERY_SOURCE_PARENT_SHA = "6b8cb7a583fd4991929a6ced70e98faf991defa5"
+SCHEMA_RECOVERY_AUTH_COMMENT_ID = 5232263220
+SCHEMA_RECOVERY_MALFORMED_REVIEW_ID = 4891552433
+SCHEMA_RECOVERY_REVIEW_GATE_RUN_ID = 31317913446
+SCHEMA_RECOVERY_REVIEW_GATE_JOB_ID = 93256071223
+SCHEMA_RECOVERY_SOURCE_CORE_RUN_ID = 31319822686
+SCHEMA_RECOVERY_FAILED_ADVANCE_RUN_ID = 31319822696
+SCHEMA_RECOVERY_FAILED_ADVANCE_JOB_ID = 93260875931
+CONTROLLER_SCHEMA_BLOB_SHA = "7c6d292acf138b085fb3211707d73ffb489b438d"
 
 # Bounded gate-log scan limits (RECOVERY1-FIX2): the final-state parser reads
 # only a finite raw suffix (chars) capped to a finite line count, discarding a
@@ -852,7 +870,158 @@ class Gate:
         if fix is not None:
             self._validate_fix_policy(fix)
 
+        schema_recovery = policy.get("controller_schema_recovery_authorization")
+        if schema_recovery is not None:
+            self._validate_schema_recovery_policy(schema_recovery)
+
         return policy
+
+    def _validate_schema_recovery_policy(self, recovery):
+        """Validate every security-critical field of the schema-recovery lane.
+
+        The authorization comment is the live scope authority.  This loader
+        only validates that the checked-in policy has an explicit, correctly
+        typed binding for every required evidence and scope field; the lane
+        validator later reconciles each value with the immutable comment and
+        hosted objects.
+        """
+        if not isinstance(recovery, dict):
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "controller_schema_recovery_authorization must be an object")
+
+        required = [
+            "schema_version", "authorization_comment_id", "parent_sha",
+            "repository", "pull_request", "kind", "workstream", "source_fix_sha",
+            "source_fix_parent_sha", "source_fix_workstream",
+            "source_fix_commit_subject", "source_fix_core_ci_run_id",
+            "source_fix_required_ci_jobs", "failed_advance_run_id",
+            "failed_advance_job_id", "failed_advance_guard",
+            "failed_advance_message", "malformed_parent_controller_review_id",
+            "malformed_parent_review_head_sha",
+            "malformed_parent_review_extra_property",
+            "malformed_parent_review_extra_property_value",
+            "false_green_review_gate_run_id", "false_green_review_gate_job_id",
+            "false_green_review_gate_event", "false_green_review_gate_attempt",
+            "false_green_review_gate_run_conclusion",
+            "false_green_review_gate_job_name",
+            "false_green_review_gate_job_conclusion",
+            "false_green_review_gate_advance_job_name",
+            "false_green_review_gate_advance_job_conclusion",
+            "false_green_review_gate_submission_job_name",
+            "false_green_review_gate_submission_job_conclusion",
+            "false_green_review_gate_expected_state",
+            "false_green_review_gate_controller_review_valid",
+            "false_green_review_gate_final_worker_report_valid",
+            "false_green_review_gate_final_controller_review_valid",
+            "false_green_review_gate_final_nx_required",
+            "false_green_review_gate_final_next_workstream_admitted",
+            "controller_review_schema_path", "controller_review_schema_blob_sha",
+            "required_workstream", "required_commit_subject",
+            "single_direct_child_only", "source_fix_allowed_exact_paths",
+            "source_fix_allowed_path_prefixes", "bridge_allowed_exact_paths",
+            "bridge_allowed_path_prefixes", "quarantine_review_id",
+            "quarantine_review_gate_run_id", "product_code_changes_authorized",
+            "controller_review_schema_mutation_authorized", "ready_authorized",
+            "merge_authorized", "release_authorized",
+            "next_product_workstream_authorized",
+        ]
+        for field in required:
+            if field not in recovery:
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Controller schema recovery policy missing: " + field)
+
+        int_fields = {
+            "schema_version", "authorization_comment_id", "pull_request",
+            "source_fix_core_ci_run_id", "source_fix_required_ci_jobs",
+            "failed_advance_run_id", "failed_advance_job_id",
+            "malformed_parent_controller_review_id",
+            "false_green_review_gate_run_id", "false_green_review_gate_job_id",
+            "false_green_review_gate_attempt", "quarantine_review_id",
+            "quarantine_review_gate_run_id",
+        }
+        bool_fields = {
+            "malformed_parent_review_extra_property_value",
+            "false_green_review_gate_controller_review_valid",
+            "false_green_review_gate_final_worker_report_valid",
+            "false_green_review_gate_final_controller_review_valid",
+            "false_green_review_gate_final_nx_required",
+            "false_green_review_gate_final_next_workstream_admitted",
+            "single_direct_child_only", "product_code_changes_authorized",
+            "controller_review_schema_mutation_authorized", "ready_authorized",
+            "merge_authorized", "release_authorized",
+            "next_product_workstream_authorized",
+        }
+        string_fields = {
+            "parent_sha", "repository", "kind", "workstream", "source_fix_sha",
+            "source_fix_parent_sha", "source_fix_workstream",
+            "source_fix_commit_subject", "failed_advance_guard",
+            "failed_advance_message", "malformed_parent_review_head_sha",
+            "malformed_parent_review_extra_property",
+            "false_green_review_gate_event",
+            "false_green_review_gate_run_conclusion",
+            "false_green_review_gate_job_name",
+            "false_green_review_gate_job_conclusion",
+            "false_green_review_gate_advance_job_name",
+            "false_green_review_gate_advance_job_conclusion",
+            "false_green_review_gate_submission_job_name",
+            "false_green_review_gate_submission_job_conclusion",
+            "false_green_review_gate_expected_state",
+            "controller_review_schema_path", "controller_review_schema_blob_sha",
+            "required_workstream", "required_commit_subject",
+        }
+        list_fields = {
+            "source_fix_allowed_exact_paths", "source_fix_allowed_path_prefixes",
+            "bridge_allowed_exact_paths", "bridge_allowed_path_prefixes",
+        }
+        for field in int_fields:
+            value = recovery.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Controller schema recovery integer field invalid: " + field)
+        for field in bool_fields:
+            if not isinstance(recovery.get(field), bool):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Controller schema recovery boolean field invalid: " + field)
+        for field in string_fields:
+            if not isinstance(recovery.get(field), str) or not recovery.get(field):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Controller schema recovery string field invalid: " + field)
+        for field in list_fields:
+            value = recovery.get(field)
+            if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Controller schema recovery scope field invalid: " + field)
+            if len(value) != len(set(value)):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Controller schema recovery scope contains duplicates: " + field)
+
+        for field in ("parent_sha", "source_fix_sha", "source_fix_parent_sha",
+                      "malformed_parent_review_head_sha", "controller_review_schema_blob_sha"):
+            if not re.fullmatch(r"[a-f0-9]{40}", recovery.get(field)):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Controller schema recovery SHA field invalid: " + field)
+        if recovery.get("schema_version") != 1:
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Controller schema recovery schema_version != 1")
+        if recovery.get("false_green_review_gate_attempt") != 1:
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Controller schema recovery historical run attempt != 1")
+        if recovery.get("controller_review_schema_path") != CONTROLLER_SCHEMA_PATH:
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Controller schema recovery schema path mismatch")
+        if recovery.get("controller_review_schema_blob_sha") != CONTROLLER_SCHEMA_BLOB_SHA:
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Controller schema recovery schema blob mismatch")
+        if recovery.get("parent_sha") != SCHEMA_RECOVERY_PARENT_SHA:
+            raise GateError(EXIT_INFRA, "policy_malformed",
+                            "Controller schema recovery parent SHA mismatch")
+
+        for field in list_fields:
+            is_prefix = field.endswith("prefixes")
+            for entry in recovery.get(field, []):
+                if not self._validate_repair_path_entry(entry, is_prefix):
+                    raise GateError(EXIT_INFRA, "policy_malformed",
+                                    "Controller schema recovery path invalid: " + entry)
 
     def _validate_fix_policy(self, fix):
         """Validate the protocol_recovery_fix_authorization policy object.
@@ -1140,9 +1309,18 @@ class Gate:
         if fix3:
             fix3_parent = fix3.get("parent_sha")
 
+        schema_recovery = self.policy.get("controller_schema_recovery_authorization")
+
         self._load_reviews()
 
-        if self.parent_sha == bootstrap_head and self.expected_head == bootstrap_child:
+        if self.parent_sha == SCHEMA_RECOVERY_PARENT_SHA:
+            if schema_recovery is None:
+                raise GateError(EXIT_POLICY,
+                                "controller_schema_recovery_authorization_missing",
+                                "Schema recovery authority is missing for the frozen source-fix parent")
+            self.parent_authority = "controller_schema_recovery_authorization"
+            self._validate_controller_schema_recovery_authorization(schema_recovery)
+        elif self.parent_sha == bootstrap_head and self.expected_head == bootstrap_child:
             self.parent_authority = "bootstrap"
             self._validate_bootstrap_review(bootstrap)
         elif self.parent_sha == repair_parent:
@@ -1264,7 +1442,7 @@ class Gate:
         if json_data is None:
             raise GateError(EXIT_POLICY, "repair_malformed_json",
                             "Repair review controller JSON is malformed")
-        if not validate_document(json_data, CONTROLLER_SCHEMA_PATH, CONTROLLER_SCHEMA_PATH):
+        if not self._controller_review_schema_valid(json_data):
             raise GateError(EXIT_POLICY, "repair_schema_invalid",
                             "Repair review controller JSON fails schema validation")
 
@@ -2197,7 +2375,7 @@ class Gate:
         if json_data is None:
             raise GateError(EXIT_POLICY, "red_bridge_rejected_review_incomplete",
                             "Rejected controller review JSON is malformed")
-        if not validate_document(json_data, CONTROLLER_SCHEMA_PATH, CONTROLLER_SCHEMA_PATH):
+        if not self._controller_review_schema_valid(json_data):
             raise GateError(EXIT_POLICY, "red_bridge_rejected_review_incomplete",
                             "Rejected controller review JSON fails schema")
         if json_data.get("kind") != "controller_review":
@@ -3722,6 +3900,597 @@ class Gate:
                 raise GateError(EXIT_POLICY, "protocol_recovery_fix3_parent_ci_not_success",
                                 "Protocol recovery fix3 parent core CI job not success")
 
+    # === Controller-schema recovery authority (U1R18-R13-ACCEPTANCE2-FIX1-GATE1) ===
+
+    def _schema_recovery_error(self, label, message):
+        raise GateError(EXIT_POLICY, label, message)
+
+    def _schema_recovery_path_in_scope(self, filepath, scope, safe=False):
+        if safe and not self._in_safe_envelope(filepath):
+            return False
+        exact, prefixes = scope
+        if filepath in exact:
+            return True
+        return any(filepath.startswith(prefix) for prefix in prefixes)
+
+    def _validate_schema_recovery_comment(self, recovery):
+        comment_id = recovery.get("authorization_comment_id")
+        if comment_id != SCHEMA_RECOVERY_AUTH_COMMENT_ID:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_wrong_comment_id",
+                "Schema recovery authorization comment ID is not the immutable controller comment")
+        try:
+            comment = self.client.get_comment_by_id(comment_id)
+        except GateError as exc:
+            if exc.label.startswith("api_404_"):
+                self._schema_recovery_error(
+                    "controller_schema_recovery_auth_comment_missing",
+                    "Schema recovery authorization comment was not found")
+            raise
+        if not isinstance(comment, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Schema recovery authorization comment is not an object")
+        if comment.get("id") != comment_id:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_wrong_comment_id",
+                "Fetched schema recovery authorization comment ID does not match the immutable ID")
+        if comment.get("in_reply_to_id") is not None or comment.get("path") is not None \
+                or comment.get("position") is not None:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_top_level_required",
+                "Schema recovery authorization must be a top-level PR comment")
+        if comment.get("created_at") != comment.get("updated_at"):
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_edited",
+                "Schema recovery authorization comment was edited")
+
+        body = comment.get("body", "") or ""
+        marker_count = body.count(CONTROLLER_SCHEMA_RECOVERY_MARKER)
+        if marker_count != 1:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_marker_duplicated",
+                "Schema recovery authorization marker count != 1")
+        auth, _, block_count = parse_json_block(
+            body, CONTROLLER_SCHEMA_RECOVERY_MARKER)
+        if block_count != 1:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_json_duplicated",
+                "Schema recovery authorization JSON block count != 1")
+        if not isinstance(auth, dict):
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_malformed_json",
+                "Schema recovery authorization JSON is malformed")
+        if auth.get("kind") != "controller_schema_recovery_authorization":
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_wrong_kind",
+                "Schema recovery authorization kind mismatch")
+        if auth.get("schema_version") != 1:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_schema_mismatch",
+                "Schema recovery authorization schema_version != 1")
+
+        # Every field in the immutable authorization JSON is bound to the
+        # checked-in policy.  The policy cannot silently add authority that the
+        # comment did not grant.
+        for field, value in auth.items():
+            if field not in recovery or recovery.get(field) != value:
+                self._schema_recovery_error(
+                    "controller_schema_recovery_auth_policy_mismatch",
+                    "Schema recovery authorization policy mismatch: " + field)
+        if recovery.get("authorization_comment_id") != comment_id:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_policy_mismatch",
+                "Schema recovery authorization comment ID policy mismatch")
+        if recovery.get("parent_sha") != recovery.get("source_fix_sha"):
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_policy_mismatch",
+                "Schema recovery parent is not the source-fix SHA")
+
+        for flag in (
+                "product_code_changes_authorized",
+                "controller_review_schema_mutation_authorized",
+                "ready_authorized", "merge_authorized", "release_authorized",
+                "next_product_workstream_authorized"):
+            if auth.get(flag) is not False:
+                self._schema_recovery_error(
+                    "controller_schema_recovery_auth_unsafe_authorization",
+                    "Schema recovery authorization flag is not false: " + flag)
+        return comment, auth
+
+    def _validate_schema_recovery_scope(self, recovery, auth):
+        source_exact = auth.get("source_fix_allowed_exact_paths")
+        source_prefixes = auth.get("source_fix_allowed_path_prefixes")
+        bridge_exact = auth.get("bridge_allowed_exact_paths")
+        bridge_prefixes = auth.get("bridge_allowed_path_prefixes")
+        if recovery.get("source_fix_allowed_exact_paths") != source_exact \
+                or recovery.get("source_fix_allowed_path_prefixes") != source_prefixes \
+                or recovery.get("bridge_allowed_exact_paths") != bridge_exact \
+                or recovery.get("bridge_allowed_path_prefixes") != bridge_prefixes:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_scope_policy_mismatch",
+                "Schema recovery policy scope differs from authorization comment")
+
+        expected_source_exact = [
+            "Sources/MacSteam/App/AppInstanceGuard.swift",
+            "Tests/MacSteamTests/AppInstanceGuardFingerprintTests.swift",
+        ]
+        expected_bridge_exact = [
+            ".github/workstage-review-gate-policy.json",
+            "scripts/workstage-review-gate.py",
+            "scripts/test-workstage-review-gate.sh",
+        ]
+        if source_exact != expected_source_exact or source_prefixes != []:
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_scope_mismatch",
+                "Schema recovery source-fix scope differs from the frozen source fix")
+        if bridge_exact != expected_bridge_exact \
+                or bridge_prefixes != ["scripts/workstage-review-gate-fixtures/"]:
+            self._schema_recovery_error(
+                "controller_schema_recovery_bridge_scope_mismatch",
+                "Schema recovery bridge scope differs from the authorized gate-only scope")
+
+        for entry in source_exact:
+            if not self._validate_repair_path_entry(entry, is_prefix=False):
+                self._schema_recovery_error(
+                    "controller_schema_recovery_source_scope_mismatch",
+                    "Schema recovery source scope contains an invalid path")
+        for entry in bridge_exact:
+            if not self._validate_repair_path_entry(entry, is_prefix=False) \
+                    or not self._in_safe_envelope(entry):
+                self._schema_recovery_error(
+                    "controller_schema_recovery_bridge_scope_mismatch",
+                    "Schema recovery bridge scope is outside the safe envelope")
+        for entry in bridge_prefixes:
+            if not self._validate_repair_path_entry(entry, is_prefix=True) \
+                    or not self._in_safe_envelope(entry):
+                self._schema_recovery_error(
+                    "controller_schema_recovery_bridge_scope_mismatch",
+                    "Schema recovery bridge prefix is outside the safe envelope")
+        self._schema_recovery_source_scope = (source_exact, source_prefixes)
+        self._schema_recovery_bridge_scope = (bridge_exact, bridge_prefixes)
+
+    def _schema_recovery_git_blob_sha(self, path):
+        result = subprocess.run(
+            ["git", "hash-object", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            raise GateError(EXIT_INFRA, "controller_schema_recovery_schema_blob_unavailable",
+                            "Unable to hash the canonical controller-review schema")
+        value = result.stdout.strip()
+        if not re.fullmatch(r"[a-f0-9]{40}", value):
+            raise GateError(EXIT_INFRA, "controller_schema_recovery_schema_blob_unavailable",
+                            "Canonical controller-review schema hash is malformed")
+        return value
+
+    def _validate_schema_recovery_schema_identity(self, recovery):
+        if recovery.get("controller_review_schema_path") != CONTROLLER_SCHEMA_PATH:
+            self._schema_recovery_error(
+                "controller_schema_recovery_schema_identity_mismatch",
+                "Controller-review schema path mismatch")
+        if recovery.get("controller_review_schema_blob_sha") != CONTROLLER_SCHEMA_BLOB_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_schema_identity_mismatch",
+                "Controller-review schema policy blob mismatch")
+        if self._schema_recovery_git_blob_sha(CONTROLLER_SCHEMA_PATH) != CONTROLLER_SCHEMA_BLOB_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_schema_identity_mismatch",
+                "Controller-review schema blob changed from the frozen contract")
+
+    def _validate_schema_recovery_source_identity(self, recovery):
+        if recovery.get("source_fix_sha") != SCHEMA_RECOVERY_PARENT_SHA \
+                or self.parent_sha != SCHEMA_RECOVERY_PARENT_SHA \
+                or self.commit_parent.get("sha") != SCHEMA_RECOVERY_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_wrong_sha",
+                "Schema recovery source-fix SHA mismatch")
+        if recovery.get("source_fix_parent_sha") != SCHEMA_RECOVERY_SOURCE_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_wrong_parent",
+                "Schema recovery source-fix parent policy mismatch")
+        source_parents = self.commit_parent.get("parents", [])
+        if len(source_parents) != 1 or source_parents[0].get("sha") != SCHEMA_RECOVERY_SOURCE_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_wrong_parent",
+                "Schema recovery source-fix parent commit mismatch")
+
+        message = (self.commit_parent.get("commit", {}) or {}).get("message", "") or ""
+        subject = message.split("\n")[0].strip() if message else ""
+        if subject != recovery.get("source_fix_commit_subject"):
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_wrong_subject",
+                "Schema recovery source-fix subject mismatch")
+        trailers = re.findall(r"(?:^|\n)Workstream:\s*([^\s]+)", message)
+        if trailers != [recovery.get("source_fix_workstream")]:
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_wrong_workstream",
+                "Schema recovery source-fix Workstream trailer mismatch")
+
+        changed = self._source_fix_changed_files(SCHEMA_RECOVERY_PARENT_SHA)
+        expected = recovery.get("source_fix_allowed_exact_paths", [])
+        if len(changed) != len(expected) or set(changed) != set(expected):
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_forbidden_path",
+                "Schema recovery source-fix changed paths are not exact")
+
+    def _validate_schema_recovery_core_ci(self, recovery):
+        run_id = recovery.get("source_fix_core_ci_run_id")
+        if run_id != SCHEMA_RECOVERY_SOURCE_CORE_RUN_ID:
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_core_wrong_run",
+                "Schema recovery source-fix Core CI run mismatch")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_core_missing",
+                "Schema recovery source-fix Core CI run missing")
+        if run.get("head_sha") != SCHEMA_RECOVERY_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_core_wrong_head",
+                "Schema recovery source-fix Core CI head mismatch")
+        if run.get("name") != "CI":
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_core_wrong_workflow",
+                "Schema recovery source-fix Core CI workflow mismatch")
+        if run.get("status") != "completed" or run.get("conclusion") != "success":
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_core_not_success",
+                "Schema recovery source-fix Core CI run is not completed/successful")
+        jobs = self.client.get_workflow_jobs(run_id)
+        if not isinstance(jobs, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Schema recovery source-fix Core CI jobs are not a list")
+        required = self.policy.get("core_ci", {}).get("required_jobs", [])
+        if recovery.get("source_fix_required_ci_jobs") != len(required):
+            self._schema_recovery_error(
+                "controller_schema_recovery_source_core_job_count",
+                "Schema recovery source-fix Core CI job count mismatch")
+        for name in required:
+            matches = [job for job in jobs if isinstance(job, dict) and job.get("name") == name]
+            if len(matches) != 1:
+                self._schema_recovery_error(
+                    "controller_schema_recovery_source_core_missing_job",
+                    "Schema recovery source-fix Core CI required job missing or duplicated: " + name)
+            if matches[0].get("status") != "completed" or matches[0].get("conclusion") != "success":
+                self._schema_recovery_error(
+                    "controller_schema_recovery_source_core_not_success",
+                    "Schema recovery source-fix Core CI required job is not successful: " + name)
+
+    def _validate_schema_recovery_failed_advance(self, recovery):
+        run_id = recovery.get("failed_advance_run_id")
+        job_id = recovery.get("failed_advance_job_id")
+        if run_id != SCHEMA_RECOVERY_FAILED_ADVANCE_RUN_ID or job_id != SCHEMA_RECOVERY_FAILED_ADVANCE_JOB_ID:
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_wrong_run",
+                "Schema recovery failed Advance run/job identity mismatch")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_missing",
+                "Schema recovery failed Advance run missing")
+        if run.get("head_sha") != SCHEMA_RECOVERY_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_wrong_head",
+                "Schema recovery failed Advance head mismatch")
+        if run.get("status") != "completed" or run.get("conclusion") != "failure":
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_not_failed",
+                "Schema recovery failed Advance run is not completed/failure")
+        jobs = self.client.get_workflow_jobs(run_id)
+        if not isinstance(jobs, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Schema recovery failed Advance jobs are not a list")
+        job = next((item for item in jobs
+                    if isinstance(item, dict) and item.get("id") == job_id), None)
+        if job is None or job.get("name") != "Advance Gate":
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_job_missing",
+                "Schema recovery failed Advance job identity mismatch")
+        if job.get("status") != "completed" or job.get("conclusion") != "failure":
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_job_not_failed",
+                "Schema recovery failed Advance job is not completed/failure")
+        gate_json = self._extract_gate_json_from_log(self.client.get_job_log(job_id))
+        if not isinstance(gate_json, dict) or gate_json.get("state") != "REJECTED":
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_result_missing",
+                "Schema recovery failed Advance log has no REJECTED result")
+        if gate_json.get("head_sha") != SCHEMA_RECOVERY_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_wrong_head",
+                "Schema recovery failed Advance result head mismatch")
+        if gate_json.get("parent_sha") != SCHEMA_RECOVERY_SOURCE_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_wrong_parent",
+                "Schema recovery failed Advance result parent mismatch")
+        if gate_json.get("guard_label") != recovery.get("failed_advance_guard"):
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_wrong_guard",
+                "Schema recovery failed Advance guard mismatch")
+        if gate_json.get("message") != recovery.get("failed_advance_message"):
+            self._schema_recovery_error(
+                "controller_schema_recovery_failed_advance_wrong_message",
+                "Schema recovery failed Advance message mismatch")
+        return run
+
+    def _validate_schema_recovery_malformed_review(self, recovery):
+        review_id = recovery.get("malformed_parent_controller_review_id")
+        if review_id != SCHEMA_RECOVERY_MALFORMED_REVIEW_ID:
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_wrong_id",
+                "Schema recovery malformed review ID mismatch")
+        review = self._fetch_recovery_review(
+            review_id, "controller_schema_recovery_malformed_review_missing")
+        if review.get("id") != review_id:
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_wrong_id",
+                "Schema recovery malformed review ID mismatch")
+        if review.get("commit_id") != recovery.get("malformed_parent_review_head_sha") \
+                or review.get("commit_id") != SCHEMA_RECOVERY_SOURCE_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_wrong_head",
+                "Schema recovery malformed review head mismatch")
+        if review.get("state") != "COMMENTED":
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_wrong_state",
+                "Schema recovery malformed review state mismatch")
+        body = review.get("body", "") or ""
+        if body.count(CONTROLLER_MARKER) != 1:
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_marker_invalid",
+                "Schema recovery malformed review marker count != 1")
+        data, _, block_count = parse_json_block(body, CONTROLLER_MARKER)
+        if block_count != 1 or not isinstance(data, dict):
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_json_invalid",
+                "Schema recovery malformed review JSON is not exactly one valid object")
+        if data.get("kind") != "controller_review" or data.get("decision") != "accepted":
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_semantics_mismatch",
+                "Schema recovery malformed review semantic identity mismatch")
+        extra = recovery.get("malformed_parent_review_extra_property")
+        if self._controller_review_schema_valid(data):
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_unexpectedly_valid",
+                "Schema recovery malformed review unexpectedly passes the canonical schema")
+        if extra != "next_workstream_admitted" or data.get(extra) is not False:
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_extra_property_mismatch",
+                "Schema recovery malformed review extra property mismatch")
+        schema = load_schema(CONTROLLER_SCHEMA_PATH)
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        unknown = [key for key in data if key not in properties]
+        if unknown != [extra]:
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_not_exact_extra_property",
+                "Schema recovery malformed review has unknown properties beyond the authorized extra")
+        repaired = dict(data)
+        del repaired[extra]
+        if not self._controller_review_schema_valid(repaired):
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_repair_invalid",
+                "Removing only the authorized extra property did not restore schema validity")
+        if review_id not in set(self.policy.get("quarantined_review_ids", [])) \
+                or recovery.get("quarantine_review_id") != review_id:
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_not_quarantined",
+                "Schema recovery malformed review is not quarantined")
+        return review
+
+    def _validate_schema_recovery_review_run(self, recovery):
+        run_id = recovery.get("false_green_review_gate_run_id")
+        job_id = recovery.get("false_green_review_gate_job_id")
+        if run_id != SCHEMA_RECOVERY_REVIEW_GATE_RUN_ID or job_id != SCHEMA_RECOVERY_REVIEW_GATE_JOB_ID:
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_run_wrong_id",
+                "Schema recovery false-GREEN Review Gate run/job identity mismatch")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_run_missing",
+                "Schema recovery false-GREEN Review Gate run missing")
+        if run.get("event") != recovery.get("false_green_review_gate_event") \
+                or run.get("event") != "workflow_dispatch":
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_run_wrong_event",
+                "Schema recovery false-GREEN Review Gate event mismatch")
+        if run.get("head_sha") != SCHEMA_RECOVERY_SOURCE_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_run_wrong_head",
+                "Schema recovery false-GREEN Review Gate head mismatch")
+        if run.get("run_attempt") != recovery.get("false_green_review_gate_attempt") \
+                or run.get("run_attempt") != 1:
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_run_wrong_attempt",
+                "Schema recovery false-GREEN Review Gate attempt mismatch")
+        if run.get("status") != "completed" \
+                or run.get("conclusion") != recovery.get("false_green_review_gate_run_conclusion") \
+                or run.get("conclusion") != "success":
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_run_not_success",
+                "Schema recovery false-GREEN Review Gate run is not completed/successful")
+        if run_id not in set(self.policy.get("quarantined_review_run_ids", [])) \
+                or recovery.get("quarantine_review_gate_run_id") != run_id:
+            self._schema_recovery_error(
+                "controller_schema_recovery_run_not_quarantined",
+                "Schema recovery false-GREEN Review Gate run is not quarantined")
+
+        jobs = self.client.get_workflow_jobs(run_id)
+        if not isinstance(jobs, list):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Schema recovery false-GREEN Review Gate jobs are not a list")
+        by_name = {}
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            name = job.get("name")
+            if name in by_name:
+                self._schema_recovery_error(
+                    "controller_schema_recovery_review_job_duplicate",
+                    "Schema recovery false-GREEN Review Gate has duplicate job: " + str(name))
+            by_name[name] = job
+        review_job = by_name.get(recovery.get("false_green_review_gate_job_name"))
+        advance_job = by_name.get(recovery.get("false_green_review_gate_advance_job_name"))
+        submission_job = by_name.get(recovery.get("false_green_review_gate_submission_job_name"))
+        if review_job is None or advance_job is None or submission_job is None:
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_job_missing",
+                "Schema recovery false-GREEN Review Gate required job missing")
+        if review_job.get("id") != job_id or review_job.get("status") != "completed" \
+                or review_job.get("conclusion") != recovery.get("false_green_review_gate_job_conclusion") \
+                or review_job.get("conclusion") != "success":
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_job_not_success",
+                "Schema recovery false-GREEN Review Gate job identity/conclusion mismatch")
+        for job, expected in (
+                (advance_job, recovery.get("false_green_review_gate_advance_job_conclusion")),
+                (submission_job, recovery.get("false_green_review_gate_submission_job_conclusion"))):
+            if job.get("status") != "completed" or job.get("conclusion") != expected \
+                    or job.get("conclusion") != "skipped":
+                self._schema_recovery_error(
+                    "controller_schema_recovery_review_job_not_skipped",
+                    "Schema recovery false-GREEN Advance/Submission job was not skipped")
+
+        final, _ = self._extract_last_relevant_gate_result_from_log(
+            self.client.get_job_log(job_id))
+        if not isinstance(final, dict) \
+                or final.get("state") != recovery.get("false_green_review_gate_expected_state") \
+                or final.get("state") != "REVIEW_COMPLETE_NX_REQUIRED" \
+                or final.get("head_sha") != SCHEMA_RECOVERY_SOURCE_PARENT_SHA \
+                or final.get("repository") != self.repo \
+                or final.get("pr_number") != self.pr_number:
+            self._schema_recovery_error(
+                "controller_schema_recovery_review_final_state_mismatch",
+                "Schema recovery false-GREEN Review Gate final state mismatch")
+        for field in (
+                "worker_report_valid", "controller_review_valid", "nx_required",
+                "next_workstream_admitted"):
+            expected = recovery.get("false_green_review_gate_final_" + field)
+            if final.get(field) != expected:
+                label = ("controller_review_valid" if field == "controller_review_valid"
+                         else "final_state")
+                self._schema_recovery_error(
+                    "controller_schema_recovery_review_final_" + label + "_mismatch",
+                    "Schema recovery false-GREEN Review Gate final field mismatch: " + field)
+        return run, review_job
+
+    def _schema_recovery_review_time(self, review):
+        value = review.get("submitted_at") if isinstance(review, dict) else None
+        if not value:
+            return None
+        try:
+            return parse_iso_datetime(value)
+        except GateError:
+            return None
+
+    def _schema_recovery_run_start_time(self, run):
+        value = run.get("run_started_at") or run.get("started_at") \
+            or run.get("created_at") if isinstance(run, dict) else None
+        if not value:
+            return None
+        try:
+            return parse_iso_datetime(value)
+        except GateError:
+            return None
+
+    def _validate_schema_recovery_chronology(self, recovery, comment, review,
+                                             review_run, source_core_run,
+                                             failed_advance_run):
+        """Prove strict malformed-review < false-green < source < failed < auth < child."""
+        review_time = self._schema_recovery_review_time(review)
+        review_run_time = self._schema_recovery_run_start_time(review_run)
+        source_time_value = (self.commit_parent.get("commit", {}) or {}).get(
+            "committer", {}).get("date")
+        failed_time = self._schema_recovery_run_start_time(failed_advance_run)
+        auth_time_value = comment.get("created_at") if isinstance(comment, dict) else None
+        child_time_value = (self.commit_head.get("commit", {}) or {}).get(
+            "committer", {}).get("date")
+        try:
+            source_time = parse_iso_datetime(source_time_value) if source_time_value else None
+            auth_time = parse_iso_datetime(auth_time_value) if auth_time_value else None
+            child_time = parse_iso_datetime(child_time_value) if child_time_value else None
+        except GateError:
+            source_time = auth_time = child_time = None
+        values = (review_time, review_run_time, source_time, failed_time, auth_time, child_time)
+        if any(value is None for value in values) \
+                or not all(left < right for left, right in zip(values, values[1:])):
+            raise GateError(
+                EXIT_POLICY,
+                "RED_U1R18_R13_ACCEPTANCE2_FIX1_GATE1_CHRONOLOGY_UNPROVABLE",
+                "Schema recovery chronology cannot be proven exactly")
+
+        boundary = review_run_time
+        applicable = []
+        for candidate in self.reviews or []:
+            if not isinstance(candidate, dict) or candidate.get("commit_id") != SCHEMA_RECOVERY_SOURCE_PARENT_SHA:
+                continue
+            if (candidate.get("body", "") or "").count(CONTROLLER_MARKER) != 1:
+                continue
+            candidate_time = self._schema_recovery_review_time(candidate)
+            if candidate_time is None:
+                raise GateError(
+                    EXIT_POLICY,
+                    "RED_U1R18_R13_ACCEPTANCE2_FIX1_GATE1_CHRONOLOGY_UNPROVABLE",
+                    "A marker-bearing historical review has no provable timestamp")
+            if candidate_time < boundary:
+                applicable.append((candidate_time, candidate))
+        if not applicable or max(applicable, key=lambda item: item[0])[1].get("id") != review.get("id"):
+            self._schema_recovery_error(
+                "controller_schema_recovery_malformed_review_not_latest",
+                "Malformed review was not the latest applicable marker-bearing review")
+
+    def _validate_controller_schema_recovery_authorization(self, recovery):
+        """Validate the one authorized gate-only child of the frozen source fix."""
+        comment, auth = self._validate_schema_recovery_comment(recovery)
+        self._validate_schema_recovery_scope(recovery, auth)
+        self._validate_schema_recovery_schema_identity(recovery)
+
+        if recovery.get("repository") != self.repo or recovery.get("pull_request") != self.pr_number:
+            self._schema_recovery_error(
+                "controller_schema_recovery_auth_policy_mismatch",
+                "Schema recovery authorization repository/PR mismatch")
+        if recovery.get("parent_sha") != SCHEMA_RECOVERY_PARENT_SHA:
+            self._schema_recovery_error(
+                "controller_schema_recovery_wrong_parent",
+                "Schema recovery parent SHA mismatch")
+        if recovery.get("single_direct_child_only") is not True:
+            self._schema_recovery_error(
+                "controller_schema_recovery_second_child",
+                "Schema recovery single_direct_child_only != true")
+
+        head_message = (self.commit_head.get("commit", {}) or {}).get("message", "") or ""
+        head_subject = head_message.split("\n")[0].strip() if head_message else ""
+        if head_subject != recovery.get("required_commit_subject"):
+            self._schema_recovery_error(
+                "controller_schema_recovery_wrong_subject",
+                "Schema recovery bridge subject mismatch")
+        trailers = re.findall(r"(?:^|\n)Workstream:\s*([^\s]+)", head_message)
+        if trailers != [recovery.get("required_workstream")]:
+            self._schema_recovery_error(
+                "controller_schema_recovery_wrong_workstream",
+                "Schema recovery bridge Workstream trailer mismatch")
+        changed = self._get_changed_files()
+        if not changed:
+            raise GateError(EXIT_INFRA, "controller_schema_recovery_no_changed_files",
+                            "Schema recovery bridge changed no files")
+        bridge_scope = self._schema_recovery_bridge_scope
+        for filepath in changed:
+            if not self._schema_recovery_path_in_scope(filepath, bridge_scope, safe=True):
+                self._schema_recovery_error(
+                    "controller_schema_recovery_forbidden_path",
+                    "Schema recovery bridge changed a forbidden path: " + filepath)
+
+        malformed_review = self._validate_schema_recovery_malformed_review(recovery)
+        review_run, _ = self._validate_schema_recovery_review_run(recovery)
+        self._validate_schema_recovery_source_identity(recovery)
+        source_core_run = self.client.get_workflow_run_by_id(
+            recovery.get("source_fix_core_ci_run_id"))
+        self._validate_schema_recovery_core_ci(recovery)
+        failed_advance_run = self._validate_schema_recovery_failed_advance(recovery)
+        self._validate_schema_recovery_chronology(
+            recovery, comment, malformed_review, review_run,
+            source_core_run, failed_advance_run)
+
     # === Normal parent review validation ===
 
     def _validate_normal_parent_review(self):
@@ -3799,7 +4568,7 @@ class Gate:
                                        "submitted_at": submitted_at_str})
                 continue
 
-            if not validate_document(json_data, CONTROLLER_SCHEMA_PATH, CONTROLLER_SCHEMA_PATH):
+            if not self._controller_review_schema_valid(json_data):
                 marker_reviews.append({"review": r, "valid": False,
                                        "reason": "schema_invalid",
                                        "submitted_at": submitted_at_str})
@@ -3985,6 +4754,19 @@ class Gate:
             errors.append("controller_submission_run_id_invalid")
 
         return errors
+
+    def _controller_review_schema_valid(self, data):
+        """Single canonical schema decision for controller-review JSON.
+
+        Both normal-parent Advance selection and phase=review selection must
+        enter semantic checks only after this exact path has accepted the
+        document against the repository's canonical controller-review schema.
+        """
+        return validate_document(
+            data,
+            CONTROLLER_SCHEMA_PATH,
+            CONTROLLER_SCHEMA_PATH,
+        )
 
     def _check_review_before_child(self, review):
         submitted_at_str = review.get("submitted_at")
@@ -4489,6 +5271,12 @@ class Gate:
                 raise GateError(EXIT_POLICY, "controller_review_missing",
                                 "Controller review has marker but no valid JSON")
 
+            if not self._controller_review_schema_valid(json_data):
+                controller_reviews.append({"review": r, "data": json_data,
+                                           "valid": False, "reason": "schema_invalid",
+                                           "submitted_at": r.get("submitted_at")})
+                continue
+
             if json_data.get("kind") != "controller_review":
                 raise GateError(EXIT_POLICY, "controller_review_missing",
                                 "Controller review kind mismatch")
@@ -4580,6 +5368,7 @@ class Gate:
                 "before_report": "review_before_report",
                 "quarantined": "quarantined_self_review_rejected",
                 "after_child": "parent_review_after_child",
+                "schema_invalid": "controller_review_schema_invalid",
             }
             guard = REASON_MAP.get(reason, reason)
             raise GateError(EXIT_POLICY, guard,

@@ -1,0 +1,4 @@
+[
+  "Sources/MacSteam/App/AppInstanceGuard.swift",
+  "Tests/MacSteamTests/AppInstanceGuardFingerprintTests.swift"
+]

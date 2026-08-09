@@ -1,0 +1,9 @@
+{
+  "sha": "ef38db6c0614becbee12097dc05d08ee29a9fe48",
+  "parents": [{"sha": "6b8cb7a583fd4991929a6ced70e98faf991defa5"}],
+  "commit": {
+    "message": "fix: make AppInstanceGuard fingerprint memory-safe (U1R18-R13-ACCEPTANCE2-FIX1)\n\nWorkstream: U1R18-R13-ACCEPTANCE2-FIX1",
+    "committer": {"date": "2026-08-09T14:52:34Z"},
+    "author": {"date": "2026-08-09T14:52:34Z"}
+  }
+}

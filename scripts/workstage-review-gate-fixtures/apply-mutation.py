@@ -501,6 +501,339 @@ def get_controller_review_body(commit_id, classification="GREEN_U1R18_R6_CONTROL
     return CONTROLLER_MARKER + "\n```json\n" + json.dumps(json_body, indent=2) + "\n```\n"
 
 
+# === U1R18-R13-ACCEPTANCE2-FIX1-GATE1 schema parity/recovery fixtures ===
+SCHEMA_RECOVERY_SOURCE_SHA = "ef38db6c0614becbee12097dc05d08ee29a9fe48"
+SCHEMA_RECOVERY_SOURCE_COMMIT_FILE = "commit_ef38db6c0614becbee12097dc05d08ee29a9fe48.json"
+SCHEMA_RECOVERY_SOURCE_CORE_RUN = 31319822686
+SCHEMA_RECOVERY_REVIEW_RUN = 31317913446
+SCHEMA_RECOVERY_FAILED_RUN = 31319822696
+SCHEMA_RECOVERY_FAILED_JOB = 93260875931
+SCHEMA_RECOVERY_REVIEW_JOB = 93256071223
+SCHEMA_RECOVERY_REVIEW_ID = 4891552433
+SCHEMA_RECOVERY_RUN_QUARANTINE = 31317913446
+SCHEMA_RECOVERY_AUTH_COMMENT_ID = 5232263220
+SCHEMA_RECOVERY_AUTH_MARKER = "<!-- macsteam-controller-schema-recovery-authorization:v1 -->"
+
+
+def _mutate_controller_review_json(d, transform):
+    reviews = load_json(d, "reviews.json")
+    # Review-phase fixtures contain both the historical parent review and the
+    # current-head review.  Prefer the latter so schema-parity mutations reach
+    # the phase under test; Advance fixtures have no current-head review and
+    # therefore retain the existing parent-review behavior.
+    pr_head = get_pr_head(d)
+    candidates = sorted(
+        reviews,
+        key=lambda review: 0
+        if isinstance(review, dict) and review.get("commit_id") == pr_head
+        else 1,
+    )
+    for review in candidates:
+        body = review.get("body", "") if isinstance(review, dict) else ""
+        match = re.search(r"```json\s*\n(.*?)\n```", body, re.DOTALL)
+        if match:
+            data = json.loads(match.group(1))
+            review["body"] = CONTROLLER_MARKER + "\n```json\n" + \
+                json.dumps(transform(data), indent=2) + "\n```\n"
+            save_json(d, "reviews.json", reviews)
+            return
+    raise ValueError("controller review JSON missing")
+
+
+def _schema_add_extra(data):
+    data["next_workstream_admitted"] = False
+    return data
+
+
+def _schema_add_unknown(data):
+    data["arbitrary_unknown_property"] = False
+    return data
+
+
+def m_schema_parity_extra_property(d):
+    _mutate_controller_review_json(d, _schema_add_extra)
+
+
+def m_schema_parity_arbitrary_unknown_property(d):
+    _mutate_controller_review_json(d, _schema_add_unknown)
+
+
+def m_schema_parity_missing_required_property(d):
+    def transform(data):
+        data.pop("submission_run_id", None)
+        return data
+    _mutate_controller_review_json(d, transform)
+
+
+def m_schema_parity_wrong_property_type(d):
+    def transform(data):
+        data["review_complete"] = "true"
+        return data
+    _mutate_controller_review_json(d, transform)
+
+
+def m_schema_parity_bad_head_sha_pattern(d):
+    def transform(data):
+        data["head_sha"] = "not-a-sha"
+        return data
+    _mutate_controller_review_json(d, transform)
+
+
+def _schema_recovery_auth(d):
+    comment = load_json(d, "comment.json")
+    match = re.search(r"```json\s*\n(.*?)\n```", comment.get("body", ""), re.DOTALL)
+    if not match:
+        raise ValueError("schema recovery authorization JSON missing")
+    return comment, json.loads(match.group(1))
+
+
+def _save_schema_recovery_auth(d, comment, auth):
+    comment["body"] = SCHEMA_RECOVERY_AUTH_MARKER + "\n```json\n" + \
+        json.dumps(auth, indent=2) + "\n```\n"
+    save_json(d, "comment.json", comment)
+
+
+def _mutate_schema_recovery_auth_field(d, field, value):
+    comment, auth = _schema_recovery_auth(d)
+    auth[field] = value
+    _save_schema_recovery_auth(d, comment, auth)
+
+
+def _schema_recovery_policy(d):
+    policy = load_policy()
+    policy["quarantined_review_ids"] = list(policy.get("quarantined_review_ids", []))
+    policy["quarantined_review_run_ids"] = list(policy.get("quarantined_review_run_ids", []))
+    policy["controller_schema_recovery_authorization"] = dict(
+        policy.get("controller_schema_recovery_authorization", {}))
+    return policy
+
+
+def m_schema_recovery_auth_wrong_comment_id(d):
+    policy = _schema_recovery_policy(d)
+    policy["controller_schema_recovery_authorization"]["authorization_comment_id"] = 1
+    save_policy(d, policy)
+
+
+def m_schema_recovery_auth_edited(d):
+    comment, _ = _schema_recovery_auth(d)
+    comment["updated_at"] = "2026-08-09T15:23:37Z"
+    save_json(d, "comment.json", comment)
+
+
+def m_schema_recovery_auth_marker_duplicated(d):
+    comment, _ = _schema_recovery_auth(d)
+    comment["body"] = SCHEMA_RECOVERY_AUTH_MARKER + "\n" + comment["body"]
+    save_json(d, "comment.json", comment)
+
+
+def m_schema_recovery_auth_json_duplicated(d):
+    comment, _ = _schema_recovery_auth(d)
+    match = re.search(r"```json\s*\n(.*?)\n```", comment["body"], re.DOTALL)
+    block = "```json\n" + match.group(1) + "\n```"
+    comment["body"] += "\n" + block + "\n"
+    save_json(d, "comment.json", comment)
+
+
+def m_schema_recovery_auth_malformed(d):
+    comment, _ = _schema_recovery_auth(d)
+    comment["body"] = SCHEMA_RECOVERY_AUTH_MARKER + "\n```json\n{bad json\n```\n"
+    save_json(d, "comment.json", comment)
+
+
+def m_schema_recovery_auth_policy_mismatch(d):
+    _mutate_schema_recovery_auth_field(d, "source_fix_sha", WRONG_SHA)
+
+
+def _schema_recovery_source_commit(d):
+    return load_json(d, SCHEMA_RECOVERY_SOURCE_COMMIT_FILE)
+
+
+def _save_schema_recovery_source_commit(d, source):
+    save_json(d, SCHEMA_RECOVERY_SOURCE_COMMIT_FILE, source)
+
+
+def m_schema_recovery_source_wrong_sha(d):
+    source = _schema_recovery_source_commit(d)
+    source["sha"] = WRONG_SHA
+    _save_schema_recovery_source_commit(d, source)
+
+
+def m_schema_recovery_source_wrong_parent(d):
+    source = _schema_recovery_source_commit(d)
+    source["parents"] = [{"sha": WRONG_SHA}]
+    _save_schema_recovery_source_commit(d, source)
+
+
+def m_schema_recovery_source_wrong_subject(d):
+    source = _schema_recovery_source_commit(d)
+    source["commit"]["message"] = "ci: wrong source subject\n\nWorkstream: U1R18-R13-ACCEPTANCE2-FIX1"
+    _save_schema_recovery_source_commit(d, source)
+
+
+def m_schema_recovery_source_wrong_workstream(d):
+    source = _schema_recovery_source_commit(d)
+    source["commit"]["message"] = "fix: make AppInstanceGuard fingerprint memory-safe (U1R18-R13-ACCEPTANCE2-FIX1)\n\nWorkstream: U1R18-WRONG"
+    _save_schema_recovery_source_commit(d, source)
+
+
+def m_schema_recovery_source_forbidden_path(d):
+    files = load_json(d, SCHEMA_RECOVERY_SOURCE_COMMIT_FILE.replace("commit_", "files_").replace(".json", ".json"))
+    files.append("Sources/MacSteam/Forbidden.swift")
+    save_json(d, "files_ef38db6c0614becbee12097dc05d08ee29a9fe48.json", files)
+
+
+def _mutate_schema_run(d, run_id, **changes):
+    runs = load_json(d, "runs.json")
+    for run in runs["workflow_runs"]:
+        if run.get("id") == run_id:
+            run.update(changes)
+    save_json(d, "runs.json", runs)
+
+
+def m_schema_recovery_core_wrong_head(d):
+    _mutate_schema_run(d, SCHEMA_RECOVERY_SOURCE_CORE_RUN, head_sha=WRONG_SHA)
+
+
+def m_schema_recovery_core_missing_job(d):
+    jobs = load_json(d, "jobs.json")
+    jobs["jobs"] = [job for job in jobs["jobs"]
+                    if not (job.get("run_id") == SCHEMA_RECOVERY_SOURCE_CORE_RUN
+                            and job.get("name") == "License Validation")]
+    save_json(d, "jobs.json", jobs)
+
+
+def m_schema_recovery_core_non_success(d):
+    jobs = load_json(d, "jobs.json")
+    for job in jobs["jobs"]:
+        if job.get("run_id") == SCHEMA_RECOVERY_SOURCE_CORE_RUN and job.get("name") == "Public Audit":
+            job["conclusion"] = "failure"
+    save_json(d, "jobs.json", jobs)
+
+
+def m_schema_recovery_failed_wrong_run(d):
+    policy = _schema_recovery_policy(d)
+    policy["controller_schema_recovery_authorization"]["failed_advance_run_id"] = 1
+    save_policy(d, policy)
+
+
+def m_schema_recovery_failed_wrong_head(d):
+    _mutate_schema_run(d, SCHEMA_RECOVERY_FAILED_RUN, head_sha=WRONG_SHA)
+
+
+def _mutate_schema_failed_log(d, field, value):
+    logs = load_json(d, "job-logs.json")
+    result = json.loads(logs[str(SCHEMA_RECOVERY_FAILED_JOB)].split(" ", 1)[1])
+    result[field] = value
+    logs[str(SCHEMA_RECOVERY_FAILED_JOB)] = "2026-08-09T14:57:51.4152660Z " + json.dumps(result)
+    save_json(d, "job-logs.json", logs)
+
+
+def m_schema_recovery_failed_wrong_guard(d):
+    _mutate_schema_failed_log(d, "guard_label", "wrong_guard")
+
+
+def _schema_recovery_review(d):
+    reviews = load_json(d, "reviews.json")
+    for review in reviews:
+        if review.get("id") == SCHEMA_RECOVERY_REVIEW_ID:
+            return reviews, review
+    raise ValueError("schema recovery review missing")
+
+
+def m_schema_recovery_review_wrong_id(d):
+    reviews, review = _schema_recovery_review(d)
+    review["id"] = 1
+    save_json(d, "reviews.json", reviews)
+
+
+def m_schema_recovery_review_wrong_head(d):
+    reviews, review = _schema_recovery_review(d)
+    review["commit_id"] = WRONG_SHA
+    save_json(d, "reviews.json", reviews)
+
+
+def m_schema_recovery_review_unexpectedly_valid(d):
+    reviews, review = _schema_recovery_review(d)
+    body = review["body"]
+    body = body.replace(",\n  \"next_workstream_admitted\": false", "")
+    review["body"] = body
+    save_json(d, "reviews.json", reviews)
+
+
+def m_schema_recovery_review_extra_beyond_authorized(d):
+    def transform(data):
+        data["arbitrary_unknown_property"] = False
+        return data
+    _mutate_controller_review_json(d, transform)
+
+
+def m_schema_recovery_review_run_wrong_run(d):
+    policy = _schema_recovery_policy(d)
+    policy["controller_schema_recovery_authorization"]["false_green_review_gate_run_id"] = 1
+    save_policy(d, policy)
+
+
+def m_schema_recovery_review_run_wrong_head(d):
+    _mutate_schema_run(d, SCHEMA_RECOVERY_REVIEW_RUN, head_sha=WRONG_SHA)
+
+
+def m_schema_recovery_review_run_not_success(d):
+    _mutate_schema_run(d, SCHEMA_RECOVERY_REVIEW_RUN, conclusion="failure")
+
+
+def _mutate_schema_review_log(d, field, value):
+    logs = load_json(d, "job-logs.json")
+    result = json.loads(logs[str(SCHEMA_RECOVERY_REVIEW_JOB)].split(" ", 1)[1])
+    result[field] = value
+    logs[str(SCHEMA_RECOVERY_REVIEW_JOB)] = "2026-08-09T14:14:31.6188080Z " + json.dumps(result)
+    save_json(d, "job-logs.json", logs)
+
+
+def m_schema_recovery_review_final_state_mismatch(d):
+    _mutate_schema_review_log(d, "state", "REJECTED")
+
+
+def m_schema_recovery_review_controller_valid_false(d):
+    _mutate_schema_review_log(d, "controller_review_valid", False)
+
+
+def m_schema_recovery_review_quarantine_missing(d):
+    policy = _schema_recovery_policy(d)
+    policy["quarantined_review_ids"] = [rid for rid in policy["quarantined_review_ids"]
+                                         if rid != SCHEMA_RECOVERY_REVIEW_ID]
+    save_policy(d, policy)
+
+
+def m_schema_recovery_run_quarantine_missing(d):
+    policy = _schema_recovery_policy(d)
+    policy["quarantined_review_run_ids"] = [rid for rid in policy["quarantined_review_run_ids"]
+                                             if rid != SCHEMA_RECOVERY_RUN_QUARANTINE]
+    save_policy(d, policy)
+
+
+def m_schema_recovery_second_child(d):
+    policy = _schema_recovery_policy(d)
+    policy["controller_schema_recovery_authorization"]["single_direct_child_only"] = False
+    save_policy(d, policy)
+    comment = load_json(d, "comment.json")
+    comment["body"] = comment["body"].replace(
+        '"single_direct_child_only": true',
+        '"single_direct_child_only": false')
+    save_json(d, "comment.json", comment)
+
+
+def m_schema_recovery_bridge_forbidden_path(d):
+    files = load_json(d, "files.json")
+    files.append("Sources/MacSteam/Forbidden.swift")
+    save_json(d, "files.json", files)
+
+
+def m_schema_recovery_auth_after_bridge(d):
+    head = load_json(d, "commit_HEAD.json")
+    head["commit"]["committer"]["date"] = "2026-08-09T15:20:00Z"
+    save_json(d, "commit_HEAD.json", head)
+
+
 def get_worker_report_body(head_sha, parent_sha, **overrides):
     report = {
         "schema_version": 1,
@@ -4460,6 +4793,44 @@ MUTATIONS = {
     "workflow_yaml_unparseable": m_workflow_yaml_unparseable,
     "workflow_inputs_block_missing": m_workflow_inputs_block_missing,
     "workflow_jobs_block_missing": m_workflow_jobs_block_missing,
+
+# === U1R18-R13-ACCEPTANCE2-FIX1-GATE1: schema parity/recovery ===
+    "schema_parity_extra_property": m_schema_parity_extra_property,
+    "schema_parity_arbitrary_unknown_property": m_schema_parity_arbitrary_unknown_property,
+    "schema_parity_missing_required_property": m_schema_parity_missing_required_property,
+    "schema_parity_wrong_property_type": m_schema_parity_wrong_property_type,
+    "schema_parity_bad_head_sha_pattern": m_schema_parity_bad_head_sha_pattern,
+    "schema_recovery_auth_wrong_comment_id": m_schema_recovery_auth_wrong_comment_id,
+    "schema_recovery_auth_edited": m_schema_recovery_auth_edited,
+    "schema_recovery_auth_marker_duplicated": m_schema_recovery_auth_marker_duplicated,
+    "schema_recovery_auth_json_duplicated": m_schema_recovery_auth_json_duplicated,
+    "schema_recovery_auth_malformed": m_schema_recovery_auth_malformed,
+    "schema_recovery_auth_policy_mismatch": m_schema_recovery_auth_policy_mismatch,
+    "schema_recovery_source_wrong_sha": m_schema_recovery_source_wrong_sha,
+    "schema_recovery_source_wrong_parent": m_schema_recovery_source_wrong_parent,
+    "schema_recovery_source_wrong_subject": m_schema_recovery_source_wrong_subject,
+    "schema_recovery_source_wrong_workstream": m_schema_recovery_source_wrong_workstream,
+    "schema_recovery_source_forbidden_path": m_schema_recovery_source_forbidden_path,
+    "schema_recovery_core_wrong_head": m_schema_recovery_core_wrong_head,
+    "schema_recovery_core_missing_job": m_schema_recovery_core_missing_job,
+    "schema_recovery_core_non_success": m_schema_recovery_core_non_success,
+    "schema_recovery_failed_wrong_run": m_schema_recovery_failed_wrong_run,
+    "schema_recovery_failed_wrong_head": m_schema_recovery_failed_wrong_head,
+    "schema_recovery_failed_wrong_guard": m_schema_recovery_failed_wrong_guard,
+    "schema_recovery_review_wrong_id": m_schema_recovery_review_wrong_id,
+    "schema_recovery_review_wrong_head": m_schema_recovery_review_wrong_head,
+    "schema_recovery_review_unexpectedly_valid": m_schema_recovery_review_unexpectedly_valid,
+    "schema_recovery_review_extra_beyond_authorized": m_schema_recovery_review_extra_beyond_authorized,
+    "schema_recovery_review_run_wrong_run": m_schema_recovery_review_run_wrong_run,
+    "schema_recovery_review_run_wrong_head": m_schema_recovery_review_run_wrong_head,
+    "schema_recovery_review_run_not_success": m_schema_recovery_review_run_not_success,
+    "schema_recovery_review_final_state_mismatch": m_schema_recovery_review_final_state_mismatch,
+    "schema_recovery_review_controller_valid_false": m_schema_recovery_review_controller_valid_false,
+    "schema_recovery_review_quarantine_missing": m_schema_recovery_review_quarantine_missing,
+    "schema_recovery_run_quarantine_missing": m_schema_recovery_run_quarantine_missing,
+    "schema_recovery_second_child": m_schema_recovery_second_child,
+    "schema_recovery_bridge_forbidden_path": m_schema_recovery_bridge_forbidden_path,
+    "schema_recovery_auth_after_bridge": m_schema_recovery_auth_after_bridge,
 
 # === GATE1-RECOVERY1: protocol recovery authorization lane ===
     "protocol_recovery_corrective_review_missing": m_protocol_recovery_corrective_review_missing,
