@@ -76,6 +76,16 @@ CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
 SOURCE_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-authorization:v1 -->"
 GATE_FIX_MARKER = "<!-- macsteam-gate-fix-authorization:v1 -->"
+COMMENTED_BRIDGE_MARKER = "<!-- macsteam-commented-parent-source-fix-authorization:v1 -->"
+
+COMMENTED_BRIDGE_SOURCE_PARENT = "69e3d54297a913775eb920cdbb71f369e3c3b1b4"
+COMMENTED_BRIDGE_SOURCE_FIX = "917b64ad418258127e7632a5063587af67791d36"
+COMMENTED_BRIDGE_HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+COMMENTED_BRIDGE_PARENT_REVIEW_ID = 4891029116
+COMMENTED_BRIDGE_SOURCE_REVIEW_ID = 4891206403
+COMMENTED_BRIDGE_CORE_CI_RUN = 31309627509
+COMMENTED_BRIDGE_FAILED_ADVANCE_RUN = 31309627501
+COMMENTED_BRIDGE_FAILED_JOB_ID = 93235295420
 
 # === Red parent source fix bridge constants (GATE1) ===
 BRIDGE_PARENT = "a2d26b2e7ccd17c5c5ea153bf346572fa886a4be"   # source fix (parent of bridge)
@@ -207,6 +217,247 @@ def load_policy():
 def get_pr_head(d):
     pr = load_json(d, "pr.json")
     return pr["head"]["sha"]
+
+
+def _commented_bridge_auth(d):
+    comment = load_json(d, "comment.json")
+    match = re.search(r"```json\s*\n(.*?)\n```", comment.get("body", ""), re.DOTALL)
+    if not match:
+        raise ValueError("commented bridge authorization JSON missing")
+    return comment, json.loads(match.group(1))
+
+
+def _save_commented_bridge_auth(d, comment, auth):
+    comment["body"] = COMMENTED_BRIDGE_MARKER + "\n```json\n" + \
+        json.dumps(auth, indent=2) + "\n```\n"
+    save_json(d, "comment.json", comment)
+
+
+def _mutate_commented_auth_field(d, field, value):
+    comment, auth = _commented_bridge_auth(d)
+    auth[field] = value
+    _save_commented_bridge_auth(d, comment, auth)
+
+
+def m_authorization_wrong_source_fix_sha(d):
+    _mutate_commented_auth_field(d, "source_fix_sha", WRONG_SHA)
+
+
+def m_authorization_wrong_source_parent(d):
+    _mutate_commented_auth_field(d, "source_fix_parent_sha", WRONG_SHA)
+
+
+def m_authorization_wrong_source_workstream(d):
+    _mutate_commented_auth_field(d, "source_fix_workstream", "U1R18-R13-WRONG")
+
+
+def m_authorization_wrong_source_subject(d):
+    _mutate_commented_auth_field(d, "source_fix_commit_subject", "test: wrong source subject")
+
+
+def m_authorization_wrong_parent_review_id(d):
+    _mutate_commented_auth_field(d, "parent_technical_review_id", 1)
+
+
+def m_authorization_wrong_parent_classification(d):
+    _mutate_commented_auth_field(d, "parent_technical_classification", "RED_WRONG")
+
+
+def m_authorization_wrong_source_review_id(d):
+    _mutate_commented_auth_field(d, "source_fix_technical_review_id", 1)
+
+
+def m_authorization_wrong_source_classification(d):
+    _mutate_commented_auth_field(d, "source_fix_technical_classification", "GREEN_WRONG")
+
+
+def m_authorization_wrong_core_ci_run(d):
+    _mutate_commented_auth_field(d, "source_fix_core_ci_run_id", 1)
+
+
+def m_authorization_wrong_failed_advance_run(d):
+    _mutate_commented_auth_field(d, "failed_advance_run_id", 1)
+
+
+def m_authorization_wrong_failed_guard(d):
+    _mutate_commented_auth_field(d, "failed_advance_guard", "wrong_guard")
+
+
+def m_authorization_unsafe_ready(d):
+    _mutate_commented_auth_field(d, "ready_authorized", True)
+
+
+def m_authorization_unsafe_merge(d):
+    _mutate_commented_auth_field(d, "merge_authorized", True)
+
+
+def m_authorization_unsafe_release(d):
+    _mutate_commented_auth_field(d, "release_authorized", True)
+
+
+def m_authorization_next_product_true(d):
+    _mutate_commented_auth_field(d, "next_product_workstream_authorized", True)
+
+
+def m_authorization_edited(d):
+    comment, _ = _commented_bridge_auth(d)
+    comment["updated_at"] = "2026-08-09T12:00:00Z"
+    save_json(d, "comment.json", comment)
+
+
+def m_authorization_reply(d):
+    comment, _ = _commented_bridge_auth(d)
+    comment["in_reply_to_id"] = 123
+    save_json(d, "comment.json", comment)
+
+
+def m_authorization_inline(d):
+    comment, _ = _commented_bridge_auth(d)
+    comment["path"] = "scripts/workstage-review-gate.py"
+    comment["position"] = 1
+    save_json(d, "comment.json", comment)
+
+
+def m_authorization_after_bridge(d):
+    comment, _ = _commented_bridge_auth(d)
+    comment["created_at"] = "2026-08-09T12:00:00Z"
+    comment["updated_at"] = "2026-08-09T12:00:00Z"
+    save_json(d, "comment.json", comment)
+
+
+def _commented_bridge_review(d, review_id):
+    reviews = load_json(d, "reviews.json")
+    for review in reviews:
+        if review.get("id") == review_id:
+            return reviews, review
+    raise ValueError("review not found")
+
+
+def m_source_fix_wrong_parent(d):
+    source = load_json(d, "commit_PARENT.json")
+    source["parents"] = [{"sha": WRONG_SHA}]
+    save_json(d, "commit_PARENT.json", source)
+
+
+def m_source_fix_wrong_subject(d):
+    source = load_json(d, "commit_PARENT.json")
+    source["commit"]["message"] = "test: wrong source subject\n\nWorkstream: U1R18-R13-FIX1-FIX6"
+    save_json(d, "commit_PARENT.json", source)
+
+
+def m_source_fix_wrong_workstream(d):
+    source = load_json(d, "commit_PARENT.json")
+    source["commit"]["message"] = "test: prove exact Steam prelaunch orchestration (U1R18-R13-FIX1-FIX6)\n\nWorkstream: U1R18-WRONG"
+    save_json(d, "commit_PARENT.json", source)
+
+
+def m_source_fix_forbidden_path(d):
+    files = load_json(d, "source-fix.json")
+    files.append("Sources/MacSteam/Forbidden.swift")
+    save_json(d, "source-fix.json", files)
+
+
+def m_source_review_wrong_commit(d):
+    reviews, review = _commented_bridge_review(d, COMMENTED_BRIDGE_SOURCE_REVIEW_ID)
+    review["commit_id"] = WRONG_SHA
+    save_json(d, "reviews.json", reviews)
+
+
+def m_source_review_not_commented(d):
+    reviews, review = _commented_bridge_review(d, COMMENTED_BRIDGE_SOURCE_REVIEW_ID)
+    review["state"] = "APPROVED"
+    save_json(d, "reviews.json", reviews)
+
+
+def m_source_review_contains_controller_marker(d):
+    reviews, review = _commented_bridge_review(d, COMMENTED_BRIDGE_SOURCE_REVIEW_ID)
+    review["body"] = CONTROLLER_MARKER + "\n" + review.get("body", "")
+    save_json(d, "reviews.json", reviews)
+
+
+def m_parent_review_wrong_commit(d):
+    reviews, review = _commented_bridge_review(d, COMMENTED_BRIDGE_PARENT_REVIEW_ID)
+    review["commit_id"] = WRONG_SHA
+    save_json(d, "reviews.json", reviews)
+
+
+def m_parent_review_not_commented(d):
+    reviews, review = _commented_bridge_review(d, COMMENTED_BRIDGE_PARENT_REVIEW_ID)
+    review["state"] = "APPROVED"
+    save_json(d, "reviews.json", reviews)
+
+
+def m_parent_review_contains_controller_marker(d):
+    reviews, review = _commented_bridge_review(d, COMMENTED_BRIDGE_PARENT_REVIEW_ID)
+    review["body"] = CONTROLLER_MARKER + "\n" + review.get("body", "")
+    save_json(d, "reviews.json", reviews)
+
+
+def m_core_ci_wrong_head(d):
+    runs = load_json(d, "runs.json")
+    for run in runs["workflow_runs"]:
+        if run.get("id") == COMMENTED_BRIDGE_CORE_CI_RUN:
+            run["head_sha"] = WRONG_SHA
+    save_json(d, "runs.json", runs)
+
+
+def m_core_ci_missing_job(d):
+    jobs = load_json(d, "jobs.json")
+    jobs["jobs"] = [job for job in jobs["jobs"]
+                    if not (job.get("run_id") == COMMENTED_BRIDGE_CORE_CI_RUN
+                            and job.get("name") == "License Validation")]
+    jobs["total_count"] = len(jobs["jobs"])
+    save_json(d, "jobs.json", jobs)
+
+
+def m_core_ci_failed_job(d):
+    jobs = load_json(d, "jobs.json")
+    for job in jobs["jobs"]:
+        if job.get("run_id") == COMMENTED_BRIDGE_CORE_CI_RUN and job.get("name") == "Public Audit":
+            job["conclusion"] = "failure"
+    save_json(d, "jobs.json", jobs)
+
+
+def m_failed_advance_wrong_head(d):
+    runs = load_json(d, "runs.json")
+    for run in runs["workflow_runs"]:
+        if run.get("id") == COMMENTED_BRIDGE_FAILED_ADVANCE_RUN:
+            run["head_sha"] = WRONG_SHA
+    save_json(d, "runs.json", runs)
+
+
+def _mutate_failed_log(d, field, value):
+    logs = load_json(d, "job-logs.json")
+    result = json.loads(logs[str(COMMENTED_BRIDGE_FAILED_JOB_ID)].split(" ", 1)[1])
+    result[field] = value
+    logs[str(COMMENTED_BRIDGE_FAILED_JOB_ID)] = "2026-08-09T10:58:27.6474380Z " + json.dumps(result)
+    save_json(d, "job-logs.json", logs)
+
+
+def m_failed_advance_wrong_parent(d):
+    _mutate_failed_log(d, "parent_sha", WRONG_SHA)
+
+
+def m_failed_advance_wrong_guard(d):
+    _mutate_failed_log(d, "guard_label", "wrong_guard")
+
+
+def m_bridge_wrong_subject(d):
+    head = load_json(d, "commit_HEAD.json")
+    head["commit"]["message"] = "ci: wrong bridge subject\n\nWorkstream: U1R18-R13-FIX1-FIX6-GATE1"
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_bridge_wrong_workstream(d):
+    head = load_json(d, "commit_HEAD.json")
+    head["commit"]["message"] = "ci: admit FIX6 commented-parent source bridge (U1R18-R13-FIX1-FIX6-GATE1)\n\nWorkstream: U1R18-WRONG"
+    save_json(d, "commit_HEAD.json", head)
+
+
+def m_bridge_forbidden_path(d):
+    files = load_json(d, "files.json")
+    files.append("Sources/MacSteam/Forbidden.swift")
+    save_json(d, "files.json", files)
 
 
 def is_submission_run(run):
@@ -3853,6 +4104,44 @@ def m_protocol_recovery_fix3_chronology_wrong(d):
 # === Mutation registry ===
 
 MUTATIONS = {
+    "authorization_wrong_source_fix_sha": m_authorization_wrong_source_fix_sha,
+    "authorization_wrong_source_parent": m_authorization_wrong_source_parent,
+    "authorization_wrong_source_workstream": m_authorization_wrong_source_workstream,
+    "authorization_wrong_source_subject": m_authorization_wrong_source_subject,
+    "authorization_wrong_parent_review_id": m_authorization_wrong_parent_review_id,
+    "authorization_wrong_parent_classification": m_authorization_wrong_parent_classification,
+    "authorization_wrong_source_review_id": m_authorization_wrong_source_review_id,
+    "authorization_wrong_source_classification": m_authorization_wrong_source_classification,
+    "authorization_wrong_core_ci_run": m_authorization_wrong_core_ci_run,
+    "authorization_wrong_failed_advance_run": m_authorization_wrong_failed_advance_run,
+    "authorization_wrong_failed_guard": m_authorization_wrong_failed_guard,
+    "authorization_unsafe_ready": m_authorization_unsafe_ready,
+    "authorization_unsafe_merge": m_authorization_unsafe_merge,
+    "authorization_unsafe_release": m_authorization_unsafe_release,
+    "authorization_next_product_true": m_authorization_next_product_true,
+    "authorization_edited": m_authorization_edited,
+    "authorization_reply": m_authorization_reply,
+    "authorization_inline": m_authorization_inline,
+    "authorization_after_bridge": m_authorization_after_bridge,
+    "source_fix_wrong_parent": m_source_fix_wrong_parent,
+    "source_fix_wrong_subject": m_source_fix_wrong_subject,
+    "source_fix_wrong_workstream": m_source_fix_wrong_workstream,
+    "source_fix_forbidden_path": m_source_fix_forbidden_path,
+    "source_review_wrong_commit": m_source_review_wrong_commit,
+    "source_review_not_commented": m_source_review_not_commented,
+    "source_review_contains_controller_marker": m_source_review_contains_controller_marker,
+    "parent_review_wrong_commit": m_parent_review_wrong_commit,
+    "parent_review_not_commented": m_parent_review_not_commented,
+    "parent_review_contains_controller_marker": m_parent_review_contains_controller_marker,
+    "core_ci_wrong_head": m_core_ci_wrong_head,
+    "core_ci_missing_job": m_core_ci_missing_job,
+    "core_ci_failed_job": m_core_ci_failed_job,
+    "failed_advance_wrong_head": m_failed_advance_wrong_head,
+    "failed_advance_wrong_parent": m_failed_advance_wrong_parent,
+    "failed_advance_wrong_guard": m_failed_advance_wrong_guard,
+    "bridge_wrong_subject": m_bridge_wrong_subject,
+    "bridge_wrong_workstream": m_bridge_wrong_workstream,
+    "bridge_forbidden_path": m_bridge_forbidden_path,
     "quarantined_self_review_rejected": m_quarantined_self_review_rejected,
     "parent_review_missing": m_parent_review_missing,
     "parent_review_issue_comment_only": m_parent_review_issue_comment_only,

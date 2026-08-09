@@ -139,6 +139,68 @@ PARENT_SUB_COMPLETED = "2026-08-03T02:02:00Z"
 
 WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
 CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
+COMMENTED_BRIDGE_MARKER = "<!-- macsteam-commented-parent-source-fix-authorization:v1 -->"
+
+COMMENTED_BRIDGE_SOURCE_PARENT = "69e3d54297a913775eb920cdbb71f369e3c3b1b4"
+COMMENTED_BRIDGE_SOURCE_FIX = "917b64ad418258127e7632a5063587af67791d36"
+COMMENTED_BRIDGE_HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+COMMENTED_BRIDGE_AUTH_ID = 5231229451
+COMMENTED_BRIDGE_FAILED_JOB_ID = 93235295420
+COMMENTED_BRIDGE_PARENT_REVIEW_ID = 4891029116
+COMMENTED_BRIDGE_SOURCE_REVIEW_ID = 4891206403
+COMMENTED_BRIDGE_AUTH_TS = "2026-08-09T10:45:00Z"
+COMMENTED_BRIDGE_SOURCE_TS = "2026-08-09T10:00:00Z"
+COMMENTED_BRIDGE_PARENT_TS = "2026-08-09T09:30:00Z"
+COMMENTED_BRIDGE_CHILD_TS = "2026-08-09T11:00:00Z"
+COMMENTED_BRIDGE_CORE_CI_RUN = 31309627509
+COMMENTED_BRIDGE_FAILED_ADVANCE_RUN = 31309627501
+COMMENTED_BRIDGE_SOURCE_FILES = [
+    "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift",
+    "Tests/MacSteamTests/LaunchFastPathTests.swift",
+]
+COMMENTED_BRIDGE_FILES = [
+    ".github/workstage-review-gate-policy.json",
+    "scripts/workstage-review-gate.py",
+    "scripts/test-workstage-review-gate.sh",
+    "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+    "scripts/workstage-review-gate-fixtures/apply-source-mutation.py",
+]
+
+
+def commented_bridge_authorization_json():
+    return {
+        "schema_version": 1,
+        "kind": "commented_parent_source_fix_authorization",
+        "source_fix_sha": COMMENTED_BRIDGE_SOURCE_FIX,
+        "source_fix_parent_sha": COMMENTED_BRIDGE_SOURCE_PARENT,
+        "source_fix_workstream": "U1R18-R13-FIX1-FIX6",
+        "source_fix_commit_subject": "test: prove exact Steam prelaunch orchestration (U1R18-R13-FIX1-FIX6)",
+        "source_fix_core_ci_run_id": COMMENTED_BRIDGE_CORE_CI_RUN,
+        "source_fix_required_ci_jobs": 5,
+        "failed_advance_run_id": COMMENTED_BRIDGE_FAILED_ADVANCE_RUN,
+        "failed_advance_guard": "parent_review_commented_without_marker",
+        "parent_technical_review_id": COMMENTED_BRIDGE_PARENT_REVIEW_ID,
+        "parent_technical_classification": "RED_U1R18_R13_FIX1_FIX5_PRODUCTION_ORCHESTRATION_PROOF_STILL_BYPASSED",
+        "source_fix_technical_review_id": COMMENTED_BRIDGE_SOURCE_REVIEW_ID,
+        "source_fix_technical_classification": "GREEN_U1R18_R13_FIX1_FIX6_EXACT_PRELAUNCH_ORCHESTRATION_PROOF_CLOSED",
+        "bridge_workstream": "U1R18-R13-FIX1-FIX6-GATE1",
+        "bridge_commit_subject": "ci: admit FIX6 commented-parent source bridge (U1R18-R13-FIX1-FIX6-GATE1)",
+        "single_direct_child_only": True,
+        "source_fix_allowed_exact_paths": COMMENTED_BRIDGE_SOURCE_FILES,
+        "source_fix_allowed_path_prefixes": [],
+        "bridge_allowed_exact_paths": [
+            ".github/workstage-review-gate-policy.json",
+            "scripts/workstage-review-gate.py",
+            "scripts/test-workstage-review-gate.sh",
+            "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+            "scripts/workstage-review-gate-fixtures/apply-source-mutation.py",
+        ],
+        "bridge_allowed_path_prefixes": ["scripts/workstage-review-gate-fixtures/"],
+        "ready_authorized": False,
+        "merge_authorized": False,
+        "release_authorized": False,
+        "next_product_workstream_authorized": False,
+    }
 
 
 def write_fixture(d, filename, data):
@@ -375,6 +437,96 @@ def _ci_files(d, head=NORMAL_HEAD):
 
 
 # === Advance phase ===
+
+def create_advance_commented_parent_source_fix_bridge():
+    d = os.path.join(FIXTURE_DIR, "advance_commented_parent_source_fix_bridge")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    child_msg = (
+        "ci: admit FIX6 commented-parent source bridge "
+        "(U1R18-R13-FIX1-FIX6-GATE1)\n\n"
+        "Workstream: U1R18-R13-FIX1-FIX6-GATE1"
+    )
+    source_msg = (
+        "test: prove exact Steam prelaunch orchestration "
+        "(U1R18-R13-FIX1-FIX6)\n\n"
+        "Workstream: U1R18-R13-FIX1-FIX6"
+    )
+    parent_obj = commit_json(COMMENTED_BRIDGE_SOURCE_PARENT,
+                             HISTORICAL_PARENT, "historical FIX5\n")
+    parent_obj["commit"]["committer"]["date"] = "2026-08-09T09:00:00Z"
+    parent_obj["commit"]["author"]["date"] = "2026-08-09T09:00:00Z"
+    source_obj = commit_json(COMMENTED_BRIDGE_SOURCE_FIX,
+                             COMMENTED_BRIDGE_SOURCE_PARENT, source_msg)
+    source_obj["commit"]["committer"]["date"] = COMMENTED_BRIDGE_SOURCE_TS
+    source_obj["commit"]["author"]["date"] = COMMENTED_BRIDGE_SOURCE_TS
+    child_obj = commit_json(COMMENTED_BRIDGE_HEAD,
+                            COMMENTED_BRIDGE_SOURCE_FIX, child_msg)
+    child_obj["commit"]["committer"]["date"] = COMMENTED_BRIDGE_CHILD_TS
+    child_obj["commit"]["author"]["date"] = COMMENTED_BRIDGE_CHILD_TS
+    write_fixture(d, "pr.json", pr_json(COMMENTED_BRIDGE_HEAD))
+    write_fixture(d, "commit_HEAD.json", child_obj)
+    write_fixture(d, "commit_PARENT.json", source_obj)
+    write_fixture(d, f"commit_{COMMENTED_BRIDGE_SOURCE_PARENT}.json", parent_obj)
+    write_fixture(d, "files.json", COMMENTED_BRIDGE_FILES)
+    write_fixture(d, "source-fix.json", COMMENTED_BRIDGE_SOURCE_FILES)
+
+    auth = commented_bridge_authorization_json()
+    auth_comment = {
+        "id": COMMENTED_BRIDGE_AUTH_ID,
+        "user": {"login": "oxcandy-lgtm"},
+        "body": COMMENTED_BRIDGE_MARKER + "\n```json\n" + json.dumps(auth, indent=2) + "\n```\n",
+        "created_at": COMMENTED_BRIDGE_AUTH_TS,
+        "updated_at": COMMENTED_BRIDGE_AUTH_TS,
+        "path": None,
+        "position": None,
+        "in_reply_to_id": None,
+    }
+    write_fixture(d, "comment.json", auth_comment)
+    write_fixture(d, "comments.json", comments_json(auth_comment))
+    parent_review_body = (
+        "Technical review — RED\n\nClassification: "
+        "RED_U1R18_R13_FIX1_FIX5_PRODUCTION_ORCHESTRATION_PROOF_STILL_BYPASSED"
+    )
+    source_review_body = (
+        "Technical review — GREEN\n\nClassification: "
+        "GREEN_U1R18_R13_FIX1_FIX6_EXACT_PRELAUNCH_ORCHESTRATION_PROOF_CLOSED"
+    )
+    write_fixture(d, "reviews.json", [
+        review_json(COMMENTED_BRIDGE_SOURCE_PARENT, COMMENTED_BRIDGE_PARENT_REVIEW_ID,
+                    parent_review_body, "COMMENTED", COMMENTED_BRIDGE_PARENT_TS),
+        review_json(COMMENTED_BRIDGE_SOURCE_FIX, COMMENTED_BRIDGE_SOURCE_REVIEW_ID,
+                    source_review_body, "COMMENTED", "2026-08-09T10:30:00Z"),
+    ])
+
+    core = ci_run_json(COMMENTED_BRIDGE_CORE_CI_RUN, COMMENTED_BRIDGE_SOURCE_FIX)
+    failed = gate_advance_run_json(COMMENTED_BRIDGE_FAILED_ADVANCE_RUN,
+                                   COMMENTED_BRIDGE_SOURCE_FIX)
+    failed["status"] = "completed"
+    failed["conclusion"] = "failure"
+    failed["created_at"] = "2026-08-09T10:58:10Z"
+    failed["started_at"] = "2026-08-09T10:58:10Z"
+    failed["completed_at"] = "2026-08-09T10:58:28Z"
+    write_fixture(d, "runs.json", {"total_count": 2, "workflow_runs": [core, failed]})
+    core_jobs = [workflow_job_json(name, COMMENTED_BRIDGE_CORE_CI_RUN)
+                 for name in REQUIRED_JOBS]
+    failed_job = workflow_job_json("Advance Gate", COMMENTED_BRIDGE_FAILED_ADVANCE_RUN)
+    failed_job["id"] = COMMENTED_BRIDGE_FAILED_JOB_ID
+    failed_job["conclusion"] = "failure"
+    write_fixture(d, "jobs.json", {"total_count": 6, "jobs": core_jobs + [failed_job]})
+    result = {
+        "state": "REJECTED",
+        "repository": "oxcandy-lgtm/macsteam",
+        "pr_number": 2,
+        "head_sha": COMMENTED_BRIDGE_SOURCE_FIX,
+        "parent_sha": COMMENTED_BRIDGE_SOURCE_PARENT,
+        "guard_label": "parent_review_commented_without_marker",
+    }
+    write_fixture(d, "job-logs.json", {
+        str(COMMENTED_BRIDGE_FAILED_JOB_ID):
+        "2026-08-09T10:58:27.6474380Z " + json.dumps(result)
+    })
+
 
 def create_advance_normal_approved():
     d = os.path.join(FIXTURE_DIR, "advance_normal_approved")
@@ -891,6 +1043,7 @@ def create_historical_submission_runs_do_not_collide():
 
 
 GREEN_FACTORIES = [
+    create_advance_commented_parent_source_fix_bridge,
     create_advance_bootstrap,
     create_advance_normal_approved,
     create_advance_normal_commented,

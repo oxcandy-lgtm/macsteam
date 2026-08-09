@@ -1,0 +1,21 @@
+{
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "parents": [
+    {
+      "sha": "917b64ad418258127e7632a5063587af67791d36"
+    }
+  ],
+  "commit": {
+    "message": "ci: admit FIX6 commented-parent source bridge (U1R18-R13-FIX1-FIX6-GATE1)\n\nWorkstream: U1R18-R13-FIX1-FIX6-GATE1",
+    "committer": {
+      "date": "2026-08-09T11:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    },
+    "author": {
+      "date": "2026-08-09T11:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    }
+  }
+}

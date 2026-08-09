@@ -55,6 +55,7 @@ WORKER_MARKER = "<!-- macsteam-worker-report:v1 -->"
 CONTROLLER_MARKER = "<!-- macsteam-controller-review:v1 -->"
 SOURCE_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-authorization:v1 -->"
 SOURCE_CHAIN_BRIDGE_MARKER = "<!-- macsteam-red-parent-source-fix-chain-authorization:v1 -->"
+COMMENTED_PARENT_SOURCE_FIX_MARKER = "<!-- macsteam-commented-parent-source-fix-authorization:v1 -->"
 GATE_FIX_MARKER = "<!-- macsteam-gate-fix-authorization:v1 -->"
 PROTOCOL_RECOVERY_FIX_MARKER = "<!-- macsteam-protocol-recovery-fix-authorization:v1 -->"
 PROTOCOL_RECOVERY_FIX2_MARKER = "<!-- macsteam-protocol-recovery-fix2-authorization:v1 -->"
@@ -811,6 +812,38 @@ class Gate:
         if chain_bridge is not None:
             self._validate_chain_policy(chain_bridge)
 
+        commented_bridge = policy.get("commented_parent_source_fix_bridge")
+        if commented_bridge is not None:
+            if not isinstance(commented_bridge, dict):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "commented_parent_source_fix_bridge must be an object")
+            for field in ["authorization_schema_version", "authorization_comment_id",
+                          "source_fix_sha", "source_fix_parent_sha",
+                          "source_fix_workstream", "source_fix_commit_subject",
+                          "source_fix_core_ci_run_id", "source_fix_required_ci_jobs",
+                          "failed_advance_run_id", "failed_advance_job_id",
+                          "failed_advance_guard", "parent_technical_review_id",
+                          "parent_technical_classification",
+                          "source_fix_technical_review_id",
+                          "source_fix_technical_classification",
+                          "bridge_workstream", "bridge_commit_subject",
+                          "single_direct_child_only",
+                          "source_fix_allowed_exact_paths",
+                          "source_fix_allowed_path_prefixes",
+                          "bridge_allowed_exact_paths",
+                          "bridge_allowed_path_prefixes",
+                          "ready_authorized", "merge_authorized",
+                          "release_authorized", "next_product_workstream_authorized"]:
+                if field not in commented_bridge:
+                    raise GateError(EXIT_INFRA, "policy_malformed",
+                                    "Policy commented_parent_source_fix_bridge missing: " + field)
+            if not isinstance(commented_bridge.get("source_fix_allowed_exact_paths"), list) \
+                    or not isinstance(commented_bridge.get("source_fix_allowed_path_prefixes"), list) \
+                    or not isinstance(commented_bridge.get("bridge_allowed_exact_paths"), list) \
+                    or not isinstance(commented_bridge.get("bridge_allowed_path_prefixes"), list):
+                raise GateError(EXIT_INFRA, "policy_malformed",
+                                "Commented source-fix bridge scopes must be arrays")
+
         recovery = policy.get("protocol_recovery_authorization")
         if recovery is not None:
             self._validate_recovery_policy(recovery)
@@ -1074,6 +1107,8 @@ class Gate:
         chain_bridge = self.policy.get("red_parent_source_fix_chain_bridge", {})
         chain_terminal = chain_bridge.get("terminal_source_fix_sha")
 
+        commented_bridge = self.policy.get("commented_parent_source_fix_bridge")
+
         gate_fix = self.policy.get("gate_fix_authorization")
         gate_fix_grand = None
         if gate_fix:
@@ -1126,6 +1161,9 @@ class Gate:
         elif fix3 and self.parent_sha == fix3_parent:
             self.parent_authority = "protocol_recovery_fix3_authorization"
             self._validate_protocol_recovery_fix3_authorization(fix3)
+        elif commented_bridge and self.parent_sha == commented_bridge.get("source_fix_sha"):
+            self.parent_authority = "commented_parent_source_fix_bridge"
+            self._validate_commented_parent_source_fix_bridge(commented_bridge)
         elif fix2 and self.parent_sha == fix2_parent:
             self.parent_authority = "protocol_recovery_fix2_authorization"
             self._validate_protocol_recovery_fix2_authorization(fix2)
@@ -1536,6 +1574,241 @@ class Gate:
         if require_jobs is not None and len(required_jobs) != require_jobs:
             raise GateError(EXIT_POLICY, "red_source_ci_wrong_job_count",
                             f"Source fix CI required job count mismatch")
+
+    # === Commented-parent source-fix bridge authority (R13-FIX6-GATE1) ===
+    #
+    # This is an exact, immutable exception for FIX6.  It admits one gate-only
+    # child of the already-published FIX6 source commit because the historical
+    # Advance rejection was caused solely by its plain COMMENTED technical
+    # review boundary.  It never treats that review as controller authority and
+    # never changes the normal COMMENTED-review rule.
+
+    COMMENTED_BRIDGE_AUTH_FIELDS = (
+        "schema_version", "source_fix_sha", "source_fix_parent_sha",
+        "source_fix_workstream", "source_fix_commit_subject",
+        "source_fix_core_ci_run_id", "source_fix_required_ci_jobs",
+        "failed_advance_run_id", "failed_advance_guard",
+        "parent_technical_review_id", "parent_technical_classification",
+        "source_fix_technical_review_id", "source_fix_technical_classification",
+        "bridge_workstream", "bridge_commit_subject", "single_direct_child_only",
+        "source_fix_allowed_exact_paths", "source_fix_allowed_path_prefixes",
+        "bridge_allowed_exact_paths", "bridge_allowed_path_prefixes",
+        "ready_authorized", "merge_authorized", "release_authorized",
+        "next_product_workstream_authorized",
+    )
+
+    def _validate_commented_bridge_comment(self, bridge):
+        comment_id = bridge.get("authorization_comment_id")
+        comment = self.client.get_comment_by_id(comment_id)
+        if not isinstance(comment, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Commented-parent bridge authorization is not an object")
+        if comment.get("in_reply_to_id") or comment.get("path") or comment.get("position"):
+            raise GateError(EXIT_POLICY, "commented_bridge_auth_top_level_required",
+                            "Commented-parent bridge authorization is not top-level")
+        if comment.get("created_at") != comment.get("updated_at"):
+            raise GateError(EXIT_POLICY, "commented_bridge_auth_edited",
+                            "Commented-parent bridge authorization was edited")
+        body = comment.get("body", "") or ""
+        if body.count(COMMENTED_PARENT_SOURCE_FIX_MARKER) != 1:
+            raise GateError(EXIT_POLICY, "commented_bridge_auth_marker_invalid",
+                            "Commented-parent bridge authorization marker count != 1")
+        json_data, _, block_count = parse_json_block(
+            body, COMMENTED_PARENT_SOURCE_FIX_MARKER)
+        if block_count != 1:
+            raise GateError(EXIT_POLICY, "commented_bridge_auth_json_block_invalid",
+                            "Commented-parent bridge authorization JSON block count != 1")
+        if not isinstance(json_data, dict):
+            raise GateError(EXIT_POLICY, "commented_bridge_auth_malformed_json",
+                            "Commented-parent bridge authorization JSON is malformed")
+        if json_data.get("kind") != "commented_parent_source_fix_authorization":
+            raise GateError(EXIT_POLICY, "commented_bridge_auth_wrong_kind",
+                            "Commented-parent bridge authorization kind mismatch")
+        for field in self.COMMENTED_BRIDGE_AUTH_FIELDS:
+            policy_value = bridge.get("authorization_schema_version") \
+                if field == "schema_version" else bridge.get(field)
+            if field in ("ready_authorized", "merge_authorized", "release_authorized",
+                         "next_product_workstream_authorized") and json_data.get(field):
+                raise GateError(EXIT_POLICY, "commented_bridge_auth_unsafe_authorization",
+                                f"Commented-parent bridge authorization {field} == true")
+            if json_data.get(field) != policy_value:
+                raise GateError(EXIT_POLICY, "commented_bridge_auth_policy_mismatch",
+                                f"Commented-parent bridge authorization field mismatch: {field}")
+        self.commented_bridge_auth = json_data
+        self.commented_bridge_auth_created_at = comment.get("created_at")
+
+        bridge_date = (self.commit_head.get("commit", {}) or {}).get("committer", {}).get("date")
+        if not self._check_comment_before_commit_ts(comment, bridge_date):
+            raise GateError(EXIT_POLICY, "commented_bridge_auth_after_child",
+                            "Commented-parent bridge authorization must precede child commit")
+
+    def _commented_bridge_path_in_scope(self, filepath, exact, prefixes):
+        return filepath in exact or any(filepath.startswith(prefix) for prefix in prefixes)
+
+    def _validate_commented_bridge_source_identity(self, bridge):
+        source_sha = bridge.get("source_fix_sha")
+        source_parent_sha = bridge.get("source_fix_parent_sha")
+        source_commit = self.commit_parent
+        if self.parent_sha != source_sha:
+            raise GateError(EXIT_POLICY, "commented_bridge_wrong_parent",
+                            "Commented-parent bridge parent is not exact FIX6")
+        if not isinstance(source_commit, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Commented-parent bridge source commit is not an object")
+        parents = source_commit.get("parents", [])
+        if len(parents) != 1 or parents[0].get("sha") != source_parent_sha:
+            raise GateError(EXIT_POLICY, "commented_bridge_wrong_source_parent",
+                            "Commented-parent bridge source parent mismatch")
+        message = (source_commit.get("commit", {}) or {}).get("message", "") or ""
+        if message.split("\n")[0].strip() != bridge.get("source_fix_commit_subject"):
+            raise GateError(EXIT_POLICY, "commented_bridge_wrong_source_subject",
+                            "Commented-parent bridge source subject mismatch")
+        if re.findall(r"(?:^|\n)Workstream:\s*([^\s]+)", message) != [bridge.get("source_fix_workstream")]:
+            raise GateError(EXIT_POLICY, "commented_bridge_wrong_source_workstream",
+                            "Commented-parent bridge source workstream mismatch")
+        exact = bridge.get("source_fix_allowed_exact_paths", [])
+        prefixes = bridge.get("source_fix_allowed_path_prefixes", [])
+        source_files = self._source_fix_changed_files(source_sha)
+        if set(source_files) != set(exact) or len(source_files) != len(set(source_files)) \
+                or any(not self._commented_bridge_path_in_scope(path, exact, prefixes)
+                       for path in source_files):
+            raise GateError(EXIT_POLICY, "commented_bridge_source_scope_mismatch",
+                            "Commented-parent bridge source changed-file scope mismatch")
+
+    def _validate_commented_bridge_core_ci(self, bridge):
+        run_id = bridge.get("source_fix_core_ci_run_id")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            raise GateError(EXIT_POLICY, "commented_bridge_core_ci_missing",
+                            "Commented-parent bridge source Core CI run missing")
+        if run.get("head_sha") != bridge.get("source_fix_sha"):
+            raise GateError(EXIT_POLICY, "commented_bridge_core_ci_wrong_head",
+                            "Commented-parent bridge source Core CI head mismatch")
+        if run.get("name") != "CI" or run.get("status") != "completed" \
+                or run.get("conclusion") != "success":
+            raise GateError(EXIT_POLICY, "commented_bridge_core_ci_not_green",
+                            "Commented-parent bridge source Core CI is not GREEN")
+        jobs = self.client.get_workflow_jobs(run_id)
+        required = self.policy.get("core_ci", {}).get("required_jobs", [])
+        if bridge.get("source_fix_required_ci_jobs") != len(required) \
+                or len(jobs) != len(required):
+            raise GateError(EXIT_POLICY, "commented_bridge_core_ci_job_count",
+                            "Commented-parent bridge source Core CI job count mismatch")
+        names = []
+        for job in jobs:
+            if not isinstance(job, dict):
+                raise GateError(EXIT_INFRA, "object_unparseable",
+                                "Commented-parent bridge source Core CI job is not an object")
+            names.append(job.get("name"))
+            if job.get("status") != "completed" or job.get("conclusion") != "success":
+                raise GateError(EXIT_POLICY, "commented_bridge_core_ci_job_not_green",
+                                "Commented-parent bridge source Core CI job is not GREEN")
+        if set(names) != set(required) or len(names) != len(set(names)):
+            raise GateError(EXIT_POLICY, "commented_bridge_core_ci_job_set_mismatch",
+                            "Commented-parent bridge source Core CI jobs differ from policy")
+
+    def _validate_commented_bridge_failed_advance(self, bridge):
+        run_id = bridge.get("failed_advance_run_id")
+        run = self.client.get_workflow_run_by_id(run_id)
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            raise GateError(EXIT_POLICY, "commented_bridge_failed_advance_missing",
+                            "Commented-parent bridge failed Advance run missing")
+        if run.get("head_sha") != bridge.get("source_fix_sha"):
+            raise GateError(EXIT_POLICY, "commented_bridge_failed_advance_wrong_head",
+                            "Commented-parent bridge failed Advance head mismatch")
+        if run.get("status") != "completed" or run.get("conclusion") != "failure":
+            raise GateError(EXIT_POLICY, "commented_bridge_failed_advance_not_failed",
+                            "Commented-parent bridge failed Advance is not rejected")
+        jobs = self.client.get_workflow_jobs(run_id)
+        job_id = bridge.get("failed_advance_job_id")
+        matches = [job for job in jobs if isinstance(job, dict) and job.get("id") == job_id]
+        if len(matches) != 1 or matches[0].get("name") != "Advance Gate":
+            raise GateError(EXIT_POLICY, "commented_bridge_failed_advance_job_mismatch",
+                            "Commented-parent bridge failed Advance job mismatch")
+        job = matches[0]
+        if job.get("status") != "completed" or job.get("conclusion") != "failure":
+            raise GateError(EXIT_POLICY, "commented_bridge_failed_advance_job_not_failed",
+                            "Commented-parent bridge failed Advance job is not rejected")
+        result, _ = self._extract_last_relevant_gate_result_from_log(
+            self.client.get_job_log(job_id))
+        if not isinstance(result, dict) or result.get("state") != "REJECTED":
+            raise GateError(EXIT_POLICY, "commented_bridge_failed_advance_result_invalid",
+                            "Commented-parent bridge failed Advance final result is not REJECTED")
+        if result.get("head_sha") != bridge.get("source_fix_sha") \
+                or result.get("parent_sha") != bridge.get("source_fix_parent_sha"):
+            raise GateError(EXIT_POLICY, "commented_bridge_failed_advance_result_mismatch",
+                            "Commented-parent bridge failed Advance result SHA mismatch")
+        if result.get("guard_label") != bridge.get("failed_advance_guard"):
+            raise GateError(EXIT_POLICY, "commented_bridge_failed_advance_guard_mismatch",
+                            "Commented-parent bridge failed Advance guard mismatch")
+
+    def _validate_commented_bridge_reviews(self, bridge):
+        parent_review = self.client.get_review_by_id(bridge.get("parent_technical_review_id"))
+        source_review = self.client.get_review_by_id(bridge.get("source_fix_technical_review_id"))
+        if not isinstance(parent_review, dict) or not isinstance(source_review, dict):
+            raise GateError(EXIT_INFRA, "object_unparseable",
+                            "Commented-parent bridge technical review is not an object")
+        checks = [
+            (parent_review, bridge.get("parent_technical_review_id"), bridge.get("source_fix_parent_sha"),
+             bridge.get("parent_technical_classification"), "parent"),
+            (source_review, bridge.get("source_fix_technical_review_id"), bridge.get("source_fix_sha"),
+             bridge.get("source_fix_technical_classification"), "source"),
+        ]
+        for review, review_id, commit_id, classification, label in checks:
+            if review.get("id") != review_id or review.get("commit_id") != commit_id \
+                    or review.get("state") != "COMMENTED":
+                raise GateError(EXIT_POLICY, "commented_bridge_technical_review_mismatch",
+                                f"Commented-parent bridge {label} technical review identity mismatch")
+            body = review.get("body", "") or ""
+            if classification not in body:
+                raise GateError(EXIT_POLICY, "commented_bridge_technical_review_classification_mismatch",
+                                f"Commented-parent bridge {label} technical classification mismatch")
+            if CONTROLLER_MARKER in body:
+                raise GateError(EXIT_POLICY, "commented_bridge_technical_review_controller_marker",
+                                f"Commented-parent bridge {label} review contains controller marker")
+            if not review.get("submitted_at"):
+                raise GateError(EXIT_INFRA, "commented_bridge_technical_review_timestamp_missing",
+                                f"Commented-parent bridge {label} review timestamp missing")
+
+        parent_date = parse_iso_datetime((self.client.get_commit(
+            bridge.get("source_fix_parent_sha")).get("commit", {}) or {}).get("committer", {}).get("date"))
+        source_date = parse_iso_datetime((self.commit_parent.get("commit", {}) or {}).get("committer", {}).get("date"))
+        parent_review_date = parse_iso_datetime(parent_review.get("submitted_at"))
+        source_review_date = parse_iso_datetime(source_review.get("submitted_at"))
+        child_date = self._head_commit_datetime()
+        if not (parent_date < parent_review_date < source_date < source_review_date < child_date):
+            raise GateError(EXIT_POLICY, "commented_bridge_technical_review_chronology",
+                            "Commented-parent bridge technical review chronology is invalid")
+
+    def _validate_commented_parent_source_fix_bridge(self, bridge):
+        if self.parent_sha != bridge.get("source_fix_sha") \
+                or bridge.get("source_fix_sha") != "917b64ad418258127e7632a5063587af67791d36":
+            raise GateError(EXIT_POLICY, "commented_bridge_wrong_parent",
+                            "Commented-parent bridge activation is not exact FIX6")
+        self._validate_commented_bridge_comment(bridge)
+        if bridge.get("single_direct_child_only") is not True:
+            raise GateError(EXIT_POLICY, "commented_bridge_second_child",
+                            "Commented-parent bridge is not single-direct-child only")
+        self._validate_commented_bridge_source_identity(bridge)
+        self._validate_commented_bridge_core_ci(bridge)
+        self._validate_commented_bridge_failed_advance(bridge)
+        self._validate_commented_bridge_reviews(bridge)
+
+        head_msg = self.commit_head.get("commit", {}).get("message", "") or ""
+        if head_msg.split("\n")[0].strip() != bridge.get("bridge_commit_subject"):
+            raise GateError(EXIT_POLICY, "commented_bridge_wrong_subject",
+                            "Commented-parent bridge child subject mismatch")
+        if re.findall(r"(?:^|\n)Workstream:\s*([^\s]+)", head_msg) != [bridge.get("bridge_workstream")]:
+            raise GateError(EXIT_POLICY, "commented_bridge_wrong_workstream",
+                            "Commented-parent bridge child workstream mismatch")
+        exact = self.commented_bridge_auth.get("bridge_allowed_exact_paths", [])
+        prefixes = self.commented_bridge_auth.get("bridge_allowed_path_prefixes", [])
+        changed = self._get_changed_files()
+        if not changed or len(changed) != len(set(changed)) \
+                or any(not self._commented_bridge_path_in_scope(path, exact, prefixes)
+                       for path in changed):
+            raise GateError(EXIT_POLICY, "commented_bridge_forbidden_path",
+                            "Commented-parent bridge child changed forbidden path")
 
     # === Red parent source fix CHAIN bridge authority ===
     #

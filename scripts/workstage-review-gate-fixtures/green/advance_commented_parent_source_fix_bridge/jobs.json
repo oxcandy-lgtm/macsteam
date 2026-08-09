@@ -1,0 +1,53 @@
+{
+  "total_count": 6,
+  "jobs": [
+    {
+      "id": 3130962753716,
+      "name": "Swift Build",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31309627509,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31309627509"
+    },
+    {
+      "id": 3130962753190,
+      "name": "Public Audit",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31309627509,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31309627509"
+    },
+    {
+      "id": 3130962753027,
+      "name": "Recipe Validation",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31309627509,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31309627509"
+    },
+    {
+      "id": 3130962752737,
+      "name": "License Validation",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31309627509,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31309627509"
+    },
+    {
+      "id": 3130962760361,
+      "name": "Gitignore Validation",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 31309627509,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31309627509"
+    },
+    {
+      "id": 93235295420,
+      "name": "Advance Gate",
+      "status": "completed",
+      "conclusion": "failure",
+      "run_id": 31309627501,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/31309627501"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+[
+  "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift",
+  "Tests/MacSteamTests/LaunchFastPathTests.swift"
+]
