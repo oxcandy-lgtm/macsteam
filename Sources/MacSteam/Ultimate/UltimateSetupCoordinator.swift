@@ -42,6 +42,10 @@ struct PrefixAcquisitionResolution: Sendable, Equatable {
 final class UltimateSetupCoordinator {
     // MARK: - Published state
 
+    /// U1R18-R13-FIX1 §3.3: developer-local build identity (embedded SHA or a
+    /// safe `swift run` fallback). Read-only; never a git lookup at runtime.
+    let buildIdentity: BuildIdentity
+
     var state: UltimateSetupState = .inspecting
     var runtimeInspection: RuntimeInspection?
     var prefixInspection: PrefixInspection?
@@ -376,6 +380,44 @@ final class UltimateSetupCoordinator {
         log("Installer session: #\(installerID)")
     }
 
+    /// U1R18-R13-FIX1 §4/§5/§6: launch telemetry.
+    ///
+    /// The wine progress meter is derived from completed production milestones
+    /// (never a fake timer). The Steam timing is measured with a monotonic
+    /// clock and the ETA comes from a bounded median history.
+    private(set) var launchPipelineStage: LaunchPipelineStage = .idle
+    private(set) var wineMilestones = WineMilestones()
+    private(set) var launchTiming = LaunchTiming()
+    private(set) var timingStore = LaunchTimingStore()
+    private(set) var lastLaunchPath: String?
+
+    /// Record a wine milestone completion (drives the deterministic meter).
+    func markWineMilestone(_ milestone: WineMilestones) {
+        wineMilestones = milestone
+    }
+
+    /// Record a launch timing segment (monotonic, bounded).
+    func recordLaunchTiming(_ timing: LaunchTiming, succeeded: Bool) {
+        launchTiming = timing
+        if succeeded {
+            timingStore.record(.wineMS, milliseconds: timing.winePreparationMS)
+            timingStore.record(.steamProcessMS, milliseconds: timing.steamProcessStartMS)
+            timingStore.record(.steamReadyMS, milliseconds: timing.steamReadyMS)
+            timingStore.record(.totalMS, milliseconds: timing.totalToSteamReadyMS)
+        }
+    }
+
+    /// Bounded ETA estimate for Steam readiness, or nil when history is thin.
+    var steamReadyETA: (elapsed: Int64, remaining: Int64?)? {
+        let elapsed = launchTiming.totalToSteamReadyMS
+        return (elapsed, timingStore.remainingMS(.totalMS, elapsedMS: elapsed))
+    }
+
+    /// U1R18-R13-FIX1 §7: bounded aggregate timing history (no identity).
+    var timingHistoryPayload: [String: Any] {
+        timingStore.persistencePayload
+    }
+
     // MARK: - Init
 
     init(
@@ -403,6 +445,7 @@ final class UltimateSetupCoordinator {
         self.lifecycleInstaller = installerSupervisor
         self.prefixManager = prefixManager
         self.localAcceptanceReceiptStore = receiptStore
+        self.buildIdentity = BuildIdentity.current()
     }
 
     // MARK: - Plan builders

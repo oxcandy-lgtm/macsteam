@@ -128,6 +128,7 @@ struct CloverPitLaunchView: View {
                 .padding(10)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                launchProgressPanel
             } else if !launchResult.isEmpty {
                 HStack {
                     Image(systemName: "checkmark.circle.fill")
@@ -173,6 +174,45 @@ struct CloverPitLaunchView: View {
     }
 
     // MARK: - Acceptance section (U1R18-R11)
+
+    /// U1R18-R13-FIX1 §5/§6: launch progress + timing presentation.
+    private var launchProgressPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            let progress = coordinator.wineMilestones.progress
+            let pct = Int((progress * 100).rounded())
+
+            Text("Wine")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ProgressView(value: progress)
+                .tint(.blue)
+            Text("\(coordinator.wineMilestones.completedCount) / \(WineMilestones.total)  \(pct)%")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+
+            if let eta = coordinator.steamReadyETA {
+                Text("Steam elapsed: \(ms(eta.0))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                if let remaining = eta.1 {
+                    Text("Estimated: ~\(ms(remaining)) remaining")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Estimated: Measuring…")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func ms(_ value: Int64) -> String {
+        String(format: "%.1f s", Double(value) / 1000.0)
+    }
 
     private var acceptancePresentation: LocalAcceptancePresentation {
         coordinator.acceptancePresentation

@@ -78,6 +78,20 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.bordered)
             }
+
+            Section("Build") {
+                LabeledContent("Build") {
+                    Text(coordinator.buildIdentity.commitSHA)
+                        .font(.caption.monospaced())
+                }
+                LabeledContent("Channel") {
+                    Text(coordinator.buildIdentity.channel)
+                        .font(.caption)
+                }
+                Text("Developer-local sync identity. Not a distribution build.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(minWidth: 400, minHeight: 300)
