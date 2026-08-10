@@ -37,6 +37,33 @@ struct PrefixAcquisitionResolution: Sendable, Equatable {
     let ambiguous: Bool
 }
 
+/// U1R18-R13-ACCEPTANCE3-FIX1: deterministic, total reconciliation of Steam
+/// install truth for the CURRENT canonical prefix payload. This is the single
+/// coordinator-owned projection — no path may claim Steam-ready except through
+/// it. The projection is a pure function of the current prefix on disk:
+///
+/// - interrupted-hold file present → `.interrupted`, not ready
+/// - regular non-empty steam.exe    → `.verifiedComplete`, ready
+/// - zero-byte or invalid steam.exe → `.absent`, not ready
+/// - missing steam.exe              → `.absent`, not ready
+struct SteamReconciliation: Sendable, Equatable {
+    let lifecycle: SteamInstallLifecycle
+    /// Whether a regular, non-empty steam.exe is present in the canonical prefix.
+    let steamInstalled: Bool
+    /// Whether Steam is currently ready (lifecycle `.verifiedComplete`).
+    let ready: Bool
+    /// Whether the interrupted-install hold file is present in the prefix.
+    let interruptedHoldPresent: Bool
+
+    /// Setup state the projection raises for the operator. Steam-ready only
+    /// ever maps from a reconciled `.verifiedComplete` lifecycle.
+    var projectedSetupState: UltimateSetupState {
+        if lifecycle == .verifiedComplete { return .steamReady }
+        if interruptedHoldPresent { return .steamInstallerVerified }
+        return .steamInstallerRequired
+    }
+}
+
 @MainActor
 @Observable
 final class UltimateSetupCoordinator {
@@ -279,6 +306,11 @@ final class UltimateSetupCoordinator {
         didSet {
             if oldValue?.root != prefixLayout?.root {
                 prefixInspection = nil
+                // U1R18-R13-ACCEPTANCE3-FIX1: a different canonical prefix
+                // invalidates stale Steam truth. Never reuse the previous
+                // prefix's inspection or lifecycle projection.
+                steamInspection = nil
+                steamInstallLifecycle = .absent
             }
         }
     }
@@ -1477,8 +1509,27 @@ final class UltimateSetupCoordinator {
                 // Check if Steam is already installed (evidence already bound)
                 log("Checking steam.exe in canonical prefix…")
                 if sig.steamExePresent {
-                    state = .steamReady
-                    log("steam.exe FOUND in canonical prefix — advancing to Steam ready")
+                    // U1R18-R13-ACCEPTANCE3-FIX1: steam-ready is NEVER claimed
+                    // from the prefix signature alone. Pass through the single
+                    // reconciliation authority (payload projection) before any
+                    // early return.
+                    let reconciliation = reconcileSteamInstallStateFromCurrentPrefix()
+                    if reconciliation.ready {
+                        state = .steamReady
+                        log("steam.exe FOUND in canonical prefix — advancing to Steam ready")
+                    } else {
+                        // Agreement enforcement: the signature claims steam.exe
+                        // but the payload authority rejected it (zero-byte,
+                        // missing, or interrupted-hold). NOT steamReady, NOT
+                        // verifiedComplete — raise the recovery projection with
+                        // guidance until the operator resolves.
+                        log("steam.exe signature present but reconciliation rejected (lifecycle=\(reconciliation.lifecycle.rawValue)) — NOT advancing to Steam ready")
+                        state = reconciliation.projectedSetupState
+                        error = .steamInstallationFailed(
+                            "Steam.exe was claimed in the prefix signature but the payload did not reconcile "
+                            + "(lifecycle=\(reconciliation.lifecycle.rawValue)). Verify or reinstall Steam."
+                        )
+                    }
                     return
                 }
 
@@ -1493,7 +1544,8 @@ final class UltimateSetupCoordinator {
                 ) {
                     log("Existing initialized prefix — reusing without wineboot (wineboot exactly-once)")
                     establishPrefixEvidence(for: layout, source: acquisition.source)
-                    reconcileSteamInstallLifecycle()
+                    // U1R18-R13-ACCEPTANCE3-FIX1: single reconciliation authority.
+                    reconcileSteamInstallStateFromCurrentPrefix()
                     state = .prefixReady
                     return
                 }
@@ -1585,8 +1637,9 @@ final class UltimateSetupCoordinator {
             // Inspect prefix (newly-initialized path — evidence BEFORE state change)
             establishPrefixEvidence(for: layout, source: .newlyInitialized)
 
-            // Reconcile Steam install lifecycle from disk state
-            reconcileSteamInstallLifecycle()
+            // Reconcile Steam install state from the current prefix (single
+            // reconciliation authority — U1R18-R13-ACCEPTANCE3-FIX1).
+            reconcileSteamInstallStateFromCurrentPrefix()
 
             state = .prefixReady
         } catch let error as UltimateSetupError {
@@ -1704,31 +1757,79 @@ final class UltimateSetupCoordinator {
         ]
     }
 
-    /// Reconcile Steam install lifecycle from disk state.
-    /// Call after prefix is configured and on app launch.
-    func reconcileSteamInstallLifecycle() {
-        guard let prefix = prefixLayout?.root else { return }
+    /// U1R18-R13-ACCEPTANCE3-FIX1: the single coordinator-owned reconciliation
+    /// of Steam install truth (inspection + lifecycle + setup state) from the
+    /// CURRENT canonical prefix payload.
+    ///
+    /// Success (a regular, non-empty `steam.exe` in the canonical prefix, no
+    /// interrupted-hold) projects `steamInstalled = true`,
+    /// `steamInstallLifecycle = .verifiedComplete`, and ready. Any rejected
+    /// payload (interrupted-hold → `.interrupted`; zero-byte/invalid/missing →
+    /// `.absent`) projects NOT ready and NOT `.verifiedComplete`.
+    ///
+    /// This is the single source of truth for Steam readiness: the
+    /// existing-prefix reuse branch, the adopted-prefix branch, and
+    /// ``recheckSteam()`` all route through here.
+    @discardableResult
+    func reconcileSteamInstallStateFromCurrentPrefix() -> SteamReconciliation {
         let fm = FileManager.default
-
-        let steamDir = prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam")
-        let steamExe = steamDir.appendingPathComponent("steam.exe")
-        let holdFile = steamDir.appendingPathComponent("steam.exe.macsteam-install-hold")
-
-        if fm.fileExists(atPath: holdFile.path) {
-            // Steam is quarantined — interrupted installation
-            steamInstallLifecycle = .interrupted
-            log("Steam installation interrupted (hold file detected)")
-        } else if fm.fileExists(atPath: steamExe.path) {
-            let attrs = try? fm.attributesOfItem(atPath: steamExe.path)
-            let size = attrs?[.size] as? UInt64 ?? 0
-            if size > 0 {
-                steamInstallLifecycle = .verifiedComplete
-                log("Steam installation verified complete (steam.exe found)")
-            }
-        } else {
+        guard let layout = prefixLayout else {
+            steamInspection = nil
             steamInstallLifecycle = .absent
-            log("Steam not installed")
+            return SteamReconciliation(
+                lifecycle: .absent,
+                steamInstalled: false,
+                ready: false,
+                interruptedHoldPresent: false
+            )
         }
+
+        // Payload authority: canonical prefix only. The hold file marks an
+        // interrupted installation (quarantined steam.exe); it never validates.
+        let steamDir = layout.root.appendingPathComponent("drive_c/Program Files (x86)/Steam")
+        let holdFile = steamDir.appendingPathComponent("steam.exe.macsteam-install-hold")
+        let held = fm.fileExists(atPath: holdFile.path)
+
+        // Single production resolver (x86 then fallback) — the SAME authority
+        // used for launch and fingerprint building.
+        let steamExe = resolveSteamExecutable(in: layout.root)
+
+        var valid = false
+        if let exe = steamExe {
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: exe.path, isDirectory: &isDir), !isDir.boolValue {
+                let size = (try? fm.attributesOfItem(atPath: exe.path))?[.size] as? UInt64 ?? 0
+                valid = size > 0
+            }
+        }
+
+        let lifecycle: SteamInstallLifecycle
+        if held {
+            lifecycle = .interrupted
+        } else if valid {
+            lifecycle = .verifiedComplete
+        } else {
+            lifecycle = .absent
+        }
+
+        if valid, let exe = steamExe {
+            steamInspection = SteamInstallationInspection(
+                steamInstalled: true,
+                steamExePath: exe.path.replacingOccurrences(of: NSHomeDirectory(), with: "$HOME"),
+                steamVersion: nil
+            )
+        } else {
+            steamInspection = .notFound
+        }
+        steamInstallLifecycle = lifecycle
+
+        log("Steam reconciliation (canonical prefix): lifecycle=\(lifecycle.rawValue) valid=\(valid) held=\(held)")
+        return SteamReconciliation(
+            lifecycle: lifecycle,
+            steamInstalled: valid,
+            ready: lifecycle == .verifiedComplete,
+            interruptedHoldPresent: held
+        )
     }
 
     /// Verify an existing Steam installation and mark it as complete.
@@ -1747,28 +1848,29 @@ final class UltimateSetupCoordinator {
             log("Restored steam.exe from quarantine")
         }
 
-        // Verify
-        guard fm.fileExists(atPath: steamExe.path) else {
-            error = .steamInstallationFailed("steam.exe not found after restoration")
+        // U1R18-R13-ACCEPTANCE3-FIX1: the verification decision routes through
+        // the single reconciliation authority — a verified payload must be a
+        // regular, non-empty steam.exe in the canonical prefix, not a manual
+        // lifecycle assignment.
+        let reconciliation = reconcileSteamInstallStateFromCurrentPrefix()
+        guard reconciliation.ready else {
+            error = .steamInstallationFailed("steam.exe not found or empty after restoration")
             return
         }
-        let attrs = try? fm.attributesOfItem(atPath: steamExe.path)
-        let size = attrs?[.size] as? UInt64 ?? 0
-        guard size > 0 else {
-            error = .steamInstallationFailed("steam.exe is empty")
-            return
-        }
-
-        steamInstallLifecycle = .verifiedComplete
         state = .steamReady
         log("Steam installation verified complete by user")
     }
 
     /// Re-check Steam installation status (polling).
+    ///
+    /// U1R18-R13-ACCEPTANCE3-FIX1: uses the SAME single reconciliation
+    /// authority. Steam-ready is projected together with lifecycle + inspection
+    /// from the current canonical prefix payload; a re-check never claims
+    /// ready from stale state.
     func recheckSteam() async {
-        let inspection = inspectSteamInstallation()
-        self.steamInspection = inspection
-        state = inspection.steamInstalled ? .steamReady : .steamInstallationPending
+        let reconciliation = reconcileSteamInstallStateFromCurrentPrefix()
+        state = reconciliation.projectedSetupState
+        log("Steam re-check: lifecycle=\(reconciliation.lifecycle.rawValue) ready=\(reconciliation.ready)")
     }
 
     /// Step 5: Re-check CloverPit installation.
@@ -1807,11 +1909,14 @@ final class UltimateSetupCoordinator {
         log("isReady: \(inspection.isReady)")
 
         if !inspection.isReady {
-            // Check if steam is at least present
-            let steamCheck = inspectSteamInstallation()
-            if !steamCheck.steamInstalled {
-                state = .steamReady // user should launch Steam manually
-                log("Steam also not detected — reverting to Steam ready state")
+            // U1R18-R13-ACCEPTANCE3-FIX1: any Steam-state claim from a failed
+            // CloverPit re-check routes through the SINGLE reconciliation
+            // authority — never a raw existence-only inspection flag. A
+            // rejected payload (missing/zero-byte) never projects steamReady.
+            let reconciliation = reconcileSteamInstallStateFromCurrentPrefix()
+            if !reconciliation.steamInstalled {
+                state = reconciliation.projectedSetupState
+                log("Steam also not detected — reverting to Steam stage (lifecycle=\(reconciliation.lifecycle.rawValue))")
             }
         }
     }
@@ -2166,8 +2271,13 @@ final class UltimateSetupCoordinator {
         startLocalAcceptanceMonitor()
     }
 
+    /// U1R18-R13-ACCEPTANCE3-FIX1: acceptance derives Steam verification
+    /// exclusively from the reconciled canonical truth (projected by the
+    /// single reconciliation authority). No split authority: a raw inspection
+    /// `steamInstalled` flag can never substitute for a reconciled
+    /// `.verifiedComplete` lifecycle.
     private var steamInstallationReady: Bool {
-        steamInstallLifecycle == .verifiedComplete || steamInspection?.steamInstalled == true
+        steamInstallLifecycle == .verifiedComplete
     }
 
     private var acceptanceGenerationCounter: UInt64 = 0
@@ -2685,25 +2795,6 @@ final class UltimateSetupCoordinator {
         try DiagnosticBundleWriter.write(bundle, to: target)
         log("Diagnostic bundle exported (schema v\(bundle.schemaVersion))")
         return target
-    }
-
-    private func inspectSteamInstallation() -> SteamInstallationInspection {
-        let fm = FileManager.default
-        let candidates = [
-            prefixLayout?.root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null"),
-            prefixLayout?.root.appendingPathComponent("drive_c/Program Files/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null"),
-        ]
-        for candidate in candidates {
-            guard fm.fileExists(atPath: candidate.path) else { continue }
-            // Get version from steam.exe if possible
-            return SteamInstallationInspection(
-                steamInstalled: true,
-                steamExePath: candidate.path
-                    .replacingOccurrences(of: NSHomeDirectory(), with: "$HOME"),
-                steamVersion: nil
-            )
-        }
-        return .notFound
     }
 
     private func computeSHA256(url: URL) -> String? {
