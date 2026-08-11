@@ -12,15 +12,17 @@
     "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
   },
     "repair_authorization": {
-        "parent_sha": "37cee09d1b1e2c607269308a89180b143bad0c6c",
-        "review_id": 4873335284,
-        "classification": "RED_U1R18_R10_FIX1_SCOPE1_FIX5_TECHNICAL_GREEN_HISTORICAL_EVIDENCE_DELETION",
-        "required_commit_message": "ci: preserve FIX5 evidence chain (U1R18-R10-FIX1-SCOPE1-FIX6)",
-        "required_workstream": "U1R18-R10-FIX1-SCOPE1-FIX6",
+        "parent_sha": "dfce06ffe54058c9abb43c4a32b8bc6d9a07b8b2",
+        "review_id": 4894284089,
+        "classification": "RED_U1R18_R13_ACCEPTANCE3_FIX1_PRODUCTION_NAVIGATION_REGRESSION_PROOF_INCOMPLETE",
+        "required_commit_message": "test: prove Steam Client to CloverPit navigation (U1R18-R13-ACCEPTANCE3-FIX1-FIX1)",
+        "required_workstream": "U1R18-R13-ACCEPTANCE3-FIX1-FIX1",
         "single_direct_child_only": true,
         "allowed_exact_paths": [
             ".github/workstage-review-gate-policy.json",
-            "scripts/test-workstage-review-gate.sh"
+            "scripts/workstage-review-gate.py",
+            "scripts/test-workstage-review-gate.sh",
+            "Tests/MacSteamTests/SteamReuseLifecycleReconciliationTests.swift"
         ],
         "allowed_path_prefixes": [
             "scripts/workstage-review-gate-fixtures/"

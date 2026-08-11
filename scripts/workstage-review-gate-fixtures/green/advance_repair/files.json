@@ -1,5 +1,8 @@
 [
   ".github/workstage-review-gate-policy.json",
+  "scripts/workstage-review-gate.py",
+  "scripts/test-workstage-review-gate.sh",
+  "Tests/MacSteamTests/SteamReuseLifecycleReconciliationTests.swift",
   "scripts/workstage-review-gate-fixtures/apply-mutation.py",
   "scripts/workstage-review-gate-fixtures/generate-green.py",
   "scripts/workstage-review-gate-fixtures/green/advance_repair/commit_HEAD.json",

@@ -88,20 +88,22 @@ U1R18_R10_FIX2_COMMIT_MSG = ("ci: close R10 residual audit and report window "
                              "(U1R18-R10-FIX1-SCOPE1-FIX2)\n\n"
                              "Workstream: U1R18-R10-FIX1-SCOPE1-FIX2")
 
-# === U1R18-R10-FIX1-SCOPE1-FIX6 (current workstream) ===
-# Authorized parent 37cee09... (the FIX5 child). The rejected controller review
-# 4873335284 classifies the FIX5 evidence-chain deletion incident and
-# authorizes exactly one direct child. It references the FIX5 worker report
-# 5202688697 and its accepted submission 31088220327 as historical evidence.
-U1R18_R10_FIX6_PARENT = "37cee09d1b1e2c607269308a89180b143bad0c6c"
-U1R18_R10_FIX6_HEAD = "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5"
-U1R18_R10_FIX6_REVIEW_ID = 4873335284
+# === U1R18-R13-ACCEPTANCE3-FIX1-FIX1 (current workstream) ===
+# Authorized parent dfce06f (PR 2 head). The rejected controller review
+# 4894284089 classifies the SteamClient to CloverPit navigation regression
+# proof as incomplete and authorizes exactly one direct child, a test-only
+# repair that also admits the single exact Tier-A Tests/** path declared in
+# scope. The review references the FIX1 worker report 5236407700 and its
+# accepted submission 31360009299 as historical evidence.
+U1R18_R10_FIX6_PARENT = "dfce06ffe54058c9abb43c4a32b8bc6d9a07b8b2"
+U1R18_R10_FIX6_HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
+U1R18_R10_FIX6_REVIEW_ID = 4894284089
 U1R18_R10_FIX6_CLASSIFICATION = \
-    "RED_U1R18_R10_FIX1_SCOPE1_FIX5_TECHNICAL_GREEN_HISTORICAL_EVIDENCE_DELETION"
-U1R18_R10_FIX6_WORKSTREAM = "U1R18-R10-FIX1-SCOPE1-FIX6"
-U1R18_R10_FIX6_COMMIT_MSG = ("ci: preserve FIX5 evidence chain "
-                             "(U1R18-R10-FIX1-SCOPE1-FIX6)\n\n"
-                             "Workstream: U1R18-R10-FIX1-SCOPE1-FIX6")
+    "RED_U1R18_R13_ACCEPTANCE3_FIX1_PRODUCTION_NAVIGATION_REGRESSION_PROOF_INCOMPLETE"
+U1R18_R10_FIX6_WORKSTREAM = "U1R18-R13-ACCEPTANCE3-FIX1-FIX1"
+U1R18_R10_FIX6_COMMIT_MSG = ("test: prove Steam Client to CloverPit navigation "
+                             "(U1R18-R13-ACCEPTANCE3-FIX1-FIX1)\n\n"
+                             "Workstream: U1R18-R13-ACCEPTANCE3-FIX1-FIX1")
 
 BOOTSTRAP_REVIEW_ID = 4840817794
 REPAIR_REVIEW_ID = 4847645684
@@ -569,17 +571,20 @@ def create_advance_repair():
     _base(d, head_sha=U1R18_R10_FIX6_HEAD, parent_sha=U1R18_R10_FIX6_PARENT,
           message=U1R18_R10_FIX6_COMMIT_MSG)
     repair_body = (controller_review_json(U1R18_R10_FIX6_PARENT, decision="rejected",
-                                          wr_comment_id=5202688697,
-                                          sub_run_id=31088220327,
+                                          wr_comment_id=5236407700,
+                                          sub_run_id=31360009299,
                                           classification=U1R18_R10_FIX6_CLASSIFICATION)
                    + "\n\nRepair authorization granted for "
-                     "U1R18-R10-FIX1-SCOPE1-FIX6. This RED review authorizes a single "
-                     "direct child commit.\n")
+                     "U1R18-R13-ACCEPTANCE3-FIX1-FIX1. This RED review authorizes a "
+                     "single direct child commit.\n")
     write_fixture(d, "reviews.json",
                   [review_json(U1R18_R10_FIX6_PARENT, U1R18_R10_FIX6_REVIEW_ID,
                                repair_body, "COMMENTED", REPAIR_REVIEW_TS)])
     write_fixture(d, "files.json",
                   [".github/workstage-review-gate-policy.json",
+                   "scripts/workstage-review-gate.py",
+                   "scripts/test-workstage-review-gate.sh",
+                   "Tests/MacSteamTests/SteamReuseLifecycleReconciliationTests.swift",
                    "scripts/workstage-review-gate-fixtures/apply-mutation.py",
                    "scripts/workstage-review-gate-fixtures/generate-green.py",
                    "scripts/workstage-review-gate-fixtures/green/advance_repair/commit_HEAD.json",

@@ -121,12 +121,24 @@ SAFE_REPAIR_EXACT_PATHS = frozenset({
     "docs/ULTIMATE_ARCHITECTURE.md",
     "scripts/public-product-truth-audit.py",
     "scripts/test-public-product-truth-audit.sh",
+    # Bounded exact-test repair exception: the single reconciliation test path
+    # admitted under repair_authorization. This is an exact Tier-A path, never a
+    # generic Tests/ envelope. Sources/ is never admitted. The path only passes
+    # Tier B if the current repair_authorization also declares it.
+    "Tests/MacSteamTests/SteamReuseLifecycleReconciliationTests.swift",
 })
 SAFE_REPAIR_PATH_PREFIXES = (
     "scripts/workstage-review-gate-fixtures/",
     "scripts/u1r18-pr-truth-fixtures/",
     "scripts/public-product-truth-fixtures/",
 )
+
+# The single exact test path admitted under repair_authorization. It is the
+# ONLY Tests/** path ever admitted, and only when _repair_path_allowed also
+# passes (safe envelope AND policy-declared scope). Sources/ is never admitted.
+REPAIR_TEST_EXCEPTION_PATHS = frozenset({
+    "Tests/MacSteamTests/SteamReuseLifecycleReconciliationTests.swift",
+})
 
 WORKFLOW_PATH_DEFAULT = ".github/workflows/workstage-review-gate.yml"
 WORKFLOW_NAME_DEFAULT = "Workstream Review Gate"
@@ -1497,15 +1509,23 @@ class Gate:
             raise GateError(EXIT_POLICY, "repair_reused_after_fix1",
                             "Repair authorization parent mismatch on child")
 
-        # Changed paths validation (two-tier: safe envelope AND declared scope)
+        # Changed paths validation (two-tier: safe envelope AND declared scope).
+        # Sources/** is always rejected. Tests/** is rejected by default; the
+        # only exception is the single exact Tier-A test path, and even then
+        # only when it is also declared in the current repair_authorization
+        # scope (Tier B), which the _repair_path_allowed check above enforces.
         files = self._get_changed_files()
         for filepath in files:
             if not self._repair_path_allowed(filepath):
                 raise GateError(EXIT_POLICY, "repair_forbidden_path",
                                 f"Changed file not in allowed paths: {filepath}")
-            if filepath.startswith("Sources/") or filepath.startswith("Tests/"):
+            if filepath.startswith("Sources/"):
                 raise GateError(EXIT_POLICY, "repair_production_source_changed",
                                 f"Production source changed: {filepath}")
+            if filepath.startswith("Tests/"):
+                if filepath not in REPAIR_TEST_EXCEPTION_PATHS:
+                    raise GateError(EXIT_POLICY, "repair_production_source_changed",
+                                    f"Production source changed: {filepath}")
 
     def _get_changed_files(self):
         if self.fixtures_dir:

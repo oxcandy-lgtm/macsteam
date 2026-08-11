@@ -52,7 +52,7 @@ BEFORE_COMMIT_TS = "2026-08-03T02:00:00Z"
 
 # === IDs ===
 BOOTSTRAP_REVIEW_ID = 4840817794
-REPAIR_REVIEW_ID = 4873335284
+REPAIR_REVIEW_ID = 4894284089
 QUARANTINED_REVIEW_ID = 4841357081
 NORMAL_REVIEW_ID = 4840817795
 
@@ -65,9 +65,8 @@ FIX3_WORKSTREAM = "U1R18-R7-FIX3"
 FIX2_WORKSTREAM = "U1R18-R7-FIX2"
 FIX1_WORKSTREAM = "U1R18-R7-FIX1"
 GATE1_WORKSTREAM = "U1R18-R8-GATE1"
-REPAIR_COMMIT_MSG = "ci: close R10 SCOPE1 audit gaps (U1R18-R10-FIX1-SCOPE1-FIX1)"
 REPAIR_COMMIT_MSG = "ci: close workstream review authority gate (U1R18-R7-FIX1)"
-REPAIR_CLASSIFICATION = "RED_U1R18_R10_FIX1_SCOPE1_FIX5_TECHNICAL_GREEN_HISTORICAL_EVIDENCE_DELETION"
+REPAIR_CLASSIFICATION = "RED_U1R18_R13_ACCEPTANCE3_FIX1_PRODUCTION_NAVIGATION_REGRESSION_PROOF_INCOMPLETE"
 BOOTSTRAP_CLASSIFICATION = "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
 
 WORKER_REPORT_COMMENT_ID = 5161887211
@@ -1250,6 +1249,46 @@ def m_repair_production_source_changed(d):
     files = files if isinstance(files, list) else files.get("files", [])
     files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
     files.append("Sources/MacSteam/SomeFile.swift")
+    save_json(d, "files.json", files)
+
+
+def m_repair_other_test_file(d):
+    # A different Tests/ file is changed; it is NOT the exact Tier-A test path
+    # and never has been admitted. Must be rejected.
+    files = load_json(d, "files.json") if os.path.exists(os.path.join(d, "files.json")) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("Tests/MacSteamTests/SomeOtherTest.swift")
+    save_json(d, "files.json", files)
+
+
+def m_repair_exact_test_not_declared(d):
+    # The exact Tier-A test path is changed, but the current repair scope does
+    # NOT declare it (Tier B fails) -> repair_forbidden_path.
+    policy = load_policy()
+    policy["repair_authorization"]["allowed_exact_paths"] = [
+        p for p in policy["repair_authorization"]["allowed_exact_paths"]
+        if p != "Tests/MacSteamTests/SteamReuseLifecycleReconciliationTests.swift"]
+    save_policy(d, policy)
+
+
+def m_repair_authorized_test_plus_extra_test(d):
+    # The exact Tier-A test path is changed (declared) AND another Tests/ file
+    # is changed -> the extra path must be rejected.
+    files = load_json(d, "files.json") if os.path.exists(os.path.join(d, "files.json")) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("Tests/MacSteamTests/AnotherTest.swift")
+    save_json(d, "files.json", files)
+
+
+def m_repair_authorized_test_plus_sources(d):
+    # The exact Tier-A test path is changed (declared) AND a Sources/ file is
+    # changed -> the sources path must be rejected.
+    files = load_json(d, "files.json") if os.path.exists(os.path.join(d, "files.json")) else []
+    files = files if isinstance(files, list) else files.get("files", [])
+    files = [f if isinstance(f, str) else f.get("filename", "") for f in files]
+    files.append("Sources/MacSteam/SteamSteam.swift")
     save_json(d, "files.json", files)
 
 
@@ -4517,6 +4556,10 @@ MUTATIONS = {
     "repair_review_after_child": m_repair_review_after_child,
     "repair_forbidden_path": m_repair_forbidden_path,
     "repair_production_source_changed": m_repair_production_source_changed,
+    "repair_other_test_file": m_repair_other_test_file,
+    "repair_exact_test_not_declared": m_repair_exact_test_not_declared,
+    "repair_authorized_test_plus_extra_test": m_repair_authorized_test_plus_extra_test,
+    "repair_authorized_test_plus_sources": m_repair_authorized_test_plus_sources,
     "repair_merge_commit": m_repair_merge_commit,
     "repair_reused_after_fix1": m_repair_reused_after_fix1,
     "repair_quarantined_review_used": m_repair_quarantined_review_used,

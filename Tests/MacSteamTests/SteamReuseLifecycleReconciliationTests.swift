@@ -125,16 +125,28 @@ struct SteamReuseLifecycleReconciliationTests {
         #expect(coordinator.steamInstallLifecycle == .verifiedComplete)
 
         // Every upstream page must be complete so the reducer admits the
-        // transition into the Steam client page.
+        // transitions. The completion map comes from the production authority
+        // computePageCompletion() — never a hand-built map.
         let completion = coordinator.computePageCompletion()
         #expect(completion[.runtime] == true)
         #expect(completion[.environment] == true)
         #expect(completion[.steamInstaller] == true)
         #expect(completion[.steamClient] == true)
 
-        coordinator.currentPage = .steamInstaller
+        // No page seeding: drive the real reducer from the initial .runtime
+        // position through every production gateway into Steam client.
+        await coordinator.send(.next)
+        #expect(coordinator.currentPage == .environment)
+
+        await coordinator.send(.next)
+        #expect(coordinator.currentPage == .steamInstaller)
+
         await coordinator.send(.next)
         #expect(coordinator.currentPage == .steamClient)
+        #expect(coordinator.lastNavigationResult?.accepted == true)
+
+        await coordinator.send(.next)
+        #expect(coordinator.currentPage == .cloverPit)
         #expect(coordinator.lastNavigationResult?.accepted == true)
     }
 
