@@ -20,6 +20,13 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        .target(
+            name: "MacsTeamControlPlane",
+            path: "Sources/MacsTeamControlPlane",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         .executableTarget(
             name: "MacsTeamNavigationAudit",
             dependencies: ["MacsTeamNavigationCore"],
@@ -30,7 +37,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "MacSteam",
-            dependencies: ["MacsTeamNavigationCore"],
+            dependencies: ["MacsTeamNavigationCore", "MacsTeamControlPlane"],
             path: "Sources/MacSteam",
             resources: [
                 .copy("Resources/Recipes")

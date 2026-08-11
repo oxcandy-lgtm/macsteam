@@ -2,15 +2,23 @@
 
 import SwiftUI
 
-/// Shared application context — single-owner for guard and coordinator.
+/// Shared application context — single-owner for guard, coordinator, and the
+/// control-plane mirror.
 @MainActor
 final class MacsTeamApplicationContext {
     let instanceGuard: AppInstanceGuard
     let coordinator: UltimateSetupCoordinator
+    let controlPlaneMirror: ControlPlaneMirror
 
     init(instanceGuard: AppInstanceGuard, coordinator: UltimateSetupCoordinator) {
         self.instanceGuard = instanceGuard
         self.coordinator = coordinator
+        // U1R18-R13-ACCEPTANCE4: the mirror is a production, always-on observer.
+        // Started here (single owner) so state.json/events.ndjson exist for any
+        // terminal client from app launch onward.
+        let mirror = ControlPlaneMirror(coordinator: coordinator)
+        self.controlPlaneMirror = mirror
+        mirror.start()
     }
 }
 
@@ -52,6 +60,10 @@ final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
         guard let context else { return .terminateCancel }
+
+        // Stop the mirror loop first: the final persisted state.json/events
+        // must never be mutated after the termination transaction begins.
+        context.controlPlaneMirror.stop()
 
         // Exact-once: a second Dock-Quit while the first cleanup is in flight
         // is a true no-op — never spawn a second cleanup Task or reply twice.

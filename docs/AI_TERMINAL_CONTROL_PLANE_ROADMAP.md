@@ -211,3 +211,17 @@ One final build/test/smoke is enough after the control plane works.
 - Starting parent SHA: `206fd94fa925d4d3bf4fa6586e5119157eaf6440`
 - This PR branch: `feat/ai-terminal-control-plane`
 - This document is the canonical roadmap for this PR. If chat context becomes noisy or truncated, reload this file first before deciding the next implementation step.
+
+## Current progress
+
+```yaml
+current_progress:
+  step1: DONE
+  step2: NEXT
+  state_mirror: WORKING
+  structured_events: WORKING
+  steam_flags: WORKING
+  cloverpit_flags: WORKING
+  back_next_flags: WORKING
+  installer_messages: WORKING
+```
