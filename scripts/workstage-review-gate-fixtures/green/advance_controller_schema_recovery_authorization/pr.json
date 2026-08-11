@@ -1,0 +1,17 @@
+{
+  "number": 2,
+  "head": {
+    "ref": "feat/ultimate-cloverpit-u1",
+    "sha": "f1e2d3c4b5a697887766554433221100ffeeddcc",
+    "repo": {"full_name": "oxcandy-lgtm/macsteam"}
+  },
+  "base": {
+    "ref": "feat/public-oss-bootstrap",
+    "repo": {"full_name": "oxcandy-lgtm/macsteam"}
+  },
+  "state": "open",
+  "draft": true,
+  "merged": false,
+  "mergeable": "MERGEABLE",
+  "title": "Schema recovery bridge fixture"
+}

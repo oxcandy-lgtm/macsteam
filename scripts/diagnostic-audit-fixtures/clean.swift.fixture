@@ -1,0 +1,5 @@
+// CLEAN FIXTURE — must pass audit
+// This file contains only safe patterns.
+let sanitized = DiagnosticRedactor.sanitize(input)
+let target = try DiagnosticTrustedRoot.validatedTarget(filename: name)
+try DiagnosticBundleWriter.write(bundle, to: target)

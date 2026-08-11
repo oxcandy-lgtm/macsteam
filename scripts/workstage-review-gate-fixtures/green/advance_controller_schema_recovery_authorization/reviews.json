@@ -1,0 +1,9 @@
+[
+  {
+    "id": 4891552433,
+    "commit_id": "6b8cb7a583fd4991929a6ced70e98faf991defa5",
+    "state": "COMMENTED",
+    "submitted_at": "2026-08-09T14:03:16Z",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"6b8cb7a583fd4991929a6ced70e98faf991defa5\",\n  \"worker_report_comment_id\": 5231874755,\n  \"submission_run_id\": 31317042727,\n  \"decision\": \"accepted\",\n  \"classification\": \"GREEN_U1R18_R13_ACCEPTANCE1_FIX1_STEAM_INSTALLER_REACHABILITY_RESTORED_CLOSED\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"next_workstream_admitted\": false,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```"
+  }
+]

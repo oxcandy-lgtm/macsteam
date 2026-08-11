@@ -16,7 +16,7 @@ final class RecipeLoader: Sendable {
     enum LoaderError: Error, LocalizedError, Equatable, Sendable {
         case recipeNotFound(String)
         case invalidData
-        case validationFailed(RecipeValidationError)
+        case validationFailed(String)
 
         var errorDescription: String? {
             switch self {
@@ -25,7 +25,7 @@ final class RecipeLoader: Sendable {
             case .invalidData:
                 return "Recipe data could not be read."
             case let .validationFailed(error):
-                return error.localizedDescription
+                return error
             }
         }
     }
@@ -41,7 +41,7 @@ final class RecipeLoader: Sendable {
             guard let bundleURL = Bundle.module.url(
                 forResource: name,
                 withExtension: "json",
-                subdirectory: "Resources/Recipes"
+                subdirectory: "Recipes"
             ) else {
                 throw LoaderError.recipeNotFound(name)
             }
@@ -68,10 +68,8 @@ final class RecipeLoader: Sendable {
             throw LoaderError.invalidData
         }
 
-        do {
-            try recipe.validate()
-        } catch let error as RecipeValidationError {
-            throw LoaderError.validationFailed(error)
+        guard recipe.isValid else {
+            throw LoaderError.validationFailed("Recipe failed schema validation")
         }
 
         return recipe

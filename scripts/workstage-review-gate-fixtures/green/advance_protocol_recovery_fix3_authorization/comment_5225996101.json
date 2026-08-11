@@ -1,0 +1,9 @@
+{
+ "id": 5225996101,
+ "created_at": "2026-08-08T11:57:25Z",
+ "updated_at": "2026-08-08T11:57:25Z",
+ "user": {
+  "login": "worker"
+ },
+ "body": "<!-- macsteam-worker-report:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"worker_report\",\n  \"workstream\": \"U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2\",\n  \"head_sha\": \"4eeb31ca84f1fda9f50611e6a1486d00eaafe0dd\",\n  \"parent_sha\": \"c4fc9093e01df80fdd8ca600d7391baad58b0081\",\n  \"commit_count\": 1,\n  \"core_ci_run_id\": 31255262627,\n  \"core_ci_jobs\": [\n    \"Swift Build\",\n    \"Public Audit\",\n    \"Recipe Validation\",\n    \"License Validation\",\n    \"Gitignore Validation\"\n  ],\n  \"gate_advance_run_id\": 31255264930,\n  \"gate_submission_run_id\": null,\n  \"stop\": true,\n  \"next_workstream_started\": false,\n  \"ready_performed\": false,\n  \"merge_performed\": false,\n  \"release_performed\": false\n}\n```"
+}

@@ -1,0 +1,3 @@
+{
+ "93097599438": "2026-08-08T11:34:24.5921300Z [group] Advance Gate\n2026-08-08T11:34:24.5921300Z {\"state\": \"CURRENT_WORKSTREAM_ACTIVE\", \"parent_authority\": \"protocol_recovery_fix2_authorization\", \"current_report_required\": true, \"next_workstream_admitted\": false, \"repository\": \"oxcandy-lgtm/macsteam\", \"pr_number\": 2, \"head_sha\": \"4eeb31ca84f1fda9f50611e6a1486d00eaafe0dd\", \"parent_sha\": \"c4fc9093e01df80fdd8ca600d7391baad58b0081\"}\n[endgroup]\n"
+}

@@ -1,0 +1,38 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "id": 30790400001,
+      "name": "CI",
+      "head_sha": "d0e3a2b3c4d5e6f708192a3b4c5d6e7f8899aabb",
+      "head_branch": "feat/ultimate-cloverpit-u1",
+      "workflow_id": 320460394,
+      "event": "push",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "run_started_at": "2026-08-03T03:00:00Z",
+      "started_at": "2026-08-03T03:00:00Z",
+      "created_at": "2026-08-03T03:00:00Z",
+      "completed_at": "2026-08-03T03:05:00Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/30790400001"
+    },
+    {
+      "id": 30790400002,
+      "name": "Workstream Review Gate",
+      "head_sha": "d0e3a2b3c4d5e6f708192a3b4c5d6e7f8899aabb",
+      "head_branch": "feat/ultimate-cloverpit-u1",
+      "workflow_id": 325971670,
+      "path": ".github/workflows/workstage-review-gate.yml",
+      "event": "workflow_dispatch",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "run_started_at": "2026-08-03T03:06:00Z",
+      "started_at": "2026-08-03T03:06:00Z",
+      "created_at": "2026-08-03T03:06:00Z",
+      "completed_at": "2026-08-03T03:08:00Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/30790400002"
+    }
+  ]
+}

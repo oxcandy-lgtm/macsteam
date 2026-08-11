@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://macsteam.example.com/schemas/workstream-report.schema.json",
+  "title": "MacSteam Workstream Report",
+  "description": "Schema for the worker report JSON block embedded in a top-level PR Conversation issue comment, emitted by the worker after completing a workstream",
+  "schema_version": 1,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "workstream",
+    "head_sha",
+    "parent_sha",
+    "commit_count",
+    "core_ci_run_id",
+    "core_ci_jobs",
+    "gate_advance_run_id",
+    "gate_submission_run_id",
+    "stop",
+    "next_workstream_started",
+    "ready_performed",
+    "merge_performed",
+    "release_performed"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "worker_report"
+    },
+    "workstream": {
+      "type": "string",
+      "pattern": "^U[0-9]+R[0-9]+(-[A-Za-z0-9]+)*$"
+    },
+    "head_sha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "parent_sha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "commit_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "core_ci_run_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "core_ci_jobs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "gate_advance_run_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "gate_submission_run_id": {
+      "const": null
+    },
+    "stop": {
+      "type": "boolean"
+    },
+    "next_workstream_started": {
+      "type": "boolean"
+    },
+    "ready_performed": {
+      "type": "boolean"
+    },
+    "merge_performed": {
+      "type": "boolean"
+    },
+    "release_performed": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

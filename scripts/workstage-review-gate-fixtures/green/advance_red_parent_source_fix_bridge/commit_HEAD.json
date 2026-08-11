@@ -1,0 +1,21 @@
+{
+  "sha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+  "parents": [
+    {
+      "sha": "a2d26b2e7ccd17c5c5ea153bf346572fa886a4be"
+    }
+  ],
+  "commit": {
+    "message": "ci: admit rejected-parent source fix bridge (U1R18-R11-FIX1-GATE1)\n\nWorkstream: U1R18-R11-FIX1-GATE1",
+    "committer": {
+      "date": "2026-08-07T06:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    },
+    "author": {
+      "date": "2026-08-07T06:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    }
+  }
+}

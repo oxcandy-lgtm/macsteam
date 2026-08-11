@@ -1,0 +1,13 @@
+[
+  {
+    "id": 4843792150,
+    "user": {
+      "login": "sai-controller"
+    },
+    "commit_id": "b7c4f9a8c2d6e103547a9b8c0d2e3f4a5b6c7d8e",
+    "state": "APPROVED",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"b7c4f9a8c2d6e103547a9b8c0d2e3f4a5b6c7d8e\",\n  \"worker_report_comment_id\": 5161887211,\n  \"submission_run_id\": 30790400006,\n  \"decision\": \"accepted\",\n  \"classification\": \"GREEN_U1R18_R6_CONTROLLER_REVIEW_ACCEPTED\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n",
+    "submitted_at": "2026-08-03T02:00:00Z",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4843792150"
+  }
+]

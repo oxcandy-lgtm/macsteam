@@ -2,108 +2,164 @@
 
 import Foundation
 
-/// Describes a game that can be launched by MacSteam.
+/// A validated game recipe that describes how to detect, install, and launch
+/// a specific Windows game using MacSteam's runtime adapters.
 ///
-/// Recipes specify which store the game belongs to, which runtime
-/// adapter is preferred, and how to launch the game.
-///
-/// Recipes do **not** contain absolute paths, credentials, or
-/// personal information.
-struct GameRecipe: Codable, Equatable, Sendable {
-    let schemaVersion: Int
-    let id: String
-    let displayName: String
-    let store: StoreInfo
-    let runtime: RuntimePreference
-    let launch: LaunchConfig
-    let detection: DetectionConfig
-}
+/// Schema version 2 — all recipe files must carry `schemaVersion: 2`.
+public struct GameRecipe: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let id: String
+    public let displayName: String
+    public let store: StoreInfo
+    public let runtime: RuntimeRequirements
+    public let graphics: GraphicsConfig
+    public let prefix: PrefixConfig
+    public let storeInstallation: StoreInstallationConfig
+    public let launch: LaunchConfig
+    public let detection: DetectionConfig
+    public let savePolicy: SavePolicyConfig
 
-// MARK: - Nested types
+    // MARK: - Nested types
 
-extension GameRecipe {
-    struct StoreInfo: Codable, Equatable, Sendable {
-        let type: StoreType
-        let appId: String
+    public struct StoreInfo: Codable, Sendable, Equatable {
+        public let type: StoreType
+        public let appId: String
+
+        public init(type: StoreType, appId: String) {
+            self.type = type
+            self.appId = appId
+        }
     }
 
-    enum StoreType: String, Codable, Sendable {
+    public enum StoreType: String, Codable, Sendable, Equatable {
         case steam
     }
 
-    struct RuntimePreference: Codable, Equatable, Sendable {
-        let preferredAdapter: String
+    public struct RuntimeRequirements: Codable, Sendable, Equatable {
+        public let requiredCapabilities: [String]
+        public let preferredRuntime: RuntimeKind
+        public let fallbackRuntimes: [RuntimeKind]
+
+        public init(requiredCapabilities: [String], preferredRuntime: RuntimeKind, fallbackRuntimes: [RuntimeKind]) {
+            self.requiredCapabilities = requiredCapabilities
+            self.preferredRuntime = preferredRuntime
+            self.fallbackRuntimes = fallbackRuntimes
+        }
     }
 
-    struct LaunchConfig: Codable, Equatable, Sendable {
-        let arguments: [String]
+    public enum RuntimeKind: String, Codable, Sendable, Equatable {
+        case managedWine = "managed-wine"
+        case importedWine = "imported-wine"
+        case systemWine = "system-wine"
+        case crossover = "crossover"
     }
 
-    struct DetectionConfig: Codable, Equatable, Sendable {
-        let manifestName: String
-        /// Candidate game executable filenames (e.g. `["CloverPit.exe"]`).
-        /// When non‑empty, at least one must be present in the install directory
-        /// for `isReady` to be true.
-        let executableCandidates: [String]?
+    public struct GraphicsConfig: Codable, Sendable, Equatable {
+        public let preferred: GraphicsBackend
+        public let fallback: [GraphicsBackend]
 
-        init(manifestName: String, executableCandidates: [String]? = nil) {
+        public init(preferred: GraphicsBackend, fallback: [GraphicsBackend]) {
+            self.preferred = preferred
+            self.fallback = fallback
+        }
+    }
+
+    public enum GraphicsBackend: String, Codable, Sendable, Equatable {
+        case wined3d
+        case dxvk
+        case moltenvk
+        case d3dmetal
+    }
+
+    public struct PrefixConfig: Codable, Sendable, Equatable {
+        public let id: String
+        public let windowsVersion: WindowsVersion
+        public let isolation: PrefixIsolation
+
+        public init(id: String, windowsVersion: WindowsVersion, isolation: PrefixIsolation) {
+            self.id = id
+            self.windowsVersion = windowsVersion
+            self.isolation = isolation
+        }
+    }
+
+    public enum WindowsVersion: String, Codable, Sendable, Equatable {
+        case win10
+        case win81
+        case win7
+    }
+
+    public enum PrefixIsolation: String, Codable, Sendable, Equatable {
+        case perGame = "per-game"
+        case shared
+    }
+
+    public struct StoreInstallationConfig: Codable, Sendable, Equatable {
+        public let installerMode: InstallerMode
+        public let installerProduct: String
+        public let redistribution: RedistributionMode
+
+        public init(installerMode: InstallerMode, installerProduct: String, redistribution: RedistributionMode) {
+            self.installerMode = installerMode
+            self.installerProduct = installerProduct
+            self.redistribution = redistribution
+        }
+    }
+
+    public enum InstallerMode: String, Codable, Sendable, Equatable {
+        case userSelectedFile = "user-selected-file"
+        case automatic
+    }
+
+    public enum RedistributionMode: String, Codable, Sendable, Equatable {
+        case forbidden
+        case allowed
+        case reviewRequired = "review-required"
+    }
+
+    public struct LaunchConfig: Codable, Sendable, Equatable {
+        public let storeArguments: [String]
+
+        public init(storeArguments: [String]) {
+            self.storeArguments = storeArguments
+        }
+    }
+
+    public struct DetectionConfig: Codable, Sendable, Equatable {
+        public let manifestName: String
+        public let executableCandidates: [String]
+
+        public init(manifestName: String, executableCandidates: [String]) {
             self.manifestName = manifestName
             self.executableCandidates = executableCandidates
         }
     }
-}
 
-// MARK: - Validation
+    public struct SavePolicyConfig: Codable, Sendable, Equatable {
+        public let mode: SaveMode
+        public let backupBeforeDestructiveRepair: Bool
 
-enum RecipeValidationError: Error, LocalizedError, Equatable, Sendable {
-    case invalidJSON
-    case unknownSchemaVersion(Int)
-    case emptyAppID
-    case absolutePathDetected(String)
-    case missingRequiredField(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidJSON:
-            return "Recipe file is not valid JSON."
-        case let .unknownSchemaVersion(v):
-            return "Unsupported recipe schema version: \(v)."
-        case .emptyAppID:
-            return "Recipe has an empty application identifier."
-        case let .absolutePathDetected(field):
-            return "Recipe contains an absolute path in field: \(field)."
-        case let .missingRequiredField(field):
-            return "Recipe is missing required field: \(field)."
+        public init(mode: SaveMode, backupBeforeDestructiveRepair: Bool) {
+            self.mode = mode
+            self.backupBeforeDestructiveRepair = backupBeforeDestructiveRepair
         }
     }
-}
 
-extension GameRecipe {
-    /// Validates the recipe against known rules.
-    /// - Throws: `RecipeValidationError` if the recipe is not usable.
-    func validate() throws {
-        guard schemaVersion == 1 else {
-            throw RecipeValidationError.unknownSchemaVersion(schemaVersion)
-        }
-        guard !store.appId.isEmpty else {
-            throw RecipeValidationError.emptyAppID
-        }
-        guard !id.isEmpty else {
-            throw RecipeValidationError.missingRequiredField("id")
-        }
-        guard !displayName.isEmpty else {
-            throw RecipeValidationError.missingRequiredField("displayName")
-        }
-        // Reject any field containing an absolute path
-        let mirror = Mirror(reflecting: self)
-        for child in mirror.children {
-            if let value = child.value as? String, value.hasPrefix("/") {
-                throw RecipeValidationError.absolutePathDetected(child.label ?? "unknown")
-            }
-        }
-        // Also check nested fields
-        if launch.arguments.contains(where: { $0.hasPrefix("/") }) {
-            throw RecipeValidationError.absolutePathDetected("launch.arguments")
-        }
+    public enum SaveMode: String, Codable, Sendable, Equatable {
+        case discoverOnly = "discover-only"
+        case backupEnabled = "backup-enabled"
+        case fullManaged = "full-managed"
+    }
+
+    // MARK: - Validation
+
+    /// Validate the recipe against known schema constraints.
+    public var isValid: Bool {
+        guard schemaVersion == 2 else { return false }
+        guard !id.isEmpty, !displayName.isEmpty else { return false }
+        guard !store.appId.isEmpty else { return false }
+        guard !launch.storeArguments.isEmpty else { return false }
+        guard !detection.executableCandidates.isEmpty else { return false }
+        return true
     }
 }

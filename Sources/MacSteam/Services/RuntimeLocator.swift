@@ -26,7 +26,7 @@ class RuntimeLocator: @unchecked Sendable {
             // Quick pre‑check that this is actually CrossOver
             guard bundleID == "com.codeweavers.CrossOver" else { continue }
 
-            let runtime = CrossOverRuntime(bundleURL: url)
+            let runtime = CrossOverRuntime(url: url)
             return runtime
         }
 
@@ -39,7 +39,7 @@ class RuntimeLocator: @unchecked Sendable {
         let bundleID = Bundle(url: url)?.bundleIdentifier ?? ""
         switch bundleID {
         case "com.codeweavers.CrossOver":
-            return CrossOverRuntime(bundleURL: url)
+            return CrossOverRuntime(url: url)
         default:
             return nil
         }

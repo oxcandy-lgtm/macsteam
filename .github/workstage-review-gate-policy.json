@@ -1,0 +1,350 @@
+{
+  "schema_version": 1,
+  "repository": "oxcandy-lgtm/macsteam",
+  "pr_number": 2,
+  "branch": "feat/ultimate-cloverpit-u1",
+  "base_branch": "feat/public-oss-bootstrap",
+  "bootstrap": {
+    "head_sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db",
+    "only_child_head": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d",
+    "worker_report_comment_id": 5161887210,
+    "controller_review_id": 4840817794,
+    "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
+  },
+    "repair_authorization": {
+        "parent_sha": "dfce06ffe54058c9abb43c4a32b8bc6d9a07b8b2",
+        "review_id": 4894284089,
+        "classification": "RED_U1R18_R13_ACCEPTANCE3_FIX1_PRODUCTION_NAVIGATION_REGRESSION_PROOF_INCOMPLETE",
+        "required_commit_message": "test: prove Steam Client to CloverPit navigation (U1R18-R13-ACCEPTANCE3-FIX1-FIX1)",
+        "required_workstream": "U1R18-R13-ACCEPTANCE3-FIX1-FIX1",
+        "single_direct_child_only": true,
+        "allowed_exact_paths": [
+            ".github/workstage-review-gate-policy.json",
+            "scripts/workstage-review-gate.py",
+            "scripts/test-workstage-review-gate.sh",
+            "Tests/MacSteamTests/SteamReuseLifecycleReconciliationTests.swift"
+        ],
+        "allowed_path_prefixes": [
+            "scripts/workstage-review-gate-fixtures/"
+        ]
+    },
+  "quarantined_review_ids": [4841357081, 4888334695, 4891552433],
+  "quarantined_review_run_ids": [31244379661, 31317913446],
+  "red_parent_source_fix_bridge": {
+    "authorization_schema_version": 1,
+    "authorization_comment_id": 5211174534,
+    "source_fix_sha": "a2d26b2e7ccd17c5c5ea153bf346572fa886a4be",
+    "rejected_parent_sha": "007e1d4e38d8e8a07950d5eff74c0453cf7a7dc6",
+    "source_fix_workstream": "U1R18-R11-FIX1",
+    "source_fix_commit_subject": "fix: close local runtime acceptance completion path (U1R18-R11-FIX1)",
+    "source_fix_core_ci_run_id": 31136834727,
+    "source_fix_required_ci_jobs": 5,
+    "failed_advance_run_id": 31136834743,
+    "failed_advance_guard": "latest_rejected_overrides_old_green",
+    "rejected_controller_review_id": 4878732820,
+    "rejected_classification": "RED_U1R18_R11_ACCEPTANCE_PATH_UNREACHABLE_AND_RECEIPT_DESTROYED",
+    "bridge_workstream": "U1R18-R11-FIX1-GATE1",
+    "bridge_commit_subject": "ci: admit rejected-parent source fix bridge (U1R18-R11-FIX1-GATE1)"
+  },
+  "gate_fix_authorization": {
+    "authorization_comment_id": 5211679289,
+    "parent_sha": "db2dc127b37b4a93d0c157458e8bb0ecb01b45ac",
+    "parent_workstream": "U1R18-R11-FIX1-GATE1",
+    "parent_classification": "RED_U1R18_R11_FIX1_GATE1_AUTHORITY_BINDING_INCOMPLETE_AND_SUBMISSION_UNPROVEN",
+    "parent_advance_run_id": 31141723135,
+    "parent_core_ci_run_id": 31141723115,
+    "required_workstream": "U1R18-R11-FIX1-GATE1-FIX1",
+    "required_commit_subject": "ci: bind rejected review and failed advance evidence (U1R18-R11-FIX1-GATE1-FIX1)",
+    "single_direct_child_only": true
+  },
+  "red_parent_source_fix_chain_bridge": {
+    "authorization_schema_version": 1,
+    "authorization_comment_id": 5216469207,
+    "rejected_parent_sha": "917b7e637629ed98bf6fa22ce38fafbf2793bb90",
+    "rejected_controller_review_id": 4881429281,
+    "rejected_classification": "RED_U1R18_R12_DURABLE_RECEIPT_FAIL_CLOSED_INCOMPLETE",
+    "terminal_source_fix_sha": "615455c88a4ddae1aa71739f228f609653ef61f4",
+    "source_fix_chain": [
+      {
+        "sha": "f2455860634b47c4360e26669981ddb6693ef392",
+        "parent_sha": "917b7e637629ed98bf6fa22ce38fafbf2793bb90",
+        "workstream": "U1R18-R12-FIX1",
+        "commit_subject": "fix: harden durable acceptance receipt I/O (U1R18-R12-FIX1)",
+        "core_ci_run_id": 31167252858,
+        "required_ci_jobs": 5,
+        "failed_advance_run_id": 31167252882,
+        "failed_advance_guard": "latest_rejected_overrides_old_green"
+      },
+      {
+        "sha": "e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4",
+        "parent_sha": "f2455860634b47c4360e26669981ddb6693ef392",
+        "workstream": "U1R18-R12-FIX2",
+        "commit_subject": "fix: close bounded receipt POSIX transaction (U1R18-R12-FIX2)",
+        "core_ci_run_id": 31170284028,
+        "required_ci_jobs": 5,
+        "failed_advance_run_id": 31170283805,
+        "failed_advance_guard": "parent_review_wrong_head"
+      },
+      {
+        "sha": "615455c88a4ddae1aa71739f228f609653ef61f4",
+        "parent_sha": "e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4",
+        "workstream": "U1R18-R12-FIX3",
+        "commit_subject": "fix: recover bounded receipt probe EINTR (U1R18-R12-FIX3)",
+        "core_ci_run_id": 31172730810,
+        "required_ci_jobs": 5,
+        "failed_advance_run_id": 31172730722,
+        "failed_advance_guard": "parent_review_wrong_head"
+      }
+    ],
+    "bridge_workstream": "U1R18-R12-FIX3-GATE1",
+    "bridge_commit_subject": "ci: admit R12 durable receipt repair chain (U1R18-R12-FIX3-GATE1)",
+    "single_direct_child_only": true
+  },
+  "commented_parent_source_fix_bridge": {
+    "authorization_schema_version": 1,
+    "authorization_comment_id": 5231229451,
+    "source_fix_sha": "917b64ad418258127e7632a5063587af67791d36",
+    "source_fix_parent_sha": "69e3d54297a913775eb920cdbb71f369e3c3b1b4",
+    "source_fix_workstream": "U1R18-R13-FIX1-FIX6",
+    "source_fix_commit_subject": "test: prove exact Steam prelaunch orchestration (U1R18-R13-FIX1-FIX6)",
+    "source_fix_core_ci_run_id": 31309627509,
+    "source_fix_required_ci_jobs": 5,
+    "failed_advance_run_id": 31309627501,
+    "failed_advance_job_id": 93235295420,
+    "failed_advance_guard": "parent_review_commented_without_marker",
+    "parent_technical_review_id": 4891029116,
+    "parent_technical_classification": "RED_U1R18_R13_FIX1_FIX5_PRODUCTION_ORCHESTRATION_PROOF_STILL_BYPASSED",
+    "source_fix_technical_review_id": 4891206403,
+    "source_fix_technical_classification": "GREEN_U1R18_R13_FIX1_FIX6_EXACT_PRELAUNCH_ORCHESTRATION_PROOF_CLOSED",
+    "bridge_workstream": "U1R18-R13-FIX1-FIX6-GATE1",
+    "bridge_commit_subject": "ci: admit FIX6 commented-parent source bridge (U1R18-R13-FIX1-FIX6-GATE1)",
+    "single_direct_child_only": true,
+    "source_fix_allowed_exact_paths": [
+      "Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift",
+      "Tests/MacSteamTests/LaunchFastPathTests.swift"
+    ],
+    "source_fix_allowed_path_prefixes": [],
+    "bridge_allowed_exact_paths": [
+      ".github/workstage-review-gate-policy.json",
+      "scripts/workstage-review-gate.py",
+      "scripts/test-workstage-review-gate.sh",
+      "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+      "scripts/workstage-review-gate-fixtures/apply-source-mutation.py"
+    ],
+    "bridge_allowed_path_prefixes": [
+      "scripts/workstage-review-gate-fixtures/"
+    ],
+    "ready_authorized": false,
+    "merge_authorized": false,
+    "release_authorized": false,
+    "next_product_workstream_authorized": false
+  },
+  "protocol_recovery_authorization": {
+    "schema_version": 1,
+    "parent_sha": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+    "parent_workstream": "U1R18-R12-FIX3-GATE1",
+    "parent_commit_subject": "ci: admit R12 durable receipt repair chain (U1R18-R12-FIX3-GATE1)",
+    "corrective_controller_review_id": 4888344128,
+    "corrective_classification": "RED_U1R18_R12_FIX3_GATE1_PROTOCOL_INTEGRITY_BREACH",
+    "unauthorized_controller_review_id": 4888334695,
+    "unauthorized_review_gate_run_id": 31244379661,
+    "unauthorized_review_gate_jobs": ["Review Gate", "Advance Gate", "Submission Gate"],
+    "historical_worker_report_comment_id": 5224935457,
+    "historical_submission_run_id": 31244286734,
+    "required_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1",
+    "required_commit_subject": "ci: quarantine unauthorized GATE1 closure (U1R18-R12-FIX3-GATE1-RECOVERY1)",
+    "single_direct_child_only": true,
+    "allowed_exact_paths": [
+      ".github/workstage-review-gate-policy.json",
+      "scripts/workstage-review-gate.py",
+      "scripts/test-workstage-review-gate.sh",
+      "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+      "scripts/workstage-review-gate-fixtures/apply-source-mutation.py"
+    ],
+    "allowed_path_prefixes": [
+      "scripts/workstage-review-gate-fixtures/"
+    ]
+  },
+  "protocol_recovery_fix_authorization": {
+      "schema_version": 1,
+      "authorization_comment_id": 5225253678,
+      "parent_sha": "464c18481aa19ea26b2ad574cea29632e208ce46",
+      "parent_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1",
+      "parent_commit_subject": "ci: quarantine unauthorized GATE1 closure (U1R18-R12-FIX3-GATE1-RECOVERY1)",
+      "failed_advance_run_id": 31247320739,
+      "failed_advance_job_id": 93077948452,
+      "failed_advance_guard": "protocol_recovery_review_run_final_state_wrong",
+      "failed_advance_message": "Review Gate log final state != REVIEW_COMPLETE_NX_REQUIRED",
+      "historical_review_gate_run_id": 31244379661,
+      "historical_review_gate_job_id": 93070440269,
+      "historical_review_gate_expected_state": "REVIEW_COMPLETE_NX_REQUIRED",
+      "historical_review_gate_head_sha": "c4940c37956efb0ae92740e9ef1bcb91c6d3d92f",
+      "corrective_controller_review_id": 4888344128,
+      "required_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1",
+      "required_commit_subject": "ci: parse timestamped Review Gate proof (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1)",
+      "single_direct_child_only": true,
+      "allowed_exact_paths": [
+        ".github/workstage-review-gate-policy.json",
+        "scripts/workstage-review-gate.py",
+        "scripts/test-workstage-review-gate.sh",
+        "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+        "scripts/workstage-review-gate-fixtures/apply-source-mutation.py"
+      ],
+      "allowed_path_prefixes": [
+        "scripts/workstage-review-gate-fixtures/"
+      ],
+      "ready_authorized": false,
+      "merge_authorized": false,
+      "release_authorized": false,
+      "next_product_workstream_authorized": false
+    },
+  "protocol_recovery_fix2_authorization": {
+      "schema_version": 1,
+      "authorization_comment_id": 5225497249,
+      "parent_sha": "c4fc9093e01df80fdd8ca600d7391baad58b0081",
+      "parent_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1",
+      "parent_commit_subject": "ci: parse timestamped Review Gate proof (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX1)",
+      "parent_advance_run_id": 31250113941,
+      "parent_advance_job_id": 93085031472,
+      "parent_advance_state": "CURRENT_WORKSTREAM_ACTIVE",
+      "parent_advance_authority": "protocol_recovery_fix_authorization",
+      "parent_core_ci_run_id": 31250113951,
+      "parent_core_ci_required_jobs": 5,
+      "sai_technical_classification": "RED_U1R18_R12_FIX3_GATE1_RECOVERY1_FIX1_FINAL_STATE_SELECTION_INCOMPLETE",
+      "required_fixes": [
+        "select_last_relevant_gate_state_before_expected_state_validation",
+        "reject_earlier_expected_state_when_later_relevant_state_contradicts",
+        "bound_gate_log_scan_by_finite_suffix_bytes_and_or_lines"
+      ],
+      "required_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2",
+      "required_commit_subject": "ci: select bounded final Review Gate state (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2)",
+      "single_direct_child_only": true,
+      "allowed_exact_paths": [
+        ".github/workstage-review-gate-policy.json",
+        "scripts/workstage-review-gate.py",
+        "scripts/test-workstage-review-gate.sh",
+        "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+        "scripts/workstage-review-gate-fixtures/apply-source-mutation.py"
+      ],
+      "allowed_path_prefixes": [
+        "scripts/workstage-review-gate-fixtures/"
+      ],
+      "ready_authorized": false,
+      "merge_authorized": false,
+      "release_authorized": false,
+      "next_product_workstream_authorized": false
+    },
+  "protocol_recovery_fix3_authorization": {
+      "authorization_schema_version": 1,
+      "authorization_comment_id": 5226011784,
+      "parent_sha": "4eeb31ca84f1fda9f50611e6a1486d00eaafe0dd",
+      "parent_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2",
+      "parent_commit_subject": "ci: select bounded final Review Gate state (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX2)",
+      "parent_worker_report_comment_id": 5225996101,
+      "parent_advance_run_id": 31255264930,
+      "parent_advance_job_id": 93097599438,
+      "parent_advance_state": "CURRENT_WORKSTREAM_ACTIVE",
+      "parent_advance_authority": "protocol_recovery_fix2_authorization",
+      "parent_core_ci_run_id": 31255262627,
+      "parent_core_ci_required_jobs": 5,
+      "sai_technical_classification": "RED_U1R18_R12_FIX3_GATE1_RECOVERY1_FIX2_CALLER_PREBOUNDS_LOG_INCOMPLETE",
+      "required_fixes": [
+        "remove_full_log_splitlines_before_bounded_extractor",
+        "make_bounded_extractor_the_single_raw_log_slicing_authority",
+        "prove_production_call_path_never_materializes_full_log_lines_before_bound"
+      ],
+      "required_workstream": "U1R18-R12-FIX3-GATE1-RECOVERY1-FIX3",
+      "required_commit_subject": "ci: bound Review Gate log before line materialization (U1R18-R12-FIX3-GATE1-RECOVERY1-FIX3)",
+      "single_direct_child_only": true,
+      "allowed_exact_paths": [
+        ".github/workstage-review-gate-policy.json",
+        "scripts/workstage-review-gate.py",
+        "scripts/test-workstage-review-gate.sh",
+        "scripts/workstage-review-gate-fixtures/apply-mutation.py",
+        "scripts/workstage-review-gate-fixtures/apply-source-mutation.py"
+      ],
+      "allowed_path_prefixes": [
+        "scripts/workstage-review-gate-fixtures/"
+      ],
+      "ready_authorized": false,
+      "merge_authorized": false,
+      "release_authorized": false,
+      "next_product_workstream_authorized": false
+    },
+  "controller_schema_recovery_authorization": {
+    "schema_version": 1,
+    "authorization_comment_id": 5232263220,
+    "parent_sha": "ef38db6c0614becbee12097dc05d08ee29a9fe48",
+    "repository": "oxcandy-lgtm/macsteam",
+    "pull_request": 2,
+    "kind": "controller_schema_recovery_authorization",
+    "workstream": "U1R18-R13-ACCEPTANCE2-FIX1-GATE1",
+    "source_fix_sha": "ef38db6c0614becbee12097dc05d08ee29a9fe48",
+    "source_fix_parent_sha": "6b8cb7a583fd4991929a6ced70e98faf991defa5",
+    "source_fix_workstream": "U1R18-R13-ACCEPTANCE2-FIX1",
+    "source_fix_commit_subject": "fix: make AppInstanceGuard fingerprint memory-safe (U1R18-R13-ACCEPTANCE2-FIX1)",
+    "source_fix_core_ci_run_id": 31319822686,
+    "source_fix_required_ci_jobs": 5,
+    "failed_advance_run_id": 31319822696,
+    "failed_advance_job_id": 93260875931,
+    "failed_advance_guard": "parent_review_approved_with_bad_json",
+    "failed_advance_message": "Latest parent review invalid: schema_invalid",
+    "malformed_parent_controller_review_id": 4891552433,
+    "malformed_parent_review_head_sha": "6b8cb7a583fd4991929a6ced70e98faf991defa5",
+    "malformed_parent_review_extra_property": "next_workstream_admitted",
+    "malformed_parent_review_extra_property_value": false,
+    "false_green_review_gate_run_id": 31317913446,
+    "false_green_review_gate_job_id": 93256071223,
+    "false_green_review_gate_event": "workflow_dispatch",
+    "false_green_review_gate_attempt": 1,
+    "false_green_review_gate_run_conclusion": "success",
+    "false_green_review_gate_job_name": "Review Gate",
+    "false_green_review_gate_job_conclusion": "success",
+    "false_green_review_gate_advance_job_name": "Advance Gate",
+    "false_green_review_gate_advance_job_conclusion": "skipped",
+    "false_green_review_gate_submission_job_name": "Submission Gate",
+    "false_green_review_gate_submission_job_conclusion": "skipped",
+    "false_green_review_gate_expected_state": "REVIEW_COMPLETE_NX_REQUIRED",
+    "false_green_review_gate_controller_review_valid": true,
+    "false_green_review_gate_final_worker_report_valid": true,
+    "false_green_review_gate_final_controller_review_valid": true,
+    "false_green_review_gate_final_nx_required": true,
+    "false_green_review_gate_final_next_workstream_admitted": false,
+    "controller_review_schema_path": "Contracts/controller-review.schema.json",
+    "controller_review_schema_blob_sha": "7c6d292acf138b085fb3211707d73ffb489b438d",
+    "required_workstream": "U1R18-R13-ACCEPTANCE2-FIX1-GATE1",
+    "required_commit_subject": "ci: recover schema-invalid controller review gate (U1R18-R13-ACCEPTANCE2-FIX1-GATE1)",
+    "single_direct_child_only": true,
+    "source_fix_allowed_exact_paths": [
+      "Sources/MacSteam/App/AppInstanceGuard.swift",
+      "Tests/MacSteamTests/AppInstanceGuardFingerprintTests.swift"
+    ],
+    "source_fix_allowed_path_prefixes": [],
+    "bridge_allowed_exact_paths": [
+      ".github/workstage-review-gate-policy.json",
+      "scripts/workstage-review-gate.py",
+      "scripts/test-workstage-review-gate.sh"
+    ],
+    "bridge_allowed_path_prefixes": [
+      "scripts/workstage-review-gate-fixtures/"
+    ],
+    "quarantine_review_id": 4891552433,
+    "quarantine_review_gate_run_id": 31317913446,
+    "product_code_changes_authorized": false,
+    "controller_review_schema_mutation_authorized": false,
+    "ready_authorized": false,
+    "merge_authorized": false,
+    "release_authorized": false,
+    "next_product_workstream_authorized": false
+  },
+  "core_ci": {
+    "required_jobs": [
+      "Swift Build",
+      "Public Audit",
+      "Recipe Validation",
+      "License Validation",
+      "Gitignore Validation"
+    ]
+  },
+  "max_api_items": 1000
+}

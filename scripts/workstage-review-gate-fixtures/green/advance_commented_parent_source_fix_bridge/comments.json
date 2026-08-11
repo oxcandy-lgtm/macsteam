@@ -1,0 +1,14 @@
+[
+  {
+    "id": 5231229451,
+    "user": {
+      "login": "oxcandy-lgtm"
+    },
+    "body": "<!-- macsteam-commented-parent-source-fix-authorization:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"commented_parent_source_fix_authorization\",\n  \"source_fix_sha\": \"917b64ad418258127e7632a5063587af67791d36\",\n  \"source_fix_parent_sha\": \"69e3d54297a913775eb920cdbb71f369e3c3b1b4\",\n  \"source_fix_workstream\": \"U1R18-R13-FIX1-FIX6\",\n  \"source_fix_commit_subject\": \"test: prove exact Steam prelaunch orchestration (U1R18-R13-FIX1-FIX6)\",\n  \"source_fix_core_ci_run_id\": 31309627509,\n  \"source_fix_required_ci_jobs\": 5,\n  \"failed_advance_run_id\": 31309627501,\n  \"failed_advance_guard\": \"parent_review_commented_without_marker\",\n  \"parent_technical_review_id\": 4891029116,\n  \"parent_technical_classification\": \"RED_U1R18_R13_FIX1_FIX5_PRODUCTION_ORCHESTRATION_PROOF_STILL_BYPASSED\",\n  \"source_fix_technical_review_id\": 4891206403,\n  \"source_fix_technical_classification\": \"GREEN_U1R18_R13_FIX1_FIX6_EXACT_PRELAUNCH_ORCHESTRATION_PROOF_CLOSED\",\n  \"bridge_workstream\": \"U1R18-R13-FIX1-FIX6-GATE1\",\n  \"bridge_commit_subject\": \"ci: admit FIX6 commented-parent source bridge (U1R18-R13-FIX1-FIX6-GATE1)\",\n  \"single_direct_child_only\": true,\n  \"source_fix_allowed_exact_paths\": [\n    \"Sources/MacSteam/Ultimate/UltimateSetupCoordinator.swift\",\n    \"Tests/MacSteamTests/LaunchFastPathTests.swift\"\n  ],\n  \"source_fix_allowed_path_prefixes\": [],\n  \"bridge_allowed_exact_paths\": [\n    \".github/workstage-review-gate-policy.json\",\n    \"scripts/workstage-review-gate.py\",\n    \"scripts/test-workstage-review-gate.sh\",\n    \"scripts/workstage-review-gate-fixtures/apply-mutation.py\",\n    \"scripts/workstage-review-gate-fixtures/apply-source-mutation.py\"\n  ],\n  \"bridge_allowed_path_prefixes\": [\n    \"scripts/workstage-review-gate-fixtures/\"\n  ],\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false,\n  \"next_product_workstream_authorized\": false\n}\n```\n",
+    "created_at": "2026-08-09T10:45:00Z",
+    "updated_at": "2026-08-09T10:45:00Z",
+    "path": null,
+    "position": null,
+    "in_reply_to_id": null
+  }
+]

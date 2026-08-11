@@ -1,0 +1,13 @@
+{
+  "total_count": 1,
+  "jobs": [
+    {
+      "id": 3079040004326,
+      "name": "Submission Gate",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 30790400004,
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/runs/30790400004"
+    }
+  ]
+}

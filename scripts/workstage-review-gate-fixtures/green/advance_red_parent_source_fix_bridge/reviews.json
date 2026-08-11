@@ -1,0 +1,12 @@
+[
+  {
+    "id": 4878732820,
+    "commit_id": "007e1d4e38d8e8a07950d5eff74c0453cf7a7dc6",
+    "state": "COMMENTED",
+    "submitted_at": "2026-08-06T23:29:28Z",
+    "user": {
+      "login": "sai-controller"
+    },
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"007e1d4e38d8e8a07950d5eff74c0453cf7a7dc6\",\n  \"worker_report_comment_id\": 5209897621,\n  \"submission_run_id\": 31130953995,\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R11_ACCEPTANCE_PATH_UNREACHABLE_AND_RECEIPT_DESTROYED\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n"
+  }
+]

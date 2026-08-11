@@ -1,0 +1,9 @@
+{
+  "sha": "f1e2d3c4b5a697887766554433221100ffeeddcc",
+  "parents": [{"sha": "ef38db6c0614becbee12097dc05d08ee29a9fe48"}],
+  "commit": {
+    "message": "ci: recover schema-invalid controller review gate (U1R18-R13-ACCEPTANCE2-FIX1-GATE1)\n\nWorkstream: U1R18-R13-ACCEPTANCE2-FIX1-GATE1",
+    "committer": {"date": "2026-08-09T15:30:00Z"},
+    "author": {"date": "2026-08-09T15:30:00Z"}
+  }
+}

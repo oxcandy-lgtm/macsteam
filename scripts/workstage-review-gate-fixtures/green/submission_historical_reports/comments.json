@@ -1,0 +1,26 @@
+[
+  {
+    "id": 5161887210,
+    "user": {
+      "login": "macsteam-dev"
+    },
+    "body": "<!-- macsteam-worker-report:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"worker_report\",\n  \"workstream\": \"U1R18-R6\",\n  \"head_sha\": \"9999999999999999999999999999999999999999\",\n  \"parent_sha\": \"8888888888888888888888888888888888888888\",\n  \"commit_count\": 1,\n  \"core_ci_run_id\": 30790400001,\n  \"core_ci_jobs\": [\n    \"Swift Build\",\n    \"Public Audit\",\n    \"Recipe Validation\",\n    \"License Validation\",\n    \"Gitignore Validation\"\n  ],\n  \"gate_advance_run_id\": 30790400002,\n  \"gate_submission_run_id\": null,\n  \"stop\": true,\n  \"next_workstream_started\": false,\n  \"ready_performed\": false,\n  \"merge_performed\": false,\n  \"release_performed\": false\n}\n```\n",
+    "created_at": "2026-08-03T03:10:00Z",
+    "updated_at": "2026-08-03T03:10:00Z",
+    "path": null,
+    "position": null,
+    "in_reply_to_id": null
+  },
+  {
+    "id": 5161887211,
+    "user": {
+      "login": "macsteam-dev"
+    },
+    "body": "<!-- macsteam-worker-report:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"worker_report\",\n  \"workstream\": \"U1R18-R7-FIX3\",\n  \"head_sha\": \"0123456789abcdef0123456789abcdef01234567\",\n  \"parent_sha\": \"6656ec33d15289ce122f4ba9d1e2db71f260d8b7\",\n  \"commit_count\": 1,\n  \"core_ci_run_id\": 30790400001,\n  \"core_ci_jobs\": [\n    \"Swift Build\",\n    \"Public Audit\",\n    \"Recipe Validation\",\n    \"License Validation\",\n    \"Gitignore Validation\"\n  ],\n  \"gate_advance_run_id\": 30790400002,\n  \"gate_submission_run_id\": null,\n  \"stop\": true,\n  \"next_workstream_started\": false,\n  \"ready_performed\": false,\n  \"merge_performed\": false,\n  \"release_performed\": false\n}\n```\n",
+    "created_at": "2026-08-03T03:10:00Z",
+    "updated_at": "2026-08-03T03:10:00Z",
+    "path": null,
+    "position": null,
+    "in_reply_to_id": null
+  }
+]

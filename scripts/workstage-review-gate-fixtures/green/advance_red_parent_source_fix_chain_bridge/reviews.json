@@ -1,0 +1,13 @@
+[
+  {
+    "id": 4881429281,
+    "user": {
+      "login": "oxcandy-lgtm"
+    },
+    "commit_id": "917b7e637629ed98bf6fa22ce38fafbf2793bb90",
+    "state": "COMMENTED",
+    "body": "<!-- macsteam-controller-review:v1 -->\n```json\n{\n  \"schema_version\": 1,\n  \"kind\": \"controller_review\",\n  \"head_sha\": \"917b7e637629ed98bf6fa22ce38fafbf2793bb90\",\n  \"worker_report_comment_id\": 5214729277,\n  \"submission_run_id\": 31163776334,\n  \"decision\": \"rejected\",\n  \"classification\": \"RED_U1R18_R12_DURABLE_RECEIPT_FAIL_CLOSED_INCOMPLETE\",\n  \"review_complete\": true,\n  \"nx_required_for_next_workstream\": true,\n  \"ready_authorized\": false,\n  \"merge_authorized\": false,\n  \"release_authorized\": false\n}\n```\n\nController code review findings:\n\n1. P0 — `LocalRuntimeAcceptanceAuthority` still has a production initializer default `receiptPersister = { .persisted($0) }`. Any caller that omits the persister can reach `.accepted` after clean cleanup without any durable write. Existing authority tests exercise this bypass. Durable persistence is therefore not a type-level acceptance invariant.\n\n2. P0 — `LocalAcceptanceReceiptStore.writeCanonical` removes `receiptURL` in the atomic-replace failure path. If a valid prior accepted receipt exists and replacement fails, the last-known-good durable evidence can be deleted. A failed replacement must preserve the old receipt and remove only the temporary file.\n\n3. P0 — `isRegularFile` means only `!isDirectory`; it does not verify POSIX regular-file type. FIFO/socket/device nodes can pass the check, after which `Data(contentsOf:)` can become unbounded/blocking. This violates the R12 bounded-load + regular-file-required contract. Use descriptor-based no-follow open/fstat or equivalent strict file-type validation before bounded read.\n\n4. P1 — `loadAccepted` maps any `Data(contentsOf:)` failure to `.notFound`, even after the destination was observed to exist as an admissible path. Permission/I/O races or failures are therefore silently collapsed into absence instead of a bounded fail-closed I/O error. The symlink load test also permits `.malformedJSON` as an alternative to symlink rejection, weakening the claimed symlink invariant.\n\nRequired FIX: remove the success-default persister, preserve old receipt on failed replace, enforce actual regular-file + bounded/no-follow read semantics, make existing-file read failure bounded RED, and add mutation/tests that fail if any of those protections are bypassed. Do not edit/repost Worker report 5214729277. No Ready/Merge/Release.",
+    "submitted_at": "2026-08-07T09:01:11Z",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4881429281"
+  }
+]

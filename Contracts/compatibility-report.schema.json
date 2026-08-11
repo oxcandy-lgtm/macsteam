@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://macsteam.example.com/schemas/compatibility-report.schema.json",
+  "title": "MacSteam Compatibility Report",
+  "description": "Schema for per-game runtime compatibility status reports",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runtimeId",
+    "gameId",
+    "status",
+    "detectedAt",
+    "detectionMethod"
+  ],
+  "properties": {
+    "schemaVersion": {
+ "const": 1,
+ "description": "Schema version identifier; must be 1 for this schema revision"
+    },
+    "runtimeId": {
+ "type": "string",
+ "description": "Identifier of the runtime used for compatibility testing"
+    },
+    "gameId": {
+ "type": "string",
+ "description": "Identifier of the game being tested"
+    },
+    "status": {
+ "type": "string",
+ "description": "Current compatibility status of the game with the specified runtime",
+ "enum": [
+   "unknown",
+   "not_installed",
+   "installed",
+   "playable",
+   "unplayable"
+ ]
+    },
+    "detectedAt": {
+ "type": "string",
+ "description": "ISO 8601 timestamp when this compatibility status was determined",
+ "format": "date-time"
+    },
+    "detectionMethod": {
+ "type": "string",
+ "description": "Method used to detect the game and assess compatibility",
+ "enum": [
+   "steam_manifest",
+   "executable_found",
+   "user_confirmed"
+ ]
+    },
+    "errors": {
+ "type": "array",
+ "description": "Error messages associated with this compatibility report",
+ "items": {
+   "type": "string"
+ }
+    },
+    "warnings": {
+ "type": "array",
+ "description": "Warning messages associated with this compatibility report",
+ "items": {
+   "type": "string"
+ }
+    }
+  },
+  "additionalProperties": false
+}

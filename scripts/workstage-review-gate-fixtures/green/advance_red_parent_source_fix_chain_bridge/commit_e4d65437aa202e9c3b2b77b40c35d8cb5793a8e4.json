@@ -1,0 +1,21 @@
+{
+  "sha": "e4d65437aa202e9c3b2b77b40c35d8cb5793a8e4",
+  "parents": [
+    {
+      "sha": "f2455860634b47c4360e26669981ddb6693ef392"
+    }
+  ],
+  "commit": {
+    "message": "fix: close bounded receipt POSIX transaction (U1R18-R12-FIX2)\n\nWorkstream: U1R18-R12-FIX2",
+    "committer": {
+      "date": "2026-08-07T10:29:15Z",
+      "name": "T",
+      "email": "test@example.com"
+    },
+    "author": {
+      "date": "2026-08-07T10:29:15Z",
+      "name": "T",
+      "email": "test@example.com"
+    }
+  }
+}

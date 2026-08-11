@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "repository": "oxcandy-lgtm/macsteam",
+  "pr_number": 2,
+  "branch": "feat/ultimate-cloverpit-u1",
+  "base_branch": "feat/public-oss-bootstrap",
+  "bootstrap": {
+    "head_sha": "dad91d9ea3a6338b795f1472d0e4f729a1e419db",
+    "only_child_head": "f3ae89d2caa07930ffda7a84059ecdfb18942e3d",
+    "worker_report_comment_id": 5161887210,
+    "controller_review_id": 4840817794,
+    "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
+  },
+  "repair_authorization": {
+    "parent_sha": "d70fd1b980d9a4d67024f7d820637c6aeddd186d",
+    "review_id": 4858475471,
+    "classification": "RED_U1R18_R9_FIX1_REPAIR_GATE_SCOPE_AND_FIXTURES_STALE",
+    "required_commit_message": "ci: generalize R9 repair gate authority (U1R18-R9-FIX1-GATE1)",
+    "required_workstream": "U1R18-R9-FIX1-GATE1",
+    "single_direct_child_only": true,
+    "allowed_exact_paths": [
+      ".github/workstage-review-gate-policy.json",
+      "scripts/u1r18-pr-truth.py",
+      "scripts/test-u1r18-pr-truth.sh"
+    ],
+    "allowed_path_prefixes": [
+      "scripts/u1r18-pr-truth-fixtures/"
+    ]
+  },
+  "quarantined_review_ids": [
+    4841357081
+  ],
+  "core_ci": {
+    "required_jobs": [
+      "Swift Build",
+      "Public Audit",
+      "Recipe Validation",
+      "License Validation",
+      "Gitignore Validation"
+    ]
+  },
+  "max_api_items": 1000
+}

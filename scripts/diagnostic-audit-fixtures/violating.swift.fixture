@@ -1,0 +1,5 @@
+// VIOLATING FIXTURE — must be detected by audit
+// This file contains patterns that the diagnostic security audit must reject.
+let env = ProcessInfo.processInfo.environment
+let desc = String(describing: someError)
+let url = URL(fileURLWithPath: "/tmp/arbitrary")

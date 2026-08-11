@@ -1,0 +1,71 @@
+{
+  "total_count": 3,
+  "workflow_runs": [
+    {
+      "id": 30790400004,
+      "name": "Workstream Review Gate",
+      "display_title": "MacSteam Gate / phase=submission / PR=2 / HEAD=6656ec33d15289ce122f4ba9d1e2db71f260d8b7 / REPORT=5161887211",
+      "path": ".github/workflows/workstage-review-gate.yml",
+      "head_sha": "6656ec33d15289ce122f4ba9d1e2db71f260d8b7",
+      "head_branch": "feat/ultimate-cloverpit-u1",
+      "workflow_id": 325971670,
+      "workflow_path": ".github/workflows/workstage-review-gate.yml",
+      "event": "workflow_dispatch",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "run_started_at": "2026-08-03T02:01:00Z",
+      "started_at": "2026-08-03T02:01:00Z",
+      "created_at": "2026-08-03T02:01:00Z",
+      "completed_at": "2026-08-03T02:02:00Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/30790400004",
+      "repository": {
+        "full_name": "oxcandy-lgtm/macsteam"
+      }
+    },
+    {
+      "id": 30790400003,
+      "name": "Workstream Review Gate",
+      "display_title": "MacSteam Gate / phase=submission / PR=2 / HEAD=0123456789abcdef0123456789abcdef01234567 / REPORT=5161887211",
+      "path": ".github/workflows/workstage-review-gate.yml",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "head_branch": "feat/ultimate-cloverpit-u1",
+      "workflow_id": 325971670,
+      "workflow_path": ".github/workflows/workstage-review-gate.yml",
+      "event": "workflow_dispatch",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "run_started_at": "2026-08-03T03:11:00Z",
+      "started_at": "2026-08-03T03:11:00Z",
+      "created_at": "2026-08-03T03:11:00Z",
+      "completed_at": "2026-08-03T03:12:00Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/30790400003",
+      "repository": {
+        "full_name": "oxcandy-lgtm/macsteam"
+      }
+    },
+    {
+      "id": 30790400005,
+      "name": "Workstream Review Gate",
+      "display_title": "MacSteam Gate / phase=submission / PR=2 / HEAD=9999999999999999999999999999999999999999 / REPORT=5161887210",
+      "path": ".github/workflows/workstage-review-gate.yml",
+      "head_sha": "9999999999999999999999999999999999999999",
+      "head_branch": "feat/ultimate-cloverpit-u1",
+      "workflow_id": 325971670,
+      "workflow_path": ".github/workflows/workstage-review-gate.yml",
+      "event": "workflow_dispatch",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "run_started_at": "2026-08-03T02:01:00Z",
+      "started_at": "2026-08-03T02:01:00Z",
+      "created_at": "2026-08-03T02:01:00Z",
+      "completed_at": "2026-08-03T02:02:00Z",
+      "html_url": "https://github.com/oxcandy-lgtm/macsteam/actions/runs/30790400005",
+      "repository": {
+        "full_name": "oxcandy-lgtm/macsteam"
+      }
+    }
+  ]
+}

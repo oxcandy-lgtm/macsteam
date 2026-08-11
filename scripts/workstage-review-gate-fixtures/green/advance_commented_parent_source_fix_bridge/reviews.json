@@ -1,0 +1,24 @@
+[
+  {
+    "id": 4891029116,
+    "user": {
+      "login": "sai-controller"
+    },
+    "commit_id": "69e3d54297a913775eb920cdbb71f369e3c3b1b4",
+    "state": "COMMENTED",
+    "body": "Technical review \u2014 RED\n\nClassification: RED_U1R18_R13_FIX1_FIX5_PRODUCTION_ORCHESTRATION_PROOF_STILL_BYPASSED",
+    "submitted_at": "2026-08-09T09:30:00Z",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4891029116"
+  },
+  {
+    "id": 4891206403,
+    "user": {
+      "login": "sai-controller"
+    },
+    "commit_id": "917b64ad418258127e7632a5063587af67791d36",
+    "state": "COMMENTED",
+    "body": "Technical review \u2014 GREEN\n\nClassification: GREEN_U1R18_R13_FIX1_FIX6_EXACT_PRELAUNCH_ORCHESTRATION_PROOF_CLOSED",
+    "submitted_at": "2026-08-09T10:30:00Z",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#pullrequestreview-4891206403"
+  }
+]

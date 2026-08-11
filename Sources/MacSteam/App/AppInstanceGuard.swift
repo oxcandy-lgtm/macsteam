@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import Foundation
+
+// MARK: - Lock file metadata
+
+struct AppInstanceInfo: Codable, Sendable {
+    let pid: Int32
+    let processStartTime: Date
+    let buildID: String
+    let executableFingerprint: String
+}
+
+/// Outcome of attempting to acquire the single-instance lock.
+enum AcquisitionResult: Sendable, Equatable {
+    /// This process now holds the lock — proceed with UI.
+    case primary
+    /// Another live instance holds the lock — caller should exit.
+    /// holderPID is nil if metadata couldn't be read (still must NOT proceed).
+    case secondary(holderPID: Int32?)
+}
+
+// MARK: - Flock-based single-instance guard (synchronous, fail-closed)
+
+final class AppInstanceGuard {
+    static let lockPath = "~/Library/Application Support/MacSteam/Locks/ui-instance.lock"
+
+    private var lockFD: Int32 = -1
+    private var lockHandle: FileHandle?
+
+    /// Acquire the lock or activate the existing instance.
+    ///
+    /// Must be called before any UI is created. If the lock can't be acquired
+    /// (I/O error, permissions), throws — caller must not proceed.
+    func acquireOrActivateExisting(buildID: String) throws -> AcquisitionResult {
+        let expandedPath = resolvePath()
+        try ensureDirectoryExists(for: expandedPath)
+
+        let fd = open(expandedPath, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+
+        // Attempt non-blocking exclusive lock
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            // Fast path: we own the lock
+            lockFD = fd
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            lockHandle = handle
+            try writeLockMetadata(buildID: buildID, fd: fd, handle: handle)
+            return .primary
+        }
+
+        // Real error (not EWOULDBLOCK)
+        if errno != EWOULDBLOCK {
+            let saved = errno
+            close(fd)
+            throw POSIXError(.init(rawValue: saved) ?? .EIO)
+        }
+
+        // Lock held by another process — don't try blocking wait.
+        // Best-effort read metadata for activation hint.
+        close(fd)
+        let holderPID = readHolderPIDFromLock(at: expandedPath)
+        return .secondary(holderPID: holderPID)
+    }
+
+    /// Release the lock. Must be called after cleanup completes.
+    func release() {
+        guard let handle = lockHandle else { return }
+        flock(handle.fileDescriptor, LOCK_UN)
+        lockHandle = nil
+        lockFD = -1
+    }
+
+    deinit {
+        if let handle = lockHandle {
+            flock(handle.fileDescriptor, LOCK_UN)
+        }
+    }
+
+    // MARK: - Private
+
+    private func resolvePath() -> String {
+        (Self.lockPath as NSString).expandingTildeInPath
+    }
+
+    private func ensureDirectoryExists(for path: String) throws {
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(
+            atPath: dir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+    }
+
+    private func writeLockMetadata(buildID: String, fd: Int32, handle: FileHandle) throws {
+        let info = AppInstanceInfo(
+            pid: ProcessInfo.processInfo.processIdentifier,
+            processStartTime: Date(),
+            buildID: buildID,
+            executableFingerprint: computeExecutableFingerprint()
+        )
+        let data = try JSONEncoder().encode(info)
+        ftruncate(fd, 0)
+        lseek(fd, 0, SEEK_SET)
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
+    }
+
+    private func evaluateStaleness(at path: String) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let info = try? JSONDecoder().decode(AppInstanceInfo.self, from: data) else {
+            return true // can't read — assume stale
+        }
+        return kill(info.pid, 0) != 0 // process not alive
+    }
+
+    private func readHolderPIDFromLock(at path: String) -> Int32? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let info = try? JSONDecoder().decode(AppInstanceInfo.self, from: data) else {
+            return nil
+        }
+        return info.pid
+    }
+
+    static func executableFingerprint(for data: Data) -> String {
+        // Simple FNV-1a hash for the fingerprint (not crypto-grade).
+        var hash: UInt64 = 14695981039346656037
+        for byte in data {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+
+        // Append scalar bytes directly. This preserves the existing native
+        // byte order without mutating an Array value's object representation.
+        var fingerprintBytes = [UInt8]()
+        fingerprintBytes.reserveCapacity(32)
+        let secondWord = hash ^ 0x9E3779B97F4A7C15
+        withUnsafeBytes(of: hash) { fingerprintBytes.append(contentsOf: $0) }
+        withUnsafeBytes(of: secondWord) { fingerprintBytes.append(contentsOf: $0) }
+        fingerprintBytes.append(contentsOf: repeatElement(UInt8(0), count: 16))
+
+        return Data(fingerprintBytes).base64EncodedString().prefix(16).description
+    }
+
+    private func computeExecutableFingerprint() -> String {
+        guard let execURL = Bundle.main.executableURL,
+              let data = try? Data(contentsOf: execURL) else { return "unknown" }
+        return Self.executableFingerprint(for: data)
+    }
+}

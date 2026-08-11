@@ -134,7 +134,7 @@ struct LauncherView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(.accentColor)
+            .tint(.blue)
             .frame(maxWidth: .infinity)
 
         case .launching:
@@ -157,7 +157,7 @@ struct LauncherView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(.accentColor)
+            .tint(.blue)
             .frame(maxWidth: .infinity)
         }
     }
@@ -268,7 +268,7 @@ struct LauncherView: View {
         Task {
             isWorking = true
             defer { isWorking = false }
-            _ = manager.runtimeLocator.locateRuntime(at: url)
+            // RuntimeRegistry handles discovery in inspect()
             await manager.inspect()
         }
     }

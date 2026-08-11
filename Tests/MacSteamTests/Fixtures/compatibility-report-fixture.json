@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "runtimeId": "com.macsteam.runtime.managed-wine.v8.0",
+  "gameId": "cloverpit",
+  "status": "installed",
+  "detectedAt": "2026-07-27T14:35:00Z",
+  "detectionMethod": "steam_manifest",
+  "errors": [],
+  "warnings": [
+    "Missing recommended DXVK DLLs in prefix"
+  ]
+}

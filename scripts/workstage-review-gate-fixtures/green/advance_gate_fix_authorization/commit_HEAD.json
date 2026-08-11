@@ -1,0 +1,21 @@
+{
+  "sha": "11aa22bb33cc44dd55ee66ff7788990011aabb22",
+  "parents": [
+    {
+      "sha": "db2dc127b37b4a93d0c157458e8bb0ecb01b45ac"
+    }
+  ],
+  "commit": {
+    "message": "ci: bind rejected review and failed advance evidence (U1R18-R11-FIX1-GATE1-FIX1)\n\nWorkstream: U1R18-R11-FIX1-GATE1-FIX1",
+    "committer": {
+      "date": "2026-08-07T08:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    },
+    "author": {
+      "date": "2026-08-07T08:00:00Z",
+      "name": "Test",
+      "email": "test@example.com"
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/oxcandy-lgtm/macsteam/Contracts/game-recipe.schema.json",
+  "title": "MacSteam Game Recipe Schema",
+  "description": "Schema for MacSteam game recipe JSON files (v2). Defines how a Windows game is detected, installed, and launched.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "id": { "type": "string", "minLength": 1 },
+    "displayName": { "type": "string", "minLength": 1 },
+    "store": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["steam"] },
+        "appId": { "type": "string", "pattern": "^[0-9]+$" }
+      },
+      "required": ["type", "appId"],
+      "additionalProperties": false
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "requiredCapabilities": { "type": "array", "items": { "enum": ["windows-process","steam-client","isolated-prefix","d3d","vulkan","metal"] } },
+        "preferredRuntime": { "enum": ["managed-wine","imported-wine","system-wine","crossover"] },
+        "fallbackRuntimes": { "type": "array", "items": { "enum": ["managed-wine","imported-wine","system-wine","crossover"] } }
+      },
+      "required": ["requiredCapabilities", "preferredRuntime"],
+      "additionalProperties": false
+    },
+    "graphics": {
+      "type": "object",
+      "properties": {
+        "preferred": { "enum": ["wined3d","dxvk","moltenvk","d3dmetal"] },
+        "fallback": { "type": "array", "items": { "enum": ["wined3d","dxvk","moltenvk","d3dmetal"] } }
+      },
+      "required": ["preferred"],
+      "additionalProperties": false
+    },
+    "prefix": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "windowsVersion": { "enum": ["win10","win81","win7"] },
+        "isolation": { "enum": ["per-game","shared"] }
+      },
+      "required": ["id", "windowsVersion", "isolation"],
+      "additionalProperties": false
+    },
+    "storeInstallation": {
+      "type": "object",
+      "properties": {
+        "installerMode": { "enum": ["user-selected-file","automatic"] },
+        "installerProduct": { "type": "string" },
+        "redistribution": { "enum": ["forbidden","allowed","review-required"] }
+      },
+      "required": ["installerMode", "installerProduct", "redistribution"],
+      "additionalProperties": false
+    },
+    "launch": {
+      "type": "object",
+      "properties": {
+        "storeArguments": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["storeArguments"],
+      "additionalProperties": false
+    },
+    "detection": {
+      "type": "object",
+      "properties": {
+        "manifestName": { "type": "string" },
+        "executableCandidates": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      },
+      "required": ["manifestName", "executableCandidates"],
+      "additionalProperties": false
+    },
+    "savePolicy": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["discover-only","backup-enabled","full-managed"] },
+        "backupBeforeDestructiveRepair": { "type": "boolean" }
+      },
+      "required": ["mode"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["schemaVersion", "id", "displayName", "store", "runtime", "graphics", "prefix", "storeInstallation", "launch", "detection", "savePolicy"],
+  "additionalProperties": false
+}

@@ -94,10 +94,11 @@ else
     check "No Slack tokens in repository" "pass"
 fi
 
-if git_grep 'Authorization:\*\*\* |client_secret|refresh_token|access_token' \
-    | grep -v 'scripts/public-audit\.sh' \
-    | grep -v 'Tests/PathRedactorTests\.swift' \
-    | grep -v 'Sources/MacSteam/Services/PathRedactor\.swift'; then
+if git_grep 'Authorization:*** |client_secret|refresh_token|access_token' \
+    | grep -v 'scripts/public-audit\\.sh' \
+    | grep -v 'Tests/PathRedactorTests\\.swift' \
+    | grep -v 'Sources/MacSteam/Services/PathRedactor\\.swift' \
+    | grep -v 'Sources/MacSteam/Security/SteamSensitiveDataPolicy\\.swift'; then
     check "No authorization secrets in repository" "fail"
 else
     check "No authorization secrets in repository" "pass"
@@ -145,7 +146,8 @@ echo "--- Personal Paths ---"
 matches=$(git_grep '/Users/[A-Za-z0-9_-]+/' \
     | grep -v '/Users/example' \
     | grep -v '/Users/Shared' \
-    | grep -v '/Users/Guest' || true)
+    | grep -v '/Users/Guest' \
+    | grep -v '/Users/test' || true)
 if [ -n "$matches" ]; then
     while IFS= read -r line; do
         file="${line%%:*}"
@@ -200,6 +202,45 @@ if git_ls | tr '\0' '\n' | grep -q 'xcuserdata'; then
     check "No xcuserdata in repository" "fail"
 else
     check "No xcuserdata in repository" "pass"
+fi
+
+# ––– AI agent scratch files –––
+echo "--- AI Agent Scratch Files ---"
+if git_ls | tr '\0' '\n' | grep -q '\.hermes/'; then
+    check "No .hermes tracked files in repository" "fail"
+else
+    check "No .hermes tracked files in repository" "pass"
+fi
+
+# ––– U1R18 canonical PR truth authority –––
+echo "--- U1R18 Canonical PR Truth Authority ---"
+if bash scripts/test-u1r18-pr-truth.sh >/dev/null 2>&1; then
+    check "Test U1R18 canonical PR truth authority" "pass"
+else
+    check "Test U1R18 canonical PR truth authority" "fail"
+fi
+
+# ––– U1R18 public product truth authority –––
+echo "--- Public Product Truth Authority ---"
+if bash scripts/test-public-product-truth-audit.sh >/dev/null 2>&1; then
+    check "Public product truth authority" "pass"
+else
+    check "Public product truth authority" "fail"
+fi
+
+# ––– U1R18-R11 local runtime acceptance authority –––
+echo "--- Local Runtime Acceptance Audit ---"
+if python3 scripts/local-runtime-acceptance-audit.py >/dev/null 2>&1; then
+    check "Local runtime acceptance audit" "pass"
+else
+    check "Local runtime acceptance audit" "fail"
+fi
+
+echo "--- Local Runtime Acceptance Mutation Harness ---"
+if bash scripts/test-local-runtime-acceptance-audit.sh >/dev/null 2>&1; then
+    check "Local runtime acceptance mutation harness" "pass"
+else
+    check "Local runtime acceptance mutation harness" "fail"
 fi
 
 # ––– Summary –––

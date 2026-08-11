@@ -1,0 +1,194 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://macsteam.example.com/schemas/runtime-manifest.schema.json",
+  "title": "MacSteam Runtime Artifact Manifest",
+  "description": "Schema for RuntimeArtifactManifest describing a packaged runtime build for distribution",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "id",
+    "version",
+    "hostArchitectures",
+    "runtimeArchitectures",
+    "minimumMacOS",
+    "source",
+    "license",
+    "archive",
+    "capabilities"
+  ],
+  "properties": {
+    "schemaVersion": {
+ "const": 1,
+ "description": "Schema version identifier; must be 1 for this schema revision"
+    },
+    "id": {
+ "type": "string",
+ "description": "Unique identifier for this runtime manifest"
+    },
+    "version": {
+ "type": "string",
+ "description": "Version string of the runtime artifact"
+    },
+    "hostArchitectures": {
+ "type": "array",
+ "description": "Host (build-machine) architectures this artifact was built for",
+ "items": {
+   "type": "object",
+   "required": ["arch", "name"],
+   "properties": {
+     "arch": {
+       "type": "string",
+       "description": "Architecture identifier (e.g. arm64, x86_64)"
+     },
+     "name": {
+       "type": "string",
+       "description": "Human-readable architecture name"
+     }
+   },
+   "additionalProperties": false
+ },
+ "minItems": 1,
+ "uniqueItems": true
+    },
+    "runtimeArchitectures": {
+ "type": "array",
+ "description": "Target runtime architectures this artifact supports",
+ "items": {
+   "type": "object",
+   "required": ["arch", "name", "wow64"],
+   "properties": {
+     "arch": {
+       "type": "string",
+       "description": "Runtime architecture identifier"
+     },
+     "name": {
+       "type": "string",
+       "description": "Human-readable runtime architecture name"
+     },
+     "wow64": {
+       "type": "boolean",
+       "description": "Whether WOW64 (32-bit-on-64-bit) support is included"
+     }
+   },
+   "additionalProperties": false
+ },
+ "minItems": 1,
+ "uniqueItems": true
+    },
+    "minimumMacOS": {
+ "type": "string",
+ "description": "Minimum macOS version required (e.g. 11.0)"
+    },
+    "source": {
+ "type": "object",
+ "description": "Source identity and provenance information",
+ "required": [
+   "upstreamRepository",
+   "upstreamCommit",
+   "sourceArchiveSHA256",
+   "buildRecipeSHA256"
+ ],
+ "properties": {
+   "upstreamRepository": {
+     "type": "string",
+     "description": "URL or identifier of the upstream source repository"
+   },
+   "upstreamCommit": {
+     "type": "string",
+     "description": "Commit hash in the upstream repository"
+   },
+   "sourceArchiveSHA256": {
+     "type": "string",
+     "description": "SHA-256 checksum of the source archive",
+     "pattern": "^[a-f0-9]{64}$"
+   },
+   "patchsetSHA256": {
+     "type": "string",
+     "description": "SHA-256 checksum of the applied patchset (optional)",
+     "pattern": "^[a-f0-9]{64}$"
+   },
+   "buildRecipeSHA256": {
+     "type": "string",
+     "description": "SHA-256 checksum of the build recipe",
+     "pattern": "^[a-f0-9]{64}$"
+   }
+ },
+ "additionalProperties": false
+    },
+    "license": {
+ "type": "object",
+ "description": "License identity and redistribution terms",
+ "required": ["spdx", "licenseFiles", "noticeFiles", "redistribution"],
+ "properties": {
+   "spdx": {
+     "type": "string",
+     "description": "SPDX license identifier"
+   },
+   "licenseFiles": {
+     "type": "array",
+     "description": "Paths to license files in the artifact",
+     "items": {
+       "type": "string"
+     }
+   },
+   "noticeFiles": {
+     "type": "array",
+     "description": "Paths to notice/attribution files in the artifact",
+     "items": {
+       "type": "string"
+     }
+   },
+   "redistribution": {
+     "type": "object",
+     "description": "Redistribution policy details",
+     "required": ["mode"],
+     "properties": {
+       "mode": {
+         "type": "string",
+         "enum": [
+           "allowed",
+           "allowedWithConditions",
+           "reviewRequired",
+           "forbidden"
+         ],
+         "description": "Redistribution mode for this runtime"
+       }
+     },
+     "additionalProperties": false
+   }
+ },
+ "additionalProperties": false
+    },
+    "archive": {
+ "type": "object",
+ "description": "Archive identity and integrity metadata",
+ "required": ["filename", "sha256", "size"],
+ "properties": {
+   "filename": {
+     "type": "string",
+     "description": "Filename of the distribution archive"
+   },
+   "sha256": {
+     "type": "string",
+     "description": "SHA-256 checksum of the archive",
+     "pattern": "^[a-f0-9]{64}$"
+   },
+   "size": {
+     "type": "integer",
+     "description": "Size of the archive in bytes",
+     "minimum": 0
+   }
+ },
+ "additionalProperties": false
+    },
+    "capabilities": {
+ "type": "array",
+ "description": "List of capabilities this runtime provides",
+ "items": {
+   "type": "string"
+ },
+ "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

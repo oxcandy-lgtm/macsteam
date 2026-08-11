@@ -1,0 +1,13 @@
+{
+  "jobs": [
+    {"id": 93260875992, "name": "Swift Build", "status": "completed", "conclusion": "success", "run_id": 31319822686},
+    {"id": 93260875994, "name": "Public Audit", "status": "completed", "conclusion": "success", "run_id": 31319822686},
+    {"id": 93260875964, "name": "Recipe Validation", "status": "completed", "conclusion": "success", "run_id": 31319822686},
+    {"id": 93260875945, "name": "License Validation", "status": "completed", "conclusion": "success", "run_id": 31319822686},
+    {"id": 93260875956, "name": "Gitignore Validation", "status": "completed", "conclusion": "success", "run_id": 31319822686},
+    {"id": 93256071223, "name": "Review Gate", "status": "completed", "conclusion": "success", "run_id": 31317913446},
+    {"id": 93256071793, "name": "Advance Gate", "status": "completed", "conclusion": "skipped", "run_id": 31317913446},
+    {"id": 93256071469, "name": "Submission Gate", "status": "completed", "conclusion": "skipped", "run_id": 31317913446},
+    {"id": 93260875931, "name": "Advance Gate", "status": "completed", "conclusion": "failure", "run_id": 31319822696}
+  ]
+}

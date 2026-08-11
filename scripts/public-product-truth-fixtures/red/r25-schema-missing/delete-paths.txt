@@ -1,0 +1,1 @@
+Contracts/public-product-truth.schema.json

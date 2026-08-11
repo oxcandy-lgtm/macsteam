@@ -1,0 +1,21 @@
+{
+  "sha": "f2455860634b47c4360e26669981ddb6693ef392",
+  "parents": [
+    {
+      "sha": "917b7e637629ed98bf6fa22ce38fafbf2793bb90"
+    }
+  ],
+  "commit": {
+    "message": "fix: harden durable acceptance receipt I/O (U1R18-R12-FIX1)\n\nWorkstream: U1R18-R12-FIX1",
+    "committer": {
+      "date": "2026-08-07T09:44:11Z",
+      "name": "T",
+      "email": "test@example.com"
+    },
+    "author": {
+      "date": "2026-08-07T09:44:11Z",
+      "name": "T",
+      "email": "test@example.com"
+    }
+  }
+}

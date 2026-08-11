@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "allowedBinaries": [],
+  "notes": "No binaries are bundled in MacSteam U1. Allowed list is intentionally empty until managed runtime distribution is implemented. Any binary found in git-tracked files will FAIL the distribution gate."
+}

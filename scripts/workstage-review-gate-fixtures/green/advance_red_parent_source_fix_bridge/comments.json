@@ -1,0 +1,14 @@
+[
+  {
+    "id": 5211174532,
+    "created_at": "2026-08-07T01:57:50Z",
+    "updated_at": "2026-08-07T01:57:50Z",
+    "user": {
+      "login": "gatesmith"
+    },
+    "body": "Authorization anchored on the rejected parent and the exact source fix SHA.",
+    "issue_url": "https://api.github.com/repos/oxcandy-lgtm/macsteam/issues/2",
+    "url": "https://api.github.com/repos/oxcandy-lgtm/macsteam/issues/comments/5211174532",
+    "html_url": "https://github.com/oxcandy-lgtm/macsteam/pull/2#issuecomment-5211174532"
+  }
+]

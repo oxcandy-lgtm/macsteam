@@ -1,0 +1,4 @@
+{
+  "93256071223": "2026-08-09T14:14:31.6188080Z {\"state\": \"REVIEW_COMPLETE_NX_REQUIRED\", \"worker_report_valid\": true, \"controller_review_valid\": true, \"nx_required\": true, \"next_workstream_admitted\": false, \"repository\": \"oxcandy-lgtm/macsteam\", \"pr_number\": 2, \"head_sha\": \"6b8cb7a583fd4991929a6ced70e98faf991defa5\", \"parent_sha\": \"82b813924773562bd04cdda219b12352acb05c51\"}\n",
+  "93260875931": "2026-08-09T14:57:51.4152660Z {\"state\": \"REJECTED\", \"repository\": \"oxcandy-lgtm/macsteam\", \"pr_number\": 2, \"head_sha\": \"ef38db6c0614becbee12097dc05d08ee29a9fe48\", \"parent_sha\": \"6b8cb7a583fd4991929a6ced70e98faf991defa5\", \"guard_label\": \"parent_review_approved_with_bad_json\", \"message\": \"Latest parent review invalid: schema_invalid\"}\n"
+}

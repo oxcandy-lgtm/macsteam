@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://macsteam.example.com/schemas/artifact-source.schema.json",
+  "title": "MacSteam Artifact Source Identity",
+  "description": "Schema for source identity JSON files tracking provenance of downloaded artifacts",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "provider",
+    "repositoryProbeStatus",
+    "requestedHead",
+    "observedHead",
+    "secretScanFindings",
+    "credentialValueOutput"
+  ],
+  "properties": {
+    "schemaVersion": {
+ "const": 1,
+ "description": "Schema version identifier; must be 1 for this schema revision"
+    },
+    "provider": {
+ "type": "string",
+ "description": "Provider or mechanism used to acquire the artifact",
+ "enum": [
+   "github_app_installation_token",
+   "manual_download",
+   "user_selected_file"
+ ]
+    },
+    "repositoryProbeStatus": {
+ "type": "integer",
+ "description": "HTTP status code or status indicator from repository probe"
+    },
+    "requestedHead": {
+ "type": "string",
+ "description": "The requested git commit reference (40-character hex SHA)",
+ "pattern": "^[a-f0-9]{40}$"
+    },
+    "observedHead": {
+ "type": "string",
+ "description": "The observed git commit that was actually resolved (40-character hex SHA)",
+ "pattern": "^[a-f0-9]{40}$"
+    },
+    "secretScanFindings": {
+ "type": "integer",
+ "description": "Count of secret scan findings",
+ "minimum": 0
+    },
+    "credentialValueOutput": {
+ "type": "integer",
+ "description": "Count of credential value outputs",
+ "minimum": 0
+    },
+    "bundleSha256": {
+ "type": "string",
+ "description": "SHA-256 checksum of the downloaded bundle (optional)",
+ "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

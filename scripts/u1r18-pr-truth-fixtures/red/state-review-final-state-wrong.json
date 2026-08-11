@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "kind": "u1r18_canonical_state",
+  "repository": "oxcandy-lgtm/macsteam",
+  "pull_request": 2,
+  "branch": "feat/ultimate-cloverpit-u1",
+  "base_branch": "feat/public-oss-bootstrap",
+  "head_sha": "b0b4ff561a5f6ca9df45ec96999d6ddc701e44f0",
+  "pr": {
+    "state": "open",
+    "draft": true,
+    "merged": false,
+    "mergeable": true
+  },
+  "workstreams": [
+    {
+      "id": "R3",
+      "state": "CLOSED",
+      "classification": "GREEN_U1R18_R3_OWNERSHIP_BOUND_REAL_WINDOW_DETECTION_CLOSED"
+    },
+    {
+      "id": "R4",
+      "state": "CLOSED",
+      "classification": "GREEN_U1R18_R4_HOST_PROCESS_LINEAGE_CLOSED"
+    },
+    {
+      "id": "R5",
+      "state": "EXTERNAL_PROOF_REQUIREMENT_REMOVED",
+      "external_real_mac_proof_performed": false,
+      "external_real_mac_proof_claimed": false
+    },
+    {
+      "id": "R6",
+      "state": "CLOSED",
+      "classification": "GREEN_U1R18_R6_AUTONOMOUS_DIAGNOSTIC_BUNDLE_CLOSED"
+    },
+    {
+      "id": "R7",
+      "state": "CLOSED",
+      "classification": "GREEN_U1R18_R7_CLOSED"
+    },
+    {
+      "id": "R8",
+      "state": "CLOSED",
+      "classification": "GREEN_U1R18_R8_CANONICAL_RECIPE_AUTHORITY_CLOSED"
+    },
+    {
+      "id": "R9",
+      "state": "CLOSED",
+      "classification": "GREEN_U1R18_R9_REPRODUCIBLE_PR_TRUTH_CLOSED"
+    }
+  ],
+  "review_gate": {
+    "worker_report_comment_id": 5174532967,
+    "submission_run_id": 30877120876,
+    "controller_review_id": 4852379287,
+    "live_review_run_id": 30894996309,
+    "final_state": "REVIEW_COMPLETE_BLOCKED",
+    "worker_report_valid": true,
+    "controller_review_valid": true,
+    "nx_required": true,
+    "next_workstream_admitted": false
+  },
+  "core_ci": {
+    "run_id": 30876757807,
+    "required_jobs_success": 5
+  },
+  "gate_advance": {
+    "run_id": 30876760208,
+    "state": "CURRENT_WORKSTREAM_ACTIVE",
+    "parent_authority": "controller_review"
+  },
+  "authorization": {
+    "next_workstream_defined": false,
+    "ready_authorized": false,
+    "merge_authorized": false,
+    "release_authorized": false
+  }
+}
