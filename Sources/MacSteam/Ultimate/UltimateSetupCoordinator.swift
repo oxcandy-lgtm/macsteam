@@ -2741,15 +2741,19 @@ final class UltimateSetupCoordinator {
             disabled_reason: onClientSurface ? (isLaunchingSteam ? "Steam launch is already in progress." : !steamInstallEvidence.canLaunchSteam ? "Steam is not ready to launch." : nil) : "Steam client surface is not active."
         )
 
-        // CloverPit check + launch on the cloverPit surface.
+        // CloverPit check + launch. cloverpit.check is a read-only file
+        // inspection (recheckCloverPit) that is also safe to run on the Steam
+        // Client surface while Steam finalizes a staged payload — the terminal
+        // polls it there instead of looping on the cloverPit surface.
         let onCloverPitSurface = currentPage == .cloverPit
+        let onCloverPitOrSteamSurface = onCloverPitSurface || currentPage == .steamClient
         let cloverReady = cloverPitInspection?.isReady == true
         actions["cloverpit.check"] = ControlPlaneAction(
             id: "cloverpit.check",
-            enabled: onCloverPitSurface && !activeOp,
+            enabled: onCloverPitOrSteamSurface,
             source: "cloverPit",
             target: "cloverPit",
-            disabled_reason: !onCloverPitSurface ? "CloverPit surface is not active." : activeOp ? "An operation is in progress." : nil
+            disabled_reason: onCloverPitOrSteamSurface ? nil : "CloverPit surface is not active."
         )
         actions["cloverpit.launch"] = ControlPlaneAction(
             id: "cloverpit.launch",

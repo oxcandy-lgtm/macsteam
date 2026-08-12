@@ -67,6 +67,20 @@ public struct ControlPlaneDoctor {
         snapshot.cloverpit.running && snapshot.cloverpit.window_visible
     }
 
+    /// Bounded classification of the CloverPit payload: present on disk in a
+    /// staged state (manifest + install dir + executable, but not in the
+    /// canonical Windows Steam library), so Windows Steam must finalize/install
+    /// it before the terminal can launch. Derived only from snapshot facts.
+    public static func cloverPitNeedsSteamFinalization(_ snapshot: ControlPlaneSnapshot) -> Bool {
+        let clover = snapshot.cloverpit
+        return !clover.ready
+            && clover.manifest_present
+            && clover.install_directory_resolved
+            && clover.executable_present
+            && !clover.canonical_install_present
+            && clover.download_payload_present
+    }
+
     /// Assess the current state. `recentEvents` should be the tail of the
     /// bounded event stream (most recent last).
     public func assess(
@@ -74,6 +88,7 @@ public struct ControlPlaneDoctor {
         recentEvents: [ControlPlaneEvent]
     ) -> ControlPlaneDoctorReport {
         let clover = snapshot.cloverpit
+        let staged = Self.cloverPitNeedsSteamFinalization(snapshot)
         let facts: [String: Bool] = [
             "manifest_present": clover.manifest_present,
             "install_directory_resolved": clover.install_directory_resolved,
@@ -108,16 +123,17 @@ public struct ControlPlaneDoctor {
             )
         }
 
-        // 3. Human-only Steam interaction: Steam client is on-screen but the
-        //    CloverPit session never started after a launch was accepted.
+        // 3. Steam is on screen, a launch was accepted, but CloverPit is not
+        //    running and the payload is NOT staged. This is a bounded human
+        //    interaction, but the reason is not guessed as "authentication".
         if snapshot.steam.running && snapshot.steam.window_visible
-            && !clover.running
+            && !clover.running && !clover.ready && !staged
             && lastAcceptedLaunch(from: recentEvents) != nil {
             return ControlPlaneDoctorReport(
                 state: .human_required,
                 screen: snapshot.screen,
-                blocker_code: "steam_authentication_required",
-                summary: "Steam is on screen but the CloverPit session did not start. A Steam login/Guard interaction is required.",
+                blocker_code: "steam_interaction_required",
+                summary: "Windows Steam is on screen but the CloverPit session did not start and the payload is not staged. User interaction in Steam is required.",
                 human_required: true,
                 cloverpit_facts: facts,
                 steam_client_state: snapshot.steam.client_state
@@ -134,6 +150,23 @@ public struct ControlPlaneDoctor {
                 blocker_code: "steam_installer_path_required",
                 summary: "A Steam installer path must be supplied before the install can run.",
                 human_required: true,
+                cloverpit_facts: facts,
+                steam_client_state: snapshot.steam.client_state
+            )
+        }
+
+        // 3c. Staged CloverPit payload requires Steam-side finalization. While
+        //     Steam runs OR is launching/stopping, keep polling the read-only
+        //     inspection (never a check loop: the driver bounds this with the
+        //     steam poll grace; never a stale-session auto-stop).
+        if staged && steamActive(snapshot) {
+            return ControlPlaneDoctorReport(
+                state: .actionable,
+                screen: snapshot.screen,
+                summary: snapshot.steam.window_visible
+                    ? "Windows Steam is on screen and CloverPit is staged; re-checking until it finalizes."
+                    : "Steam is launching and CloverPit is staged; re-checking until it finalizes.",
+                recommended_action: "cloverpit.check",
                 cloverpit_facts: facts,
                 steam_client_state: snapshot.steam.client_state
             )
@@ -166,7 +199,7 @@ public struct ControlPlaneDoctor {
         }
 
         // 5. Actionable: pick the first enabled CloverPit-forward action.
-        if let action = recommendedAction(snapshot) {
+        if let action = recommendedAction(snapshot, recentEvents: recentEvents) {
             let summary: String
             switch action {
             case "session.stop":
@@ -178,15 +211,23 @@ public struct ControlPlaneDoctor {
             case "steam.recheck":
                 summary = "Steam payload present but not synchronized; re-checking."
             case "cloverpit.check":
-                summary = "CloverPit install state unresolved; re-checking."
+                summary = staged && snapshot.steam.running
+                    ? "Windows Steam is on screen and CloverPit is staged; re-checking until it finalizes."
+                    : "CloverPit install state unresolved; re-checking."
             case "steam.launch":
-                summary = "Steam is ready to launch for setup."
+                summary = staged
+                    ? "CloverPit payload is staged; launching Steam to finalize it."
+                    : "Steam is ready to launch for setup."
             case "cloverpit.launch":
                 summary = "CloverPit is ready; launching the session."
             case "steam.install":
                 summary = "A Steam installer is selected; running the install."
             case "retry":
                 summary = "Retrying the current production re-evaluation."
+            case "back":
+                summary = staged
+                    ? "CloverPit payload is staged but not canonical-ready; returning to Steam Client."
+                    : "Navigation/action is available."
             default:
                 summary = "Navigation/action is available."
             }
@@ -218,10 +259,12 @@ public struct ControlPlaneDoctor {
 
     /// Deterministic per-screen CloverPit-forward action, always a gated
     /// canonical action id (only enabled actions are returned).
-    func recommendedAction(_ snapshot: ControlPlaneSnapshot) -> String? {
+    func recommendedAction(_ snapshot: ControlPlaneSnapshot, recentEvents: [ControlPlaneEvent]) -> String? {
         func enabled(_ id: String) -> Bool {
             snapshot.actions[id]?.enabled == true
         }
+
+        let staged = Self.cloverPitNeedsSteamFinalization(snapshot)
 
         switch snapshot.screen {
         case "runtime":
@@ -245,6 +288,13 @@ public struct ControlPlaneDoctor {
             // steam.recheck is enabled whenever the surface is active, so it
             // must not shadow the forward path once Steam is complete.
             if snapshot.steam.lifecycle != "verifiedComplete", enabled("steam.recheck") { return "steam.recheck" }
+            if snapshot.cloverpit.ready, enabled("next") { return "next" }
+            // Staged payload: launch Steam to finalize it (never the next loop).
+            if staged, !snapshot.steam.running, enabled("steam.launch") { return "steam.launch" }
+            // Read-only CloverPit inspection is safe on the Steam surface; learn
+            // the payload state once before crossing back — but never loop a
+            // payload known to be absent.
+            if enabled("cloverpit.check"), !recentlyInspectedCloverPit(recentEvents) { return "cloverpit.check" }
             if enabled("next") { return "next" }
             if enabled("steam.launch") { return "steam.launch" }
             if enabled("retry") { return "retry" }
@@ -253,6 +303,9 @@ public struct ControlPlaneDoctor {
             // cloverpit.check is enabled whenever the surface is active; prefer
             // the launch once the inspection already proves readiness.
             if snapshot.cloverpit.ready, enabled("cloverpit.launch") { return "cloverpit.launch" }
+            // Staged payload cannot be launched; return to the Steam Client so
+            // the staged routing can launch/finalize Steam instead.
+            if staged, enabled("back") { return "back" }
             if enabled("cloverpit.check") { return "cloverpit.check" }
             if enabled("retry") { return "retry" }
             if enabled("next") { return "next" }
@@ -265,13 +318,38 @@ public struct ControlPlaneDoctor {
         }
     }
 
+    /// Whether a `cloverpit.check` was accepted within the bounded event tail.
+    private func recentlyInspectedCloverPit(_ events: [ControlPlaneEvent]) -> Bool {
+        for event in events.reversed() {
+            guard event.event == "command_accepted", let action = event.action else { continue }
+            if action == "cloverpit.check" { return true }
+        }
+        return false
+    }
+
     /// Whether a stale running session may be auto-stopped by the driver.
     private func canAutoStop(_ snapshot: ControlPlaneSnapshot) -> Bool {
-        // Never auto-stop a healthy CloverPit or Steam process that just needs
-        // visibility observation — only stop when the goal target is idle and
-        // a session lingers.
-        if snapshot.cloverpit.running || snapshot.steam.window_visible { return false }
+        // Never auto-stop a healthy CloverPit game process.
+        if snapshot.cloverpit.running { return false }
+        // A finalized (ready) CloverPit no longer needs a lingering Steam
+        // setup session — it may be closed so navigation can resume.
+        if snapshot.cloverpit.ready { return true }
+        // A visible Steam window is beyond the safe auto-stop boundary.
+        if snapshot.steam.window_visible { return false }
+        // A Steam launch/stop in progress must never be cut short; and a
+        // running Steam client is a live finalization partner, not a stale
+        // session.
+        if snapshot.steam.running { return false }
+        if snapshot.steam.client_state == "launching" || snapshot.steam.client_state == "stopping" { return false }
         return true
+    }
+
+    /// Whether the Windows Steam client is in motion (finalization partner):
+    /// running, launching, or stopping.
+    private func steamActive(_ snapshot: ControlPlaneSnapshot) -> Bool {
+        if snapshot.steam.running { return true }
+        let state = snapshot.steam.client_state
+        return state == "launching" || state == "stopping"
     }
 
     private func lastAcceptedLaunch(from events: [ControlPlaneEvent]) -> String? {

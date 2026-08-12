@@ -219,6 +219,7 @@ current_progress:
   step1: DONE
   step2: DONE
   step3: DONE
+  step3_fix1: DONE
   state_mirror: WORKING
   structured_events: WORKING
   terminal_status: WORKING
@@ -228,6 +229,8 @@ current_progress:
   heartbeat: WORKING
   doctor: WORKING
   autonomous_cloverpit_run: WORKING
+  staged_cloverpit_routing: WORKING
+  flow_stall_on_staged_payload: FIXED
   control_plane: COMPLETE
   user_step_by_step_supervision_required: false
 ```

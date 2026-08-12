@@ -144,6 +144,15 @@ struct MacsTeamControlPlaneCLI {
         var lastFingerprint = ""
         var noProgress = 0
 
+        // Steam-side finalization poll: staged CloverPit payload + Steam
+        // running. Bounded grace before the human boundary is exposed: 30s once
+        // the Steam window is visible, or a 150s in-motion ceiling without any
+        // visibility observation (the terminal cannot observe finalization).
+        var visibleGraceSince: Date?
+        var inMotionGraceSince: Date?
+        let visibleGrace: TimeInterval = 30
+        let inMotionCeiling: TimeInterval = 150
+
         while true {
             if Date().timeIntervalSince(start) > overallTimeout {
                 return emitError(code: "flow_timeout", message: "CloverPit not reached within \(Int(overallTimeout))s.")
@@ -176,20 +185,6 @@ struct MacsTeamControlPlaneCLI {
                 print(encodeDict(successPayload(snapshot: snapshot, humanInterventionUsed: humanInterventionUsed)))
                 return 0
             case .human_required:
-                if report.blocker_code == "steam_authentication_required" {
-                    // Grace: the launch was accepted but the Steam/game window may
-                    // still be starting. Only confirm the human boundary once the
-                    // accepted launch is older than the bounded grace window.
-                    let lastLaunchTS = lastAcceptedLaunchTimestamp(events)
-                    let grace = 45.0
-                    if let lastLaunchTS {
-                        let settled = Date().timeIntervalSince1970 - lastLaunchTS
-                        if settled < grace {
-                            Thread.sleep(forTimeInterval: 5)
-                            continue
-                        }
-                    }
-                }
                 return emitHumanRequired(code: report.blocker_code ?? "human_required", snapshot: snapshot)
             case .waiting:
                 // No action while a supervised operation settles.
@@ -227,6 +222,46 @@ struct MacsTeamControlPlaneCLI {
                 if action == "steam.select_installer" {
                     return emitHumanRequired(code: "steam_installer_path_required", snapshot: snapshot)
                 }
+
+                // Steam finalization poll: a staged CloverPit payload with Steam
+                // running or launching must NOT be collapsed by the no-progress
+                // guard. Poll the read-only inspection at a bounded cadence; the
+                // human boundary is exposed only after: (a) the Steam window is
+                // visible for `visibleGrace` while still staged, or (b) Steam has
+                // stayed in motion for `inMotionCeiling` without any visibility
+                // observation to conclude progress.
+                let steamInMotion = snapshot.steam.running
+                    || snapshot.steam.client_state == "launching"
+                    || snapshot.steam.client_state == "stopping"
+                if action == "cloverpit.check",
+                   steamInMotion,
+                   !snapshot.cloverpit.ready,
+                   !snapshot.cloverpit.running {
+                    if snapshot.steam.window_visible {
+                        let since = visibleGraceSince ?? Date()
+                        visibleGraceSince = since
+                        inMotionGraceSince = nil
+                        let elapsed = Date().timeIntervalSince(since)
+                        if elapsed >= visibleGrace {
+                            return emitHumanRequired(code: "steam_interaction_required", snapshot: snapshot)
+                        }
+                        progressPrint("[driver] Steam visible, CloverPit staged (\(Int(elapsed))s/\(Int(visibleGrace))s); polling cloverpit.check.")
+                    } else {
+                        let since = inMotionGraceSince ?? Date()
+                        inMotionGraceSince = since
+                        visibleGraceSince = nil
+                        let elapsed = Date().timeIntervalSince(since)
+                        if elapsed >= inMotionCeiling {
+                            return emitHumanRequired(code: "steam_interaction_required", snapshot: snapshot)
+                        }
+                        progressPrint("[driver] Steam in motion, CloverPit staged (\(Int(elapsed))s/\(Int(inMotionCeiling))s); polling cloverpit.check.")
+                    }
+                    _ = sendAndWait(store, action: "cloverpit.check", argument: nil, timeout: 180)
+                    Thread.sleep(forTimeInterval: 7)
+                    continue
+                }
+                visibleGraceSince = nil
+                inMotionGraceSince = nil
 
                 let before = fingerprint(snapshot)
                 if action == lastAction && before == lastFingerprint {
@@ -291,16 +326,6 @@ struct MacsTeamControlPlaneCLI {
         ].joined(separator: "|")
     }
 
-    private static func lastAcceptedLaunchTimestamp(_ events: [ControlPlaneEvent]) -> Double? {
-        for event in events.reversed() {
-            guard event.event == "command_accepted",
-                  let action = event.action,
-                  action == "cloverpit.launch" || action == "steam.launch" else { continue }
-            return event.ts
-        }
-        return nil
-    }
-
     private static func successPayload(snapshot: ControlPlaneSnapshot, humanInterventionUsed: Bool) -> [String: Any] {
         [
             "status": "running_visible",
@@ -314,8 +339,10 @@ struct MacsTeamControlPlaneCLI {
 
     private static func emitHumanRequired(code: String, snapshot: ControlPlaneSnapshot) -> Int32 {
         let payload: [String: Any] = [
-            "state": "human_required",
+            "status": "human_required",
             "code": code,
+            "steam_window_visible": snapshot.steam.window_visible,
+            "cloverpit_ready": snapshot.cloverpit.ready,
             "screen": snapshot.screen,
             "target": "cloverpit",
         ]
@@ -323,7 +350,7 @@ struct MacsTeamControlPlaneCLI {
            let text = String(data: data, encoding: .utf8) {
             print(text)
         } else {
-            print("{\"state\":\"human_required\",\"code\":\"\(code)\"}")
+            print("{\"status\":\"human_required\",\"code\":\"\(code)\"}")
         }
         return 1
     }
