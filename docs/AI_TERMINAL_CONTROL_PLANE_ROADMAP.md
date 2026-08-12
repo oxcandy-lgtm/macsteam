@@ -217,11 +217,13 @@ One final build/test/smoke is enough after the control plane works.
 ```yaml
 current_progress:
   step1: DONE
-  step2: NEXT
+  step2: DONE
+  step3: NEXT
   state_mirror: WORKING
   structured_events: WORKING
-  steam_flags: WORKING
-  cloverpit_flags: WORKING
-  back_next_flags: WORKING
-  installer_messages: WORKING
+  terminal_status: WORKING
+  terminal_events: WORKING
+  terminal_commands: WORKING
+  production_intent_routing: WORKING
+  heartbeat: WORKING
 ```

@@ -9,7 +9,8 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "MacsTeam", targets: ["MacSteam"])
+        .executable(name: "MacsTeam", targets: ["MacSteam"]),
+        .executable(name: "macsteamctl", targets: ["MacsTeamControlPlaneCLI"])
     ],
     dependencies: [],
     targets: [
@@ -23,6 +24,14 @@ let package = Package(
         .target(
             name: "MacsTeamControlPlane",
             path: "Sources/MacsTeamControlPlane",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .executableTarget(
+            name: "MacsTeamControlPlaneCLI",
+            dependencies: ["MacsTeamControlPlane"],
+            path: "Sources/MacsTeamControlPlaneCLI",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

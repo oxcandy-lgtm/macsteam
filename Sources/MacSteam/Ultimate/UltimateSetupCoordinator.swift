@@ -903,12 +903,56 @@ final class UltimateSetupCoordinator {
             return
         }
 
+        _ = await selectRuntimeCandidate(preferred)
+        generateInstallerID()
+    }
+
+    /// AI-CP-STEP2: explicit selection of a single runtime type (e.g.
+    /// `runtime select imported-wine`) over the production discovery +
+    /// selection path. Candidates are narrowed to the requested type, then the
+    /// existing registry ordering/selection rules apply. CrossOver fallback and
+    /// silent System Wine fallback are both forbidden — a missing candidate
+    /// returns false so the caller can report `runtime_imported_wine_not_found`.
+    ///
+    /// Returns true only when the requested runtime was actually selected
+    /// (`state == .runtimeReady`); a real-load/capability rejection or a
+    /// missing candidate returns false.
+    @discardableResult
+    func selectRuntime(_ type: RuntimeType) async -> Bool {
+        state = .inspecting
+        error = nil
+
+        log("Selecting runtime type: \(type.rawValue)")
+        let candidates = await runtimeRegistry.discover()
+        let narrowed = candidates.filter { $0.runtimeType == type }
+        for c in narrowed {
+            log("  Candidate: \(c.displayName) type=\(c.runtimeType.rawValue) usable=\(c.inspection?.isUsable ?? false)")
+        }
+
+        guard let preferred = runtimeRegistry.selectExplicit(type, from: narrowed)
+        else {
+            state = .runtimeRequired
+            error = .runtimeNotFound
+            log("No \(type.rawValue) runtime found")
+            return false
+        }
+
+        let selected = await selectRuntimeCandidate(preferred)
+        generateInstallerID()
+        return selected
+    }
+
+    /// Shared production selection lane: real-load preflight → capability gate
+    /// → `selectCandidate`. Both `inspectSystem()` and explicit runtime
+    /// selection route through here so terminal and GUI share one authority.
+    @discardableResult
+    private func selectRuntimeCandidate(_ candidate: RuntimeCandidate) async -> Bool {
         // U1R18: Real-load preflight — prove the runtime executes a Windows
         // command (and thus steam-client capability) BEFORE the capability gate.
-        if let url = preferred.url {
+        if let url = candidate.url {
             let wineURL = WineExecutableLayout.detect(from: url).wine
             let outcome = await performRealLoadPreflightOrFastPath(
-                runtimeURL: url, wineURL: wineURL, runtimeType: preferred.runtimeType.rawValue
+                runtimeURL: url, wineURL: wineURL, runtimeType: candidate.runtimeType.rawValue
             )
             if !outcome.result.isHealthy {
                 state = .runtimeInvalid
@@ -916,18 +960,19 @@ final class UltimateSetupCoordinator {
                     "Wine real-load preflight failed (\(outcome.result.status.rawValue)): \(outcome.result.detail)"
                 )
                 log("Real-load preflight REJECTED runtime: \(outcome.result.status.rawValue)")
-                return
+                return false
             }
         }
 
-        selectCandidate(preferred)
-        log("Runtime selected: \(preferred.displayName) v\(preferred.inspection?.version ?? "?")")
-        log("Runtime type: \(preferred.runtimeType.rawValue)")
-        log("Runtime version: \(preferred.inspection?.version ?? "?")")
+        selectCandidate(candidate)
+        let selected = state == .runtimeReady
+        log("Runtime selected: \(candidate.displayName) v\(candidate.inspection?.version ?? "?")")
+        log("Runtime type: \(candidate.runtimeType.rawValue)")
+        log("Runtime version: \(candidate.inspection?.version ?? "?")")
         if let prefixID = prefixSafeID {
             log("Prefix safe ID: \(prefixID)")
         }
-        generateInstallerID()
+        return selected
     }
 
     /// Compute build SHA for freshness proof.
@@ -2634,6 +2679,18 @@ final class UltimateSetupCoordinator {
             source: currentPage.rawValue,
             target: currentPage.rawValue,
             disabled_reason: error == nil ? "No error to retry." : nil
+        )
+
+        // AI-CP-STEP2: explicit runtime-type selection on the runtime surface
+        // (feeds `macsteamctl runtime select imported-wine`). Reuses the same
+        // discovery + capability + real-load production path as inspectSystem.
+        let onRuntimeSurface = currentPage == .runtime
+        actions["runtime.select"] = ControlPlaneAction(
+            id: "runtime.select",
+            enabled: onRuntimeSurface && !activeOp && state != .inspecting,
+            source: "runtime",
+            target: "runtime",
+            disabled_reason: !onRuntimeSurface ? "Runtime surface is not active." : activeOp ? "An operation is in progress." : state == .inspecting ? "Runtime inspection is in progress." : nil
         )
 
         // Prefix preparation: enabled on the environment surface while the

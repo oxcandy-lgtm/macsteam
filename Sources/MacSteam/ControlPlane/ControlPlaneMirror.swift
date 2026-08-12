@@ -16,28 +16,45 @@ import MacsTeamControlPlane
 final class ControlPlaneMirror {
     private let coordinator: UltimateSetupCoordinator
     private let store = ControlPlaneStore()
+    private let commandRouter: ControlPlaneCommandRouter
 
     private var task: Task<Void, Never>?
+    private var commandTask: Task<Void, Never>?
     private var previousSnapshot: ControlPlaneSnapshot?
     private var previousInstallerLogLength = 0
     private var didEmitAppStarted = false
+    private var lastHeartbeatWrite: Date?
 
     init(coordinator: UltimateSetupCoordinator) {
         self.coordinator = coordinator
+        self.commandRouter = ControlPlaneCommandRouter(coordinator: coordinator)
     }
 
-    /// Start the mirror loop. Idempotent.
+    /// Start the mirror loop + command consumer. Idempotent.
     func start() {
         guard task == nil else { return }
         task = Task { [weak self] in
             await self?.runLoop()
         }
+        guard commandTask == nil else { return }
+        commandTask = Task { [weak self] in
+            await self?.commandLoop()
+        }
     }
 
-    /// Stop the mirror loop. Idempotent.
+    /// Stop the mirror loop + command consumer. Idempotent. The heartbeat file
+    /// is left untouched here so an aborted quit can safely restart the loops.
     func stop() {
         task?.cancel()
         task = nil
+        commandTask?.cancel()
+        commandTask = nil
+    }
+
+    /// Remove the heartbeat as the graceful-termination marker. Called only
+    /// after a `stopAllForApplicationTermination()` returned `.clean`.
+    func removeHeartbeat() {
+        store.removeHeartbeat()
     }
 
     // MARK: - Loop
@@ -50,6 +67,8 @@ final class ControlPlaneMirror {
     }
 
     private func tick() async {
+        updateHeartbeat()
+
         let snapshot = await coordinator.controlPlaneSnapshot()
 
         // First tick doubles as the authoritative app_started record: it carries
@@ -88,6 +107,90 @@ final class ControlPlaneMirror {
         }
 
         previousSnapshot = snapshot
+    }
+
+    // MARK: - Heartbeat
+
+    /// Lightweight liveness touch (~1s cadence). state.json alone cannot serve
+    /// as a liveness probe — it is written only on content change. The CLI flags
+    /// `app_not_running` (no heartbeat) / `app_unresponsive` (stale heartbeat).
+    private func updateHeartbeat() {
+        let now = Date()
+        if lastHeartbeatWrite == nil
+            || now.timeIntervalSince(lastHeartbeatWrite ?? .distantPast) >= 1.0 {
+            lastHeartbeatWrite = now
+            try? store.writeHeartbeat()
+        }
+    }
+
+    // MARK: - Command consumer
+
+    /// The app's SINGLE command consumer (mirror-owner; the app already has a
+    /// single running-instance ownership). Polls the inbox and sequentially
+    /// executes every pending request through the production router.
+    private func commandLoop() async {
+        while !Task.isCancelled {
+            await consumePendingCommands()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+    }
+
+    private func consumePendingCommands() async {
+        let requests = store.readPendingCommandRequests()
+        for request in requests {
+            // Ownership transfer BEFORE execution: a consumed request is
+            // removed immediately so it can never be processed twice.
+            store.deleteCommandRequest(id: request.id)
+
+            // Stale-request guard: a request left in the inbox by a CLI that
+            // already timed out (or an app that quit mid-flight) must never be
+            // executed by a later app start.
+            let age = Date().timeIntervalSince1970 - request.created_at
+            if age > 60 {
+                continue
+            }
+
+            let response = await execute(request)
+            try? store.writeCommandResponse(response)
+        }
+    }
+
+    private func execute(_ request: ControlPlaneCommandRequest) async -> ControlPlaneCommandResponse {
+        let screen = coordinator.currentPage.rawValue
+        emitCommand(event: "command_received", action: request.action, screen: screen)
+
+        let result = await commandRouter.perform(action: request.action, argument: request.argument)
+
+        switch result.status {
+        case .accepted:
+            emitCommand(event: "command_accepted", action: request.action, screen: screen)
+        case .rejected:
+            emitCommand(event: "command_rejected", action: request.action, screen: screen, message: result.error_code)
+        case .failed:
+            emitCommand(event: "command_failed", action: request.action, screen: screen, message: result.error_code)
+        }
+
+        return ControlPlaneCommandResponse(
+            id: request.id,
+            action: request.action,
+            status: result.status,
+            error_code: result.error_code,
+            message: result.message
+        )
+    }
+
+    /// Command events carry NO argument and NO raw path — only the canonical
+    /// action and the screen it ran on.
+    private func emitCommand(event: String, action: String, screen: String?, message: String? = nil) {
+        try? store.appendEvent(
+            ControlPlaneEvent(
+                event: event,
+                ts: Date().timeIntervalSince1970,
+                screen: screen,
+                action: action,
+                message: message
+            )
+        )
     }
 
     // MARK: - Events

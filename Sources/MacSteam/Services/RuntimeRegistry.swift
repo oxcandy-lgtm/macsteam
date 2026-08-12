@@ -177,6 +177,20 @@ final class RuntimeRegistry {
         return commercialPolicy == .explicitUserOptIn
     }
 
+    /// Explicit user/terminal-driven selection of ONE runtime type, reusing
+    /// the registry's usable-filter + priority-ordering rules WITHOUT the
+    /// silent-fallback-block behaviour — an explicit selection must never be
+    /// blocked by a stale persisted preferred id pointing elsewhere.
+    func selectExplicit(_ type: RuntimeType, from candidates: [RuntimeCandidate]) -> RuntimeCandidate? {
+        var pool = candidates.filter { $0.runtimeType == type }
+        // Commercial runtimes stay gated behind explicit opt-in.
+        if commercialPolicy != .explicitUserOptIn {
+            pool = pool.filter { $0.runtimeType.isOpenSource }
+        }
+        let usable = pool.filter { $0.inspection?.isUsable == true }
+        return usable.min { $0.runtimeType < $1.runtimeType }
+    }
+
     // MARK: - User-selected runtime
 
     /// Locate runtime at a user-selected URL (imported Wine).
