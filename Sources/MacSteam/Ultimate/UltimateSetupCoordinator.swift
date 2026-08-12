@@ -2813,6 +2813,7 @@ final class UltimateSetupCoordinator {
         let gamePurpose = session?.purpose == .game
         let cloverRunning = gamePurpose && sessionSupervisorIsRunning
         let cloverVisible = gamePurpose && supervisorState == .runningVisible
+        let inspection = cloverPitInspection
 
         return ControlPlaneSnapshot(
             schema_version: 1,
@@ -2833,13 +2834,19 @@ final class UltimateSetupCoordinator {
                 installed: steamInstallLifecycle == .verifiedComplete,
                 lifecycle: steamInstallLifecycle.rawValue,
                 running: steamRunning,
-                window_visible: steamVisible
+                window_visible: steamVisible,
+                client_state: steamClientStateLabel(steamClientState)
             ),
             cloverpit: ControlPlaneCloverPit(
-                ready: cloverPitInspection?.isReady ?? false,
+                ready: inspection?.isReady ?? false,
                 running: cloverRunning,
                 window_visible: cloverVisible,
-                install_state: cloverPitInspection?.installState.rawValue ?? "notFound"
+                install_state: inspection?.installState.rawValue ?? "notFound",
+                manifest_present: inspection?.manifestPresent ?? false,
+                install_directory_resolved: inspection?.installDirectoryResolved ?? false,
+                executable_present: inspection?.executablePresent ?? false,
+                canonical_install_present: inspection?.canonicalInstallPresent ?? false,
+                download_payload_present: inspection?.downloadPayloadPresent ?? false
             ),
             session: ControlPlaneSession(
                 purpose: session?.purpose.rawValue ?? "none",
@@ -3093,6 +3100,19 @@ final class UltimateSetupCoordinator {
         case .stopped: return "stopped"
         case .recoveryRequired: return "recoveryRequired"
         case .failed: return "failed"
+        }
+    }
+
+    /// Bounded Steam client-state label for the control-plane snapshot.
+    private func steamClientStateLabel(_ s: SteamClientState) -> String {
+        switch s {
+        case .stopped: return "stopped"
+        case .launching: return "launching"
+        case .runningVisible: return "runningVisible"
+        case .runningHidden: return "runningHidden"
+        case .stale: return "stale"
+        case .stopping: return "stopping"
+        case .recoveryRequired: return "recoveryRequired"
         }
     }
 

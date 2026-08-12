@@ -86,13 +86,16 @@ public struct ControlPlaneSteam: Codable, Equatable, Sendable {
     public var lifecycle: String
     public var running: Bool
     public var window_visible: Bool
+    /// Bounded Steam client state label (stopped/launching/runningVisible/…).
+    public var client_state: String
 
-    public init(exe_present: Bool, installed: Bool, lifecycle: String, running: Bool, window_visible: Bool) {
+    public init(exe_present: Bool, installed: Bool, lifecycle: String, running: Bool, window_visible: Bool, client_state: String) {
         self.exe_present = exe_present
         self.installed = installed
         self.lifecycle = lifecycle
         self.running = running
         self.window_visible = window_visible
+        self.client_state = client_state
     }
 }
 
@@ -102,12 +105,34 @@ public struct ControlPlaneCloverPit: Codable, Equatable, Sendable {
     public var running: Bool
     public var window_visible: Bool
     public var install_state: String
+    /// Bounded install facts from the production inspection — already-bounded
+    /// booleans, never paths or identities (AI-CP-STEP3 doctor input).
+    public var manifest_present: Bool
+    public var install_directory_resolved: Bool
+    public var executable_present: Bool
+    public var canonical_install_present: Bool
+    public var download_payload_present: Bool
 
-    public init(ready: Bool, running: Bool, window_visible: Bool, install_state: String) {
+    public init(
+        ready: Bool,
+        running: Bool,
+        window_visible: Bool,
+        install_state: String,
+        manifest_present: Bool = false,
+        install_directory_resolved: Bool = false,
+        executable_present: Bool = false,
+        canonical_install_present: Bool = false,
+        download_payload_present: Bool = false
+    ) {
         self.ready = ready
         self.running = running
         self.window_visible = window_visible
         self.install_state = install_state
+        self.manifest_present = manifest_present
+        self.install_directory_resolved = install_directory_resolved
+        self.executable_present = executable_present
+        self.canonical_install_present = canonical_install_present
+        self.download_payload_present = download_payload_present
     }
 }
 

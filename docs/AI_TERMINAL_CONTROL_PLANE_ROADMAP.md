@@ -218,7 +218,7 @@ One final build/test/smoke is enough after the control plane works.
 current_progress:
   step1: DONE
   step2: DONE
-  step3: NEXT
+  step3: DONE
   state_mirror: WORKING
   structured_events: WORKING
   terminal_status: WORKING
@@ -226,4 +226,8 @@ current_progress:
   terminal_commands: WORKING
   production_intent_routing: WORKING
   heartbeat: WORKING
+  doctor: WORKING
+  autonomous_cloverpit_run: WORKING
+  control_plane: COMPLETE
+  user_step_by_step_supervision_required: false
 ```
