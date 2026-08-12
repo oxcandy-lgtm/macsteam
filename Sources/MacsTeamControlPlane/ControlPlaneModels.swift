@@ -79,7 +79,9 @@ public struct ControlPlanePrefix: Codable, Equatable, Sendable {
     }
 }
 
-/// Windows Steam projection (process + WindowServer visibility).
+/// Windows Steam projection (process + WindowServer visibility + live error
+/// evidence). The visible error and log evidence are the terminal's read of
+/// what is ACTUALLY on screen / in Steam's own logs — never a timeout guess.
 public struct ControlPlaneSteam: Codable, Equatable, Sendable {
     public var exe_present: Bool
     public var installed: Bool
@@ -88,14 +90,37 @@ public struct ControlPlaneSteam: Codable, Equatable, Sendable {
     public var window_visible: Bool
     /// Bounded Steam client state label (stopped/launching/runningVisible/…).
     public var client_state: String
+    /// The on-screen error currently visible in an owned Steam window, when a
+    /// source (accessibility / window title / OCR) could read one.
+    public var visible_error: ControlPlaneVisibleError?
+    /// Bounded structured error/warning lines from Steam's own generic logs.
+    public var observed_errors: [ControlPlaneSteamLogEntry]
+    /// Bounded, redacted tails of the supervised Steam process output.
+    public var stdout_tail: String?
+    public var stderr_tail: String?
 
-    public init(exe_present: Bool, installed: Bool, lifecycle: String, running: Bool, window_visible: Bool, client_state: String) {
+    public init(
+        exe_present: Bool,
+        installed: Bool,
+        lifecycle: String,
+        running: Bool,
+        window_visible: Bool,
+        client_state: String,
+        visible_error: ControlPlaneVisibleError? = nil,
+        observed_errors: [ControlPlaneSteamLogEntry] = [],
+        stdout_tail: String? = nil,
+        stderr_tail: String? = nil
+    ) {
         self.exe_present = exe_present
         self.installed = installed
         self.lifecycle = lifecycle
         self.running = running
         self.window_visible = window_visible
         self.client_state = client_state
+        self.visible_error = visible_error
+        self.observed_errors = observed_errors
+        self.stdout_tail = stdout_tail
+        self.stderr_tail = stderr_tail
     }
 }
 

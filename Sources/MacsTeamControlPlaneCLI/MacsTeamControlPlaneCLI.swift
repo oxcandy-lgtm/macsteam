@@ -186,6 +186,10 @@ struct MacsTeamControlPlaneCLI {
                 return 0
             case .human_required:
                 return emitHumanRequired(code: report.blocker_code ?? "human_required", snapshot: snapshot)
+            case .blocked where report.blocker_code == "steam_visible_error":
+                // A real, terminal-readable Steam error is on screen — never
+                // keep polling a doomed finalization. Emit the exact blocker.
+                return emitError(code: "steam_visible_error", message: report.summary)
             case .waiting:
                 // No action while a supervised operation settles.
                 if fingerprint(snapshot) == lastFingerprint {
@@ -338,7 +342,7 @@ struct MacsTeamControlPlaneCLI {
     }
 
     private static func emitHumanRequired(code: String, snapshot: ControlPlaneSnapshot) -> Int32 {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "status": "human_required",
             "code": code,
             "steam_window_visible": snapshot.steam.window_visible,
@@ -346,6 +350,13 @@ struct MacsTeamControlPlaneCLI {
             "screen": snapshot.screen,
             "target": "cloverpit",
         ]
+        if let visible = snapshot.steam.visible_error, visible.present {
+            var errorDict: [String: Any] = ["present": true]
+            if let source = visible.source { errorDict["source"] = source }
+            if let title = visible.title { errorDict["title"] = title }
+            if let message = visible.message { errorDict["message"] = message }
+            payload["visible_error"] = errorDict
+        }
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
            let text = String(data: data, encoding: .utf8) {
             print(text)
@@ -377,7 +388,7 @@ struct MacsTeamControlPlaneCLI {
 
     static func steam(_ store: ControlPlaneStore, rest: [String], timeout: TimeInterval) -> Int32 {
         guard let sub = rest.first else {
-            return fail("usage: macsteamctl steam recheck | select-installer <path> | install | launch")
+            return fail("usage: macsteamctl steam recheck | select-installer <path> | install | launch | diagnose")
         }
         switch sub {
         case "recheck":
@@ -391,9 +402,135 @@ struct MacsTeamControlPlaneCLI {
             return dispatchControl(store, action: "steam.install", argument: nil, timeout: timeout)
         case "launch":
             return dispatchControl(store, action: "steam.launch", argument: nil, timeout: timeout)
+        case "diagnose":
+            return steamDiagnose(store, timeout: timeout)
         default:
             return fail("unknown steam subcommand '\(sub)'")
         }
+    }
+
+    // MARK: - Steam diagnose
+
+    /// `macsteamctl steam diagnose --json`: one command answers — is Steam
+    /// running? is its window visible? what error is ACTUALLY on screen? what
+    /// do stderr / Steam's own logs say? The on-screen error is read live in
+    /// THIS process (Accessibility first, OCR fallback) against ownership-
+    /// grounded Steam windows only — never a timeout guess, never a question
+    /// to the user.
+    static func steamDiagnose(_ store: ControlPlaneStore, timeout: TimeInterval) -> Int32 {
+        // Fresh app-side capture first (snapshot visible_error/logs refresh).
+        // Suppress the dispatch envelope: diagnose prints ONE document.
+        _ = sendAndWaitSilent(store, action: "steam.diagnose", argument: nil, timeout: timeout)
+
+        var running = false
+        var windowVisible = false
+        var clientState = "stopped"
+        if let snapshot = store.readSnapshot() {
+            running = snapshot.steam.running
+            windowVisible = snapshot.steam.window_visible
+            clientState = snapshot.steam.client_state
+        }
+
+        let prefixes = discoverSteamPrefixRoots()
+        let ownedWindows = SteamLiveDiagnostics.prefixGroundedSteamWindows(prefixRoots: prefixes)
+        let ownerPIDs = ownedWindows.map(\.ownerPID)
+
+        var visibleError: [String: Any] = ["present": false]
+        if !ownerPIDs.isEmpty {
+            let accessibility = SteamLiveDiagnostics.readAccessibility(ownerPIDs: ownerPIDs)
+            var title: String?
+            var message: String?
+            var permission: String?
+            if accessibility.permissionDenied {
+                permission = "accessibility"
+            } else if let readTitle = accessibility.title {
+                title = SteamLiveDiagnostics.redact(readTitle, maxLength: 200)
+                message = accessibility.messages.first.map {
+                    SteamLiveDiagnostics.redact($0, maxLength: 200)
+                }
+            } else if let first = accessibility.messages.first {
+                message = SteamLiveDiagnostics.redact(first, maxLength: 200)
+            }
+
+            // OCR fallback when Accessibility could not read dialog body text.
+            if title == nil && message == nil && permission == nil {
+                let ocr = ocrReadBlocking(ownerPIDs: ownerPIDs)
+                if ocr.permissionDenied {
+                    permission = "screen_recording"
+                } else if let first = ocr.texts.first {
+                    message = SteamLiveDiagnostics.redact(first, maxLength: 200)
+                }
+            }
+
+            if title != nil || message != nil {
+                visibleError = ["present": true, "source": "accessibility"]
+                if let title { visibleError["title"] = title }
+                if let message { visibleError["message"] = message }
+            } else if let permission {
+                visibleError = ["present": false, "permission_required": permission]
+            }
+        }
+
+        let logDirectory = steamLogsDirectory(in: prefixes)
+        var recentErrors: [[String: String]] = []
+        for entry in SteamLiveDiagnostics.scanSteamLogs(directory: logDirectory) {
+            recentErrors.append([
+                "source": entry.source,
+                "component": entry.component,
+                "severity": entry.severity,
+                "message": entry.message,
+            ])
+        }
+
+        let payload: [String: Any] = [
+            "running": running,
+            "window_visible": windowVisible,
+            "client_state": clientState,
+            "visible_error": visibleError,
+            "recent_errors": recentErrors,
+        ]
+        print(encodeDict(payload))
+        return 0
+    }
+
+    /// Canonical MacSteam Wine prefixes (identity-path grounding for window
+    /// ownership in `steam diagnose`).
+    private static func discoverSteamPrefixRoots() -> [String] {        let root = NSHomeDirectory() + "/Library/Application Support/MacSteam/Prefixes"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: root) else {
+            return []
+        }
+        return names
+            .filter { !$0.hasPrefix(".") }
+            .map { root + "/" + $0 }
+    }
+
+    private static func steamLogsDirectory(in prefixes: [String]) -> URL? {
+        for prefix in prefixes {
+            let candidates = [
+                URL(fileURLWithPath: prefix).appendingPathComponent("drive_c/Program Files (x86)/Steam/logs"),
+                URL(fileURLWithPath: prefix).appendingPathComponent("drive_c/Program Files/Steam/logs"),
+            ]
+            for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Bridge the async ScreenCaptureKit OCR read into the synchronous CLI.
+    private static func ocrReadBlocking(ownerPIDs: [Int32]) -> SteamOCRRead {
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = OCRReadBox()
+        Task {
+            box.value = await SteamLiveDiagnostics.readOCR(ownerPIDs: ownerPIDs)
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return box.value
+    }
+
+    private final class OCRReadBox: @unchecked Sendable {
+        var value = SteamOCRRead(available: false, texts: [], permissionDenied: false)
     }
 
     static func cloverpit(_ store: ControlPlaneStore, rest: [String], timeout: TimeInterval) -> Int32 {
@@ -453,6 +590,29 @@ struct MacsTeamControlPlaneCLI {
         return emitError(code: "command_timeout", message: "No response within \(Int(timeout))s.")
     }
 
+    /// Like ``sendAndWait`` but does not print the dispatch envelope; used by
+    /// composite commands that emit a single document (e.g. `steam diagnose`).
+    static func sendAndWaitSilent(_ store: ControlPlaneStore, action: String, argument: String?, timeout: TimeInterval) -> Int32 {
+        let id = UUID().uuidString
+        do {
+            try store.writeCommandRequest(ControlPlaneCommandRequest(id: id, action: action, argument: argument))
+        } catch {
+            return emitError(code: "request_write_failed", message: error.localizedDescription)
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let response = store.readCommandResponse(id: id) {
+                store.deleteCommandResponse(id: id)
+                return response.status == .accepted ? 0 : 1
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        // Stale-safe: drop any late response; the app deletes old requests itself.
+        store.deleteCommandResponse(id: id)
+        return emitError(code: "command_timeout", message: "No response within \(Int(timeout))s.")
+    }
+
     // MARK: - Output helpers
 
     static func usage() -> Int32 {
@@ -473,6 +633,7 @@ struct MacsTeamControlPlaneCLI {
           macsteamctl steam select-installer <path-to-SteamSetup.exe>
           macsteamctl steam install
           macsteamctl steam launch
+          macsteamctl steam diagnose
           macsteamctl cloverpit check
           macsteamctl cloverpit launch
           macsteamctl session stop

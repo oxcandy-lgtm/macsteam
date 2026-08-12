@@ -123,6 +123,29 @@ public struct ControlPlaneDoctor {
             )
         }
 
+        // 2b. Visible Steam error is the TOP-PRIORITY fact: the terminal read
+        //     an actual error from the on-screen Steam window (or its logs).
+        //     Surface the exact text as the blocker; never keep polling. Only a
+        //     clearly-readable login / Steam Guard interaction is human_required.
+        if let visible = snapshot.steam.visible_error, visible.present {
+            let title = visible.title ?? ""
+            let message = visible.message ?? ""
+            let text = [title, message].filter { !$0.isEmpty }.joined(separator: " — ")
+            let detail = text.isEmpty
+                ? "A visible Steam error was read (source: \(visible.source ?? "unknown"))."
+                : text
+            let human = isLoginGuardError(text)
+            return ControlPlaneDoctorReport(
+                state: human ? .human_required : .blocked,
+                screen: snapshot.screen,
+                blocker_code: "steam_visible_error",
+                summary: "Visible Steam error: \(detail)",
+                human_required: human,
+                cloverpit_facts: facts,
+                steam_client_state: snapshot.steam.client_state
+            )
+        }
+
         // 3. Steam is on screen, a launch was accepted, but CloverPit is not
         //    running and the payload is NOT staged. This is a bounded human
         //    interaction, but the reason is not guessed as "authentication".
@@ -350,6 +373,18 @@ public struct ControlPlaneDoctor {
         if snapshot.steam.running { return true }
         let state = snapshot.steam.client_state
         return state == "launching" || state == "stopping"
+    }
+
+    /// A visible error is a login / Steam Guard interaction only when its text
+    /// actually reads like one. Everything else is a real blocker, never a
+    /// guessed "authentication required".
+    private func isLoginGuardError(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let markers = [
+            "log in", "login", "sign in", "sign-in", "steam guard",
+            "guard code", "password", "authenticat", "アカウント", "ログイン",
+        ]
+        return markers.contains(where: { lower.contains($0) })
     }
 
     private func lastAcceptedLaunch(from events: [ControlPlaneEvent]) -> String? {

@@ -58,6 +58,9 @@ final class ControlPlaneCommandRouter {
         case "steam.launch":
             await coordinator.launchWindowsSteam()
             return .accepted
+        case "steam.diagnose":
+            await coordinator.refreshSteamDiagnostics()
+            return .accepted
         case "cloverpit.check":
             await coordinator.recheckCloverPit()
             return .accepted

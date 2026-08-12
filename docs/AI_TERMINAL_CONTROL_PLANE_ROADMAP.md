@@ -220,6 +220,7 @@ current_progress:
   step2: DONE
   step3: DONE
   step3_fix1: DONE
+  step3_fix2: DONE
   state_mirror: WORKING
   structured_events: WORKING
   terminal_status: WORKING
@@ -232,5 +233,10 @@ current_progress:
   staged_cloverpit_routing: WORKING
   flow_stall_on_staged_payload: FIXED
   control_plane: COMPLETE
+  steam_process_observability: WORKING
+  steam_window_visibility: WORKING
+  steam_visible_error_capture: WORKING
+  steam_log_error_capture: WORKING
+  terminal_error_diagnosis: WORKING
   user_step_by_step_supervision_required: false
 ```

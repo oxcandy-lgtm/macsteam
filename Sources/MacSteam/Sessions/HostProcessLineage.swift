@@ -177,10 +177,17 @@ struct ProcessCensusResult: Sendable, Equatable {
 /// previous session are never reused.
 struct ProcessCensusLedger: Sendable {
     let rootIdentity: ProcessIdentity
+    /// Canonical root of the supervised Wine prefix. When present, the census
+    /// additionally admits re-parented Wine processes (wineserver detaches its
+    /// children to launchd, so they leave the PPID chain) whose canonical
+    /// executable lives under this prefix and which started at/after the root.
+    /// Ownership is path-grounded — never name-guessed.
+    let prefixRoot: String?
     private(set) var observed: [ProcessIdentity]
 
-    init(rootIdentity: ProcessIdentity) {
+    init(rootIdentity: ProcessIdentity, prefixRoot: String? = nil) {
         self.rootIdentity = rootIdentity
+        self.prefixRoot = prefixRoot
         self.observed = []
     }
 
@@ -503,7 +510,8 @@ if result == 0, len > 0 {
         census(
             ledger: &ledger,
             captureTable: { nativeTableSnapshot() },
-            canonicalResolver: { row, known in resolveCanonical(row, known: known) }
+            canonicalResolver: { row, known in resolveCanonical(row, known: known) },
+            prefixRoot: ledger.prefixRoot
         )
     }
 
@@ -531,10 +539,20 @@ if result == 0, len > 0 {
     /// Internal seam used by the production census; the coherent-table provider
     /// and canonical resolver are injectable so the stability / ambiguity
     /// behavior can be tested deterministically. Production uses `census(ledger:)`.
+    ///
+    /// `prefixRoot` (canonical prefix root) enables re-parented-Wine admission:
+    /// Wine's wineserver detaches its children to launchd (PPID 1), so a pure
+    /// PPID-chain walk loses steamwebhelper / steamservice / winedevice even
+    /// though they belong to the supervised session. A process is admitted as
+    /// owned when its canonical executable path is under the prefix root and
+    /// its start time is at/after the root's — identity-path grounding, never
+    /// name/executable guessing. Defaults to `nil` (pure PPID-chain behavior)
+    /// so existing callers and deterministic tests are unchanged.
     static func census(
         ledger: inout ProcessCensusLedger,
         captureTable: @escaping () -> [Int32: NativeProcessRow],
-        canonicalResolver: (NativeProcessRow, ProcessIdentity?) -> String = { _, _ in "" }
+        canonicalResolver: (NativeProcessRow, ProcessIdentity?) -> String = { _, _ in "" },
+        prefixRoot: String? = nil
     ) -> ProcessCensusResult {
         var attemptNumber = 0
         // Identities discovered during an attempt that later proved unstable are
@@ -579,6 +597,26 @@ if result == 0, len > 0 {
                     if reachable.insert(childPID).inserted {
                         stack.append(childPID)
                     }
+                }
+            }
+
+            // 2b. Re-parented Wine family: processes under the canonical prefix
+            //     that were detached from the root (PPID 1) by wineserver.
+            //     Admission requires a resolvable canonical path under the
+            //     prefix root AND a start at/after the root — stale processes
+            //     from a previous session in the same prefix are never admitted.
+            if let prefixRoot, !prefixRoot.isEmpty {
+                let normalizedPrefix = URL(fileURLWithPath: prefixRoot)
+                    .resolvingSymlinksInPath().path
+                let rootStart = rootRow.startSeconds
+                for (pid, row) in first where row.ppid == 1 {
+                    guard row.state != .zombie else { continue }
+                    guard row.startSeconds >= rootStart else { continue }
+                    guard let resolved = canonicalExecutablePath(pid), !resolved.isEmpty else { continue }
+                    let normalized = URL(fileURLWithPath: resolved)
+                        .resolvingSymlinksInPath().path
+                    guard normalized.hasPrefix(normalizedPrefix) else { continue }
+                    reachable.insert(pid)
                 }
             }
 

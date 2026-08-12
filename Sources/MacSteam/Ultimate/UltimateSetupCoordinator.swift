@@ -2741,6 +2741,16 @@ final class UltimateSetupCoordinator {
             disabled_reason: onClientSurface ? (isLaunchingSteam ? "Steam launch is already in progress." : !steamInstallEvidence.canLaunchSteam ? "Steam is not ready to launch." : nil) : "Steam client surface is not active."
         )
 
+        // Steam diagnose: read-only live capture of the on-screen error, Steam
+        // logs, and process output. Always available — it is pure observation.
+        actions["steam.diagnose"] = ControlPlaneAction(
+            id: "steam.diagnose",
+            enabled: true,
+            source: "steamClient",
+            target: "steamClient",
+            disabled_reason: nil
+        )
+
         // CloverPit check + launch. cloverpit.check is a read-only file
         // inspection (recheckCloverPit) that is also safe to run on the Steam
         // Client surface while Steam finalizes a staged payload — the terminal
@@ -2808,12 +2818,24 @@ final class UltimateSetupCoordinator {
         let evidence = steamInstallEvidence
         let session = activeSession
         let supervisorState = sessionSupervisorState
+        let steamDiagnostics = await steamDiagnosticsProjection()
 
         // Session-purpose split: Steam-owned sessions are `.steamSetup`;
         // game sessions are `.game`. Visibility comes from the supervisor's
         // WindowServer observer only (runningVisible), never guessed.
-        let steamRunning = steamClientState == .runningVisible || steamClientState == .runningHidden
-        let steamVisible = steamClientState == .runningVisible
+        let steamSession = session?.purpose == .steamSetup
+        let steamRunning = steamSession
+            ? sessionSupervisorIsRunning
+            : (steamClientState == .runningVisible || steamClientState == .runningHidden)
+        let steamVisible = steamSession
+            ? supervisorState == .runningVisible
+            : steamClientState == .runningVisible
+        // U1R18 R1: the client-state label follows the same live observer the
+        // booleans above use, so `status` never reports launching while the
+        // WindowServer already shows the Steam window.
+        let steamClientLabel = steamSession
+            ? steamClientStateLabel(SteamClientState(sessionState: supervisorState))
+            : steamClientStateLabel(steamClientState)
         let gamePurpose = session?.purpose == .game
         let cloverRunning = gamePurpose && sessionSupervisorIsRunning
         let cloverVisible = gamePurpose && supervisorState == .runningVisible
@@ -2839,7 +2861,11 @@ final class UltimateSetupCoordinator {
                 lifecycle: steamInstallLifecycle.rawValue,
                 running: steamRunning,
                 window_visible: steamVisible,
-                client_state: steamClientStateLabel(steamClientState)
+                client_state: steamClientLabel,
+                visible_error: steamDiagnostics.visibleError,
+                observed_errors: steamDiagnostics.observedErrors,
+                stdout_tail: steamDiagnostics.stdoutTail,
+                stderr_tail: steamDiagnostics.stderrTail
             ),
             cloverpit: ControlPlaneCloverPit(
                 ready: inspection?.isReady ?? false,
@@ -2876,6 +2902,123 @@ final class UltimateSetupCoordinator {
         guard let last = lines.last else { return nil }
         return Self.redactMessage(String(last.prefix(200)))
     }
+
+    // MARK: - Steam live diagnostics (STEP3-FIX2)
+
+    private struct SteamDiagnosticsProjection {
+        var visibleError: ControlPlaneVisibleError?
+        var observedErrors: [ControlPlaneSteamLogEntry]
+        var stdoutTail: String?
+        var stderrTail: String?
+    }
+
+    private var lastSteamDiagnosticsCapture: Date?
+    private var cachedSteamDiagnostics: SteamDiagnosticsProjection?
+
+    /// Throttled projection of live Steam error evidence for the snapshot.
+    /// Re-captures at most once every 2 seconds unless `force` is set (the
+    /// `steam.diagnose` action forces a fresh read).
+    private func steamDiagnosticsProjection(force: Bool = false) async -> SteamDiagnosticsProjection {
+        let now = Date()
+        if !force,
+            let cached = cachedSteamDiagnostics,
+            let last = lastSteamDiagnosticsCapture,
+            now.timeIntervalSince(last) < 2 {
+            return cached
+        }
+        let projection = await computeSteamDiagnostics(includeOCR: force)
+        cachedSteamDiagnostics = projection
+        lastSteamDiagnosticsCapture = now
+        return projection
+    }
+
+    /// Read the ACTUAL on-screen Steam error (Accessibility first, OCR in the
+    /// forced diagnose path) plus Steam's own generic logs and the supervised
+    /// process stdout/stderr. Ownership-bounded: only session-proven owned
+    /// PIDs are inspected. Permission deficits are reported, never masked.
+    private func computeSteamDiagnostics(includeOCR: Bool) async -> SteamDiagnosticsProjection {
+        let owned = await sessionSupervisor.ownedSteamWindowOwnerPIDs() ?? []
+        let pids = Array(owned)
+
+        var visibleError: ControlPlaneVisibleError?
+        if !pids.isEmpty {
+            let accessibility = SteamLiveDiagnostics.readAccessibility(ownerPIDs: pids)
+            if accessibility.permissionDenied {
+                visibleError = ControlPlaneVisibleError(
+                    present: false,
+                    permission_required: "accessibility"
+                )
+            } else if let title = accessibility.title {
+                visibleError = ControlPlaneVisibleError(
+                    present: true,
+                    source: "accessibility",
+                    title: SteamLiveDiagnostics.redact(title, maxLength: 200),
+                    message: accessibility.messages.first.map {
+                        SteamLiveDiagnostics.redact($0, maxLength: 200)
+                    }
+                )
+            } else if let message = accessibility.messages.first {
+                visibleError = ControlPlaneVisibleError(
+                    present: true,
+                    source: "accessibility",
+                    title: nil,
+                    message: SteamLiveDiagnostics.redact(message, maxLength: 200)
+                )
+            }
+
+            // OCR fallback: only when Accessibility produced no text, only in
+            // the forced diagnose path (Vision recognition is not per-tick).
+            if includeOCR, visibleError?.present != true {
+                let ocr = await SteamLiveDiagnostics.readOCR(ownerPIDs: pids)
+                if ocr.permissionDenied {
+                    visibleError = visibleError ?? ControlPlaneVisibleError(
+                        present: false,
+                        permission_required: "screen_recording"
+                    )
+                } else if let first = ocr.texts.first {
+                    visibleError = ControlPlaneVisibleError(
+                        present: true,
+                        source: "ocr",
+                        title: nil,
+                        message: SteamLiveDiagnostics.redact(first, maxLength: 200)
+                    )
+                }
+            }
+        }
+
+        let observedErrors = SteamLiveDiagnostics.scanSteamLogs(directory: steamLogsDirectory())
+        let outputs = await sessionSupervisor.steamProcessDiagnostics()
+        return SteamDiagnosticsProjection(
+            visibleError: visibleError,
+            observedErrors: observedErrors,
+            stdoutTail: outputs.stdout.isEmpty ? nil : SteamLiveDiagnostics.redact(
+                String(outputs.stdout.suffix(4000)), maxLength: 4000
+            ),
+            stderrTail: outputs.stderr.isEmpty ? nil : SteamLiveDiagnostics.redact(
+                String(outputs.stderr.suffix(4000)), maxLength: 4000
+            )
+        )
+    }
+
+    /// Detect Steam's own generic log directory in the canonical prefix.
+    private func steamLogsDirectory() -> URL? {
+        guard let prefix = prefixLayout?.root else { return nil }
+        let candidates = [
+            prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam/logs"),
+            prefix.appendingPathComponent("drive_c/Program Files/Steam/logs"),
+        ]
+        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+        return nil
+    }
+
+    /// `steam.diagnose`: force a fresh live capture so the next snapshot and
+    /// doctor report reflect what is actually on screen right now.
+    func refreshSteamDiagnostics() async {
+        _ = await steamDiagnosticsProjection(force: true)
+    }
+
 
     /// The last navigation transition projected from the production record.
     private func controlPlaneTransition() -> ControlPlaneTransition? {

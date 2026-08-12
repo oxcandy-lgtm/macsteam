@@ -28,6 +28,14 @@ protocol GameSessionSupervising: AnyObject {
     /// descendants. Fails closed: `.incomplete` / `notProven` on any provider
     /// failure, missing acquisition, root drift, or bound violation.
     func processCensus() async -> ProcessCensusResult
+
+    /// The proven-owned PID set for window scoping, or `nil` when ownership
+    /// cannot be proven. Includes the root, PPID-chain descendants, and
+    /// prefix-grounded re-parented Wine children.
+    func ownedSteamWindowOwnerPIDs() async -> Set<Int32>?
+
+    /// Bounded stdout/stderr captured for the active supervised process.
+    func steamProcessDiagnostics() async -> (stdout: String, stderr: String)
 }
 
 /// State of a single game session.
@@ -298,8 +306,12 @@ final class GameSessionSupervisor {
         }
         self.sessionLock = lock
 
-        // 2. Launch via ProcessSupervisor
-        let handle = try await processSupervisor.launch(plan: plan)
+        // 2. Launch via ProcessSupervisor (bounded stdout/stderr capture so the
+        //    terminal can read Wine/Steam stderr evidence — Layer A).
+        let handle = try await processSupervisor.launch(
+            plan: plan,
+            outputPolicy: .boundedDiagnostics(maxBytes: 64 * 1024)
+        )
         self.activeHandle = handle
         self.activeRuntimeControl = LiveRuntimeControl(control: runtimeControl)
 
@@ -326,7 +338,7 @@ final class GameSessionSupervisor {
                 "The launched process identity could not be established; aborted to avoid an unproven session"
             )
         }
-        self.censusLedger = ProcessCensusLedger(rootIdentity: rootIdentity)
+        self.censusLedger = ProcessCensusLedger(rootIdentity: rootIdentity, prefixRoot: prefixRoot.path)
 
         // 3. 5-second liveness check
         let deadline = Date().addingTimeInterval(5)
@@ -699,6 +711,24 @@ final class GameSessionSupervisor {
         let result = HostProcessLineage.census(ledger: &ledger)
         censusLedger = ledger
         return result
+    }
+
+    /// The proven-owned PID set for window scoping, or `nil` when ownership
+    /// cannot be proven (fail-closed). Includes the root, PPID-chain
+    /// descendants, and prefix-grounded re-parented Wine children.
+    func ownedSteamWindowOwnerPIDs() async -> Set<Int32>? {
+        await ownedProcessSnapshot()
+    }
+
+    /// Bounded stdout/stderr captured for the active supervised process
+    /// (Layer A). Empty when no session is active.
+    func steamProcessDiagnostics() async -> (stdout: String, stderr: String) {
+        guard let handle = activeHandle else { return ("", "") }
+        let outputs = await processSupervisor.boundedOutputs(for: handle)
+        return (
+            stdout: String(data: outputs.stdout, encoding: .utf8) ?? "",
+            stderr: String(data: outputs.stderr, encoding: .utf8) ?? ""
+        )
     }
 
     var isRunning: Bool {
