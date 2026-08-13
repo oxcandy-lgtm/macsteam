@@ -66,6 +66,9 @@ final class ControlPlaneCommandRouter {
         case "cloverpit.check":
             await coordinator.recheckCloverPit()
             return .accepted
+        case "cloverpit.install":
+            await coordinator.installCloverPit()
+            return .accepted
         case "cloverpit.launch":
             await coordinator.launchCloverPit()
             return .accepted

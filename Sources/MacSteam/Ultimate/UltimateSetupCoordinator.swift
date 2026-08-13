@@ -854,6 +854,30 @@ final class UltimateSetupCoordinator {
         )
     }
 
+    /// CLOVERPIT-WINDOWS-INSTALL1 §5: Windows Steam supports `steam://`
+    /// navigation URLs as command-line arguments. Appending
+    /// `steam://install/<appid>` instructs the LIVE client to queue the game
+    /// install (verified against the running client). Kept as a distinct plan
+    /// so the install intent is explicit and the detection stays the truth
+    /// authority.
+    func makeSteamInstallPlan(
+        wineURL: URL,
+        steamURL: URL,
+        prefixURL: URL,
+        environment: [String: String],
+        renderArguments: [String],
+        appID: String
+    ) -> LaunchPlan {
+        let installURL = "steam://install/\(appID)"
+        return LaunchPlan(
+            runtimeExecutable: wineURL,
+            arguments: [steamURL.path] + renderArguments + [installURL],
+            mode: .supervisedSession,
+            environment: environment,
+            workingDirectory: prefixURL
+        )
+    }
+
     func makeCloverPitSessionPlan(
         wineURL: URL,
         steamURL: URL,
@@ -2188,6 +2212,122 @@ func selectRuntime(id: String) async -> Bool {
         }
     }
 
+    /// CLOVERPIT-WINDOWS-INSTALL1 §5: request the CloverPit install through the
+    /// LIVE Windows Steam client via `steam://install/<appid>`. The Windows
+    /// client performs the real download into the canonical prefix library — a
+    /// native-Mac shortcut is NEVER used. If Steam is already running, the URL
+    /// is still delivered to the running client (Steam handles `steam://`
+    /// links on the command line of a second invocation against the same
+    /// instance). Detection remains the install truth authority.
+    func installCloverPit() async {
+        guard !isLaunchingSteam else {
+            log("Steam launch already in progress, ignoring install request")
+            return
+        }
+        guard steamInstallLifecycle == .verifiedComplete else {
+            log("Steam installation incomplete (\(steamInstallLifecycle)), blocking CloverPit install")
+            error = .steamInstallationFailed(
+                "Steam installation is incomplete. Verify installation before installing CloverPit."
+            )
+            state = .steamInstallationPending
+            return
+        }
+
+        isLaunchingSteam = true
+        defer { isLaunchingSteam = false }
+        error = nil
+
+        await reconcileSteamClient()
+
+        switch steamClientState {
+        case .runningVisible, .runningHidden:
+            // Steam already running — deliver the install URL to the live client.
+            log("Steam already running — delivering steam://install/\(recipe.store.appId) to live client")
+        case .launching, .stopping:
+            log("Steam is launching/stopping, ignoring install request")
+            return
+        case .stopped, .stale, .recoveryRequired:
+            break // proceed to launch with the install URL
+        }
+
+        state = .launching
+
+        guard let runtime = activeRuntime,
+              let runtimeURL = runtimeURL,
+              let runtimeControl = runtime as? WineRuntimeControl
+        else {
+            error = .launchFailed("No runtime selected or runtime lacks WineRuntimeControl")
+            state = .steamReady
+            return
+        }
+
+        let layout = WineExecutableLayout.detect(from: runtimeURL)
+        let wineURL = layout.wine
+
+        guard let prefixRoot = prefixLayout?.root,
+              let steamExe = resolveSteamExecutable(in: prefixRoot) else {
+            error = .launchFailed("Steam not installed in prefix")
+            state = .steamInstallerRequired
+            return
+        }
+
+        log("Requesting CloverPit install via Windows Steam (appid \(recipe.store.appId))…")
+        steamClientState = .launching
+        beginSteamAttempt()
+        guard requireLaunchTransition(to: .startingSteam) == .admitted else {
+            failLaunchAttempt()
+            return
+        }
+
+        do {
+            do {
+                let healthy = try await ensureCurrentValidationDecisionBeforeLaunch()
+                if !healthy {
+                    failLaunchAttempt()
+                    return
+                }
+            } catch {
+                failLaunchAttempt()
+                return
+            }
+
+            let environment = buildWineEnvironment()
+            let prefixURL = prefixRoot
+
+            let plan = makeSteamInstallPlan(
+                wineURL: wineURL,
+                steamURL: steamExe,
+                prefixURL: prefixURL,
+                environment: environment,
+                renderArguments: steamUIRenderProfile.launchArguments,
+                appID: recipe.store.appId
+            )
+
+            guard requireLaunchTransition(to: .waitingForSteam) == .admitted else {
+                failLaunchAttempt()
+                return
+            }
+            let _ = try await sessionSupervisor.launch(
+                plan: plan,
+                runtimeControl: runtimeControl,
+                prefixRoot: prefixURL,
+                recipeID: "steam-setup",
+                runtimeID: runtimeSourceType ?? "unknown",
+                purpose: .steamSetup
+            )
+
+            log("Windows Steam session started with install URL for CloverPit (appid \(recipe.store.appId))")
+            steamClientState = .launching
+            state = .steamReady
+            observeSteamReadyBoundary()
+        } catch {
+            self.error = .launchFailed(error.localizedDescription)
+            steamClientState = .stopped
+            state = .steamReady
+            failLaunchAttempt()
+        }
+    }
+
     /// U1R18-R13-FIX1-FIX2 §4/§13/§14: bounded observer for the real Steam-ready
     /// boundary. Steam ready is only admitted when the supervisor reports
     /// `.runningVisible` (WindowServer evidence), never a manual assignment.
@@ -2852,6 +2992,13 @@ func selectRuntime(id: String) async -> Bool {
             target: "cloverPit",
             disabled_reason: onCloverPitOrSteamSurface ? nil : "CloverPit surface is not active."
         )
+        actions["cloverpit.install"] = ControlPlaneAction(
+            id: "cloverpit.install",
+            enabled: onCloverPitSurface && !cloverReady && (steamInstallLifecycle == .verifiedComplete) && !activeOp,
+            source: "cloverPit",
+            target: "steamClient",
+            disabled_reason: !onCloverPitSurface ? "CloverPit surface is not active." : cloverReady ? "CloverPit is already installed." : (steamInstallLifecycle != .verifiedComplete) ? "Windows Steam is not installed yet." : activeOp ? "An operation is in progress." : nil
+        )
         actions["cloverpit.launch"] = ControlPlaneAction(
             id: "cloverpit.launch",
             enabled: onCloverPitSurface && cloverReady && !activeOp,
@@ -2959,12 +3106,15 @@ func selectRuntime(id: String) async -> Bool {
                 ready: inspection?.isReady ?? false,
                 running: cloverRunning,
                 window_visible: cloverVisible,
-                install_state: inspection?.installState.rawValue ?? "notFound",
+                install_state: inspection?.installState.rawValue ?? "notInstalled",
                 manifest_present: inspection?.manifestPresent ?? false,
                 install_directory_resolved: inspection?.installDirectoryResolved ?? false,
                 executable_present: inspection?.executablePresent ?? false,
                 canonical_install_present: inspection?.canonicalInstallPresent ?? false,
-                download_payload_present: inspection?.downloadPayloadPresent ?? false
+                download_payload_present: inspection?.downloadPayloadPresent ?? false,
+                noncanonical_payload_present: inspection?.noncanonicalPayloadPresent ?? false,
+                download_bytes_downloaded: inspection?.bytesDownloaded,
+                download_bytes_total: inspection?.bytesTotal
             ),
             session: ControlPlaneSession(
                 purpose: session?.purpose.rawValue ?? "none",

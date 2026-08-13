@@ -164,6 +164,14 @@ public struct ControlPlaneCloverPit: Codable, Equatable, Sendable {
     public var executable_present: Bool
     public var canonical_install_present: Bool
     public var download_payload_present: Bool
+    /// CLOVERPIT-WINDOWS-INSTALL1 §1: a non-canonical payload (e.g. SteamCMD
+    /// staging leftovers) exists in the prefix but is NOT the canonical Windows
+    /// Steam library. It must never be interpreted as installed or ready.
+    public var noncanonical_payload_present: Bool
+    /// CLOVERPIT-WINDOWS-INSTALL1 §7: byte progress from the canonical Windows
+    /// Steam manifest. Nil when Windows Steam has not reported a value.
+    public var download_bytes_downloaded: Int64?
+    public var download_bytes_total: Int64?
 
     public init(
         ready: Bool,
@@ -174,7 +182,10 @@ public struct ControlPlaneCloverPit: Codable, Equatable, Sendable {
         install_directory_resolved: Bool = false,
         executable_present: Bool = false,
         canonical_install_present: Bool = false,
-        download_payload_present: Bool = false
+        download_payload_present: Bool = false,
+        noncanonical_payload_present: Bool = false,
+        download_bytes_downloaded: Int64? = nil,
+        download_bytes_total: Int64? = nil
     ) {
         self.ready = ready
         self.running = running
@@ -185,6 +196,9 @@ public struct ControlPlaneCloverPit: Codable, Equatable, Sendable {
         self.executable_present = executable_present
         self.canonical_install_present = canonical_install_present
         self.download_payload_present = download_payload_present
+        self.noncanonical_payload_present = noncanonical_payload_present
+        self.download_bytes_downloaded = download_bytes_downloaded
+        self.download_bytes_total = download_bytes_total
     }
 }
 

@@ -67,13 +67,15 @@ public struct ControlPlaneDoctor {
         snapshot.cloverpit.running && snapshot.cloverpit.window_visible
     }
 
-    /// Bounded classification of the CloverPit payload: present on disk in a
-    /// staged state (manifest + install dir + executable, but not in the
-    /// canonical Windows Steam library), so Windows Steam must finalize/install
-    /// it before the terminal can launch. Derived only from snapshot facts.
+    /// Bounded classification of whether Windows Steam still needs to finalize
+    /// the CloverPit install. True only when a CANONICAL manifest is present in
+    /// the Windows Steam library but the canonical install directory is not yet
+    /// complete. A non-canonical payload (SteamCMD staging leftovers) is never
+    /// considered finalizable staging (CLOVERPIT-WINDOWS-INSTALL1 §1/§12).
     public static func cloverPitNeedsSteamFinalization(_ snapshot: ControlPlaneSnapshot) -> Bool {
         let clover = snapshot.cloverpit
         return !clover.ready
+            && !clover.noncanonical_payload_present
             && clover.manifest_present
             && clover.install_directory_resolved
             && clover.executable_present
@@ -95,6 +97,7 @@ public struct ControlPlaneDoctor {
             "executable_present": clover.executable_present,
             "canonical_install_present": clover.canonical_install_present,
             "download_payload_present": clover.download_payload_present,
+            "noncanonical_payload_present": clover.noncanonical_payload_present,
         ]
 
         // 1. Goal reached.
@@ -197,6 +200,26 @@ public struct ControlPlaneDoctor {
 
         // 4. Waiting: a supervised operation is in flight.
         if snapshot.session.running || snapshot.installer.active {
+            // CLOVERPIT-WINDOWS-INSTALL1 §8: a running Steam setup session IS
+            // the live install partner for the CloverPit request (or an
+            // in-progress canonical download). Surface as actionable so the
+            // driver applies its bounded install poll — never collapsed, never
+            // re-installed, and converging to the §4 human boundary via the
+            // driver's in-motion ceiling.
+            if snapshot.session.running,
+               snapshot.session.purpose == "steamSetup",
+               snapshot.screen == "cloverPit",
+               !clover.ready,
+               !clover.running {
+                return ControlPlaneDoctorReport(
+                    state: .actionable,
+                    screen: snapshot.screen,
+                    summary: "Windows Steam is the install partner for CloverPit; re-checking install progress.",
+                    recommended_action: "cloverpit.check",
+                    cloverpit_facts: facts,
+                    steam_client_state: snapshot.steam.client_state
+                )
+            }
             // If CloverPit/Steam process launched but window not yet visible,
             // wait for the supervisor to observe it. If a session is running but
             // nothing is advancing and session.stop is safely enabled, let the
@@ -243,6 +266,10 @@ public struct ControlPlaneDoctor {
                     : "Steam is ready to launch for setup."
             case "cloverpit.launch":
                 summary = "CloverPit is ready; launching the session."
+            case "cloverpit.install":
+                summary = snapshot.cloverpit.noncanonical_payload_present
+                    ? "A non-canonical payload exists but CloverPit is not installed in the Windows Steam library; requesting a real install."
+                    : "CloverPit is not installed; requesting the install through Windows Steam."
             case "steam.install":
                 summary = "A Steam installer is selected; running the install."
             case "retry":
@@ -314,6 +341,9 @@ public struct ControlPlaneDoctor {
             if snapshot.cloverpit.ready, enabled("next") { return "next" }
             // Staged payload: launch Steam to finalize it (never the next loop).
             if staged, !snapshot.steam.running, enabled("steam.launch") { return "steam.launch" }
+            // CLOVERPIT-WINDOWS-INSTALL1 §8: an in-progress install is polled
+            // (read-only) — never collapsed or advanced past.
+            if cloverPitInstallInProgress(snapshot), enabled("cloverpit.check") { return "cloverpit.check" }
             // Read-only CloverPit inspection is safe on the Steam surface; learn
             // the payload state once before crossing back — but never loop a
             // payload known to be absent.
@@ -329,6 +359,15 @@ public struct ControlPlaneDoctor {
             // Staged payload cannot be launched; return to the Steam Client so
             // the staged routing can launch/finalize Steam instead.
             if staged, enabled("back") { return "back" }
+            // CLOVERPIT-WINDOWS-INSTALL1 §8: an in-progress install must not be
+            // re-requested; poll the read-only inspection.
+            if cloverPitInstallInProgress(snapshot), enabled("cloverpit.check") { return "cloverpit.check" }
+            // CLOVERPIT-WINDOWS-INSTALL1 §5: not installed (or only a
+            // non-canonical payload present) with Windows Steam installed →
+            // request the install through the live client.
+            if !snapshot.cloverpit.ready, snapshot.steam.installed, enabled("cloverpit.install") {
+                return "cloverpit.install"
+            }
             if enabled("cloverpit.check") { return "cloverpit.check" }
             if enabled("retry") { return "retry" }
             if enabled("next") { return "next" }
@@ -375,6 +414,20 @@ public struct ControlPlaneDoctor {
         return state == "launching" || state == "stopping"
     }
 
+    /// CLOVERPIT-WINDOWS-INSTALL1 §7/§8: the Windows Steam client is actively
+    /// downloading/installing CloverPit. The read-only `cloverpit.check` poll is
+    /// the only forward action — it must never be collapsed as no-progress nor
+    /// re-trigger a fresh install request.
+    private func cloverPitInstallInProgress(_ snapshot: ControlPlaneSnapshot) -> Bool {
+        guard !snapshot.cloverpit.ready else { return false }
+        switch snapshot.cloverpit.install_state {
+        case "installRequested", "downloading", "installing", "verifying":
+            return true
+        default:
+            return false
+        }
+    }
+
     /// A visible error is a login / Steam Guard interaction only when its text
     /// actually reads like one. Everything else is a real blocker, never a
     /// guessed "authentication required".
@@ -400,7 +453,7 @@ public struct ControlPlaneDoctor {
     /// Bounded capitalization of why each relevant action is disabled.
     private func disabledReasons(_ snapshot: ControlPlaneSnapshot) -> [String] {
         let ids = ["runtime.select", "prefix.prepare", "steam.recheck", "steam.install",
-                   "steam.launch", "cloverpit.check", "cloverpit.launch", "next"]
+                   "steam.launch", "cloverpit.check", "cloverpit.install", "cloverpit.launch", "next"]
         var reasons: [String] = []
         for id in ids {
             guard let flag = snapshot.actions[id], !flag.enabled else { continue }

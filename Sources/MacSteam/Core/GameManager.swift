@@ -193,19 +193,28 @@ final class GameManager: ObservableObject, Sendable {
 
 /// NX Dispatch §6: Granular installation state.
 ///
-/// - `notFound`: No manifest, no files.
-/// - `manifestOnly`: A valid manifest exists, but no install directory is resolved.
-/// - `downloading`: Files exist under the Steam downloading/ area (Tier 2).
-/// - `staged`: Appears in SteamCMD or non-canonical library with complete files.
+/// Canonical installation state (CLOVERPIT-WINDOWS-INSTALL1 §1). Installation
+/// truth is derived ONLY from the Wine-prefix Windows Steam library (Tier 1)
+/// and its canonical downloading area (Tier 2). Non-canonical payloads (e.g. a
+/// leftover SteamCMD staging area) are surfaced as `noncanonicalPayloadPresent`
+/// and never influence readiness.
+///
+/// - `notInstalled`: No manifest, no files in the canonical Windows Steam library.
+/// - `installRequested`: A canonical manifest exists, but no install directory is
+///   resolved yet (Windows Steam has accepted the install).
+/// - `downloading`: Files exist under the canonical Windows Steam downloading/ area.
+/// - `installing`: Files are partially present in the canonical install directory.
+/// - `verifying`: Canonical files present but not yet confirmed complete.
 /// - `installed`: Fully installed in the canonical Windows Steam library (Tier 1).
-/// - `inconsistent`: Files partially present in the canonical location.
+/// - `blocked`: A canonical payload is present but cannot advance (inconsistent).
 enum GameInstallState: String, Sendable, Equatable {
-    case notFound
-    case manifestOnly
+    case notInstalled
+    case installRequested
     case downloading
-    case staged
+    case installing
+    case verifying
     case installed
-    case inconsistent
+    case blocked
 }
 
 // MARK: - Supporting types
@@ -228,6 +237,14 @@ struct GameInspection: Equatable, Sendable {
     let installState: GameInstallState
     let canonicalInstallPresent: Bool
     let downloadPayloadPresent: Bool
+    /// CLOVERPIT-WINDOWS-INSTALL1 §1: a non-canonical payload (e.g. SteamCMD
+    /// staging leftovers) exists somewhere in the prefix but is NOT the
+    /// canonical Windows Steam library. It must never set readiness.
+    let noncanonicalPayloadPresent: Bool
+    /// CLOVERPIT-WINDOWS-INSTALL1 §7: byte progress from the canonical
+    /// manifest (`BytesDownloaded` / `BytesToDownload`). Nil when unknown.
+    let bytesDownloaded: Int64?
+    let bytesTotal: Int64?
 
     init(recipeID: String, steamPresent: Bool, isWindowsSteam: Bool,
          manifestPresent: Bool, manifestAppID: String? = nil,
@@ -235,9 +252,12 @@ struct GameInspection: Equatable, Sendable {
          installDirectoryResolved: Bool, executablePresent: Bool,
          executableName: String? = nil, isReady: Bool,
          stateFlags: String? = nil,
-         installState: GameInstallState = .notFound,
+         installState: GameInstallState = .notInstalled,
          canonicalInstallPresent: Bool = false,
-         downloadPayloadPresent: Bool = false) {
+         downloadPayloadPresent: Bool = false,
+         noncanonicalPayloadPresent: Bool = false,
+         bytesDownloaded: Int64? = nil,
+         bytesTotal: Int64? = nil) {
         self.recipeID = recipeID
         self.steamPresent = steamPresent
         self.isWindowsSteam = isWindowsSteam
@@ -252,13 +272,16 @@ struct GameInspection: Equatable, Sendable {
         self.installState = installState
         self.canonicalInstallPresent = canonicalInstallPresent
         self.downloadPayloadPresent = downloadPayloadPresent
+        self.noncanonicalPayloadPresent = noncanonicalPayloadPresent
+        self.bytesDownloaded = bytesDownloaded
+        self.bytesTotal = bytesTotal
     }
 
     static func notReady(recipeID: String) -> GameInspection {
         GameInspection(recipeID: recipeID, steamPresent: false,
             isWindowsSteam: false, manifestPresent: false,
             installDirectoryResolved: false, executablePresent: false,
-            isReady: false, installState: .notFound)
+            isReady: false, installState: .notInstalled)
     }
 }
 

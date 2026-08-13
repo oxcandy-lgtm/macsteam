@@ -227,20 +227,30 @@ struct MacsTeamControlPlaneCLI {
                     return emitHumanRequired(code: "steam_installer_path_required", snapshot: snapshot)
                 }
 
-                // Steam finalization poll: a staged CloverPit payload with Steam
-                // running or launching must NOT be collapsed by the no-progress
-                // guard. Poll the read-only inspection at a bounded cadence; the
-                // human boundary is exposed only after: (a) the Steam window is
-                // visible for `visibleGrace` while still staged, or (b) Steam has
-                // stayed in motion for `inMotionCeiling` without any visibility
-                // observation to conclude progress.
+                // Steam finalization/install poll: a staged or in-progress CloverPit
+                // install with Steam running or launching must NOT be collapsed
+                // by the no-progress guard. Poll the read-only inspection at a
+                // bounded cadence; the human boundary is exposed only after:
+                // (a) the Steam window is visible for `visibleGrace` while still
+                // not ready, or (b) Steam has stayed in motion for
+                // `inMotionCeiling` without any visibility observation.
                 let steamInMotion = snapshot.steam.running
                     || snapshot.steam.client_state == "launching"
                     || snapshot.steam.client_state == "stopping"
+                let staged = ControlPlaneDoctor.cloverPitNeedsSteamFinalization(snapshot)
+                let installInProgress = ["installRequested", "downloading", "installing", "verifying"].contains(snapshot.cloverpit.install_state)
+                // A running Steam setup session is the live install partner for
+                // the CloverPit request — poll (never re-install) until ready,
+                // then converge to the §4 human boundary via the bounded grace.
+                let steamInstallPartner = snapshot.session.running
+                    && snapshot.session.purpose == "steamSetup"
+                    && snapshot.screen == "cloverPit"
+                let installing = stageLabel(snapshot)
                 if action == "cloverpit.check",
                    steamInMotion,
                    !snapshot.cloverpit.ready,
-                   !snapshot.cloverpit.running {
+                   !snapshot.cloverpit.running,
+                   (staged || installInProgress || steamInstallPartner) {
                     if snapshot.steam.window_visible {
                         let since = visibleGraceSince ?? Date()
                         visibleGraceSince = since
@@ -249,7 +259,7 @@ struct MacsTeamControlPlaneCLI {
                         if elapsed >= visibleGrace {
                             return emitHumanRequired(code: "steam_interaction_required", snapshot: snapshot)
                         }
-                        progressPrint("[driver] Steam visible, CloverPit staged (\(Int(elapsed))s/\(Int(visibleGrace))s); polling cloverpit.check.")
+                        progressPrint("[driver] Steam visible, CloverPit \(installing) (\(Int(elapsed))s/\(Int(visibleGrace))s); polling cloverpit.check.")
                     } else {
                         let since = inMotionGraceSince ?? Date()
                         inMotionGraceSince = since
@@ -258,7 +268,7 @@ struct MacsTeamControlPlaneCLI {
                         if elapsed >= inMotionCeiling {
                             return emitHumanRequired(code: "steam_interaction_required", snapshot: snapshot)
                         }
-                        progressPrint("[driver] Steam in motion, CloverPit staged (\(Int(elapsed))s/\(Int(inMotionCeiling))s); polling cloverpit.check.")
+                        progressPrint("[driver] Steam in motion, CloverPit \(installing) (\(Int(elapsed))s/\(Int(inMotionCeiling))s); polling cloverpit.check.")
                     }
                     _ = sendAndWait(store, action: "cloverpit.check", argument: nil, timeout: 180)
                     Thread.sleep(forTimeInterval: 7)
@@ -328,6 +338,24 @@ struct MacsTeamControlPlaneCLI {
             s.last_error?.code ?? "-",
             actions,
         ].joined(separator: "|")
+    }
+
+    /// CLOVERPIT-WINDOWS-INSTALL1 §8: human label for the in-progress poll,
+    /// including byte progress when the canonical manifest reports it.
+    private static func stageLabel(_ s: ControlPlaneSnapshot) -> String {
+        let state = s.cloverpit.install_state
+        var label = "state=\(state)"
+        if let done = s.cloverpit.download_bytes_downloaded, let total = s.cloverpit.download_bytes_total, total > 0 {
+            let pct = Int((Double(done) / Double(total)) * 100)
+            label += " (\(Self.bytes(done))/\(Self.bytes(total)) = \(pct)%)"
+        }
+        return label
+    }
+
+    private static func bytes(_ value: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: value)
     }
 
     private static func successPayload(snapshot: ControlPlaneSnapshot, humanInterventionUsed: Bool) -> [String: Any] {
@@ -582,11 +610,13 @@ struct MacsTeamControlPlaneCLI {
 
     static func cloverpit(_ store: ControlPlaneStore, rest: [String], timeout: TimeInterval) -> Int32 {
         guard let sub = rest.first else {
-            return fail("usage: macsteamctl cloverpit check | launch")
+            return fail("usage: macsteamctl cloverpit check | install | launch")
         }
         switch sub {
         case "check":
             return dispatchControl(store, action: "cloverpit.check", argument: nil, timeout: timeout)
+        case "install":
+            return dispatchControl(store, action: "cloverpit.install", argument: nil, timeout: timeout)
         case "launch":
             return dispatchControl(store, action: "cloverpit.launch", argument: nil, timeout: timeout)
         default:
@@ -684,6 +714,7 @@ struct MacsTeamControlPlaneCLI {
           macsteamctl steam launch
           macsteamctl steam diagnose
           macsteamctl cloverpit check
+          macsteamctl cloverpit install
           macsteamctl cloverpit launch
           macsteamctl session stop
 
