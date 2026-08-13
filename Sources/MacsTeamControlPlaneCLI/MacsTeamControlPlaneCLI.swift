@@ -369,14 +369,61 @@ struct MacsTeamControlPlaneCLI {
     // MARK: - Control commands
 
     static func runtime(_ store: ControlPlaneStore, rest: [String], timeout: TimeInterval) -> Int32 {
-        guard rest.first == "select", rest.count >= 2 else {
-            return fail("usage: macsteamctl runtime select imported-wine")
+        guard let sub = rest.first else {
+            return fail("usage: macsteamctl runtime list | select imported-wine | select-id <id>")
         }
-        let type = rest[1]
-        guard type == "imported-wine" else {
-            return fail("runtime select supports only 'imported-wine'")
+        switch sub {
+        case "list":
+            return runtimeList(store)
+        case "select":
+            guard rest.count >= 2 else {
+                return fail("usage: macsteamctl runtime select imported-wine")
+            }
+            let type = rest[1]
+            guard type == "imported-wine" else {
+                return fail("runtime select supports only 'imported-wine'")
+            }
+            return dispatchControl(store, action: "runtime.select", argument: type, timeout: timeout)
+        case "select-id":
+            guard rest.count >= 2 else {
+                return fail("usage: macsteamctl runtime select-id <safe-runtime-id>")
+            }
+            return dispatchControl(store, action: "runtime.select_id", argument: rest[1], timeout: timeout)
+        default:
+            return fail("usage: macsteamctl runtime list | select imported-wine | select-id <id>")
         }
-        return dispatchControl(store, action: "runtime.select", argument: type, timeout: timeout)
+    }
+
+    static func runtimeList(_ store: ControlPlaneStore) -> Int32 {
+        guard let snapshot = store.readSnapshot() else {
+            switch store.appAliveness() {
+            case .notRunning:
+                return emitError(code: "app_not_running")
+            case .unresponsive:
+                return emitError(code: "app_unresponsive")
+            case .running:
+                return emitError(code: "no_snapshot")
+            }
+        }
+        let candidates = snapshot.runtime.candidates ?? []
+        let payload: [String: Any] = [
+            "selected": snapshot.runtime.selected,
+            "candidates": candidates.map {
+                [
+                    "id": $0.id,
+                    "name": $0.name,
+                    "type": $0.type,
+                    "version": $0.version ?? "",
+                    "usable": $0.usable,
+                ]
+            },
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .prettyPrinted]),
+           let text = String(data: data, encoding: .utf8) {
+            print(text)
+            return 0
+        }
+        return emitError(code: "encode_failed")
     }
 
     static func prefix(_ store: ControlPlaneStore, rest: [String], timeout: TimeInterval) -> Int32 {
@@ -627,7 +674,9 @@ struct MacsTeamControlPlaneCLI {
           macsteamctl next
           macsteamctl back
           macsteamctl retry
+          macsteamctl runtime list
           macsteamctl runtime select imported-wine
+          macsteamctl runtime select-id <safe-runtime-id>
           macsteamctl prefix prepare
           macsteamctl steam recheck
           macsteamctl steam select-installer <path-to-SteamSetup.exe>

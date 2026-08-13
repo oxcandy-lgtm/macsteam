@@ -44,6 +44,8 @@ final class ControlPlaneCommandRouter {
             return await performRetry()
         case "runtime.select":
             return await performRuntimeSelect(argument: argument)
+        case "runtime.select_id":
+            return await performRuntimeSelectID(argument: argument)
         case "prefix.prepare":
             await coordinator.createPrefix()
             return .accepted
@@ -136,6 +138,31 @@ final class ControlPlaneCommandRouter {
                 status: .failed,
                 error_code: "runtime_imported_wine_not_found",
                 message: "No imported Wine runtime found."
+            )
+        }
+        return ControlPlaneCommandResult(
+            status: .failed,
+            error_code: "runtime_selection_failed",
+            message: coordinator.error.map { Self.redact($0.localizedDescription) }
+                ?? "Runtime selection failed."
+        )
+    }
+
+    private func performRuntimeSelectID(argument: String?) async -> ControlPlaneCommandResult {
+        guard let id = argument, !id.isEmpty else {
+            return ControlPlaneCommandResult(
+                status: .rejected,
+                error_code: "missing_argument",
+                message: "runtime.select_id requires a runtime id argument."
+            )
+        }
+        let selected = await coordinator.selectRuntime(id: id)
+        if selected { return .accepted }
+        if coordinator.state == .runtimeRequired {
+            return ControlPlaneCommandResult(
+                status: .failed,
+                error_code: "runtime_candidate_not_found",
+                message: "No usable runtime candidate found for the requested id."
             )
         }
         return ControlPlaneCommandResult(

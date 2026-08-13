@@ -246,6 +246,11 @@ final class UltimateSetupCoordinator {
     var runtimeExactVersion: String?
     var runtimeArchitecture: String?
 
+    /// Discovered runtime candidates snapshot (bounded, for `runtime list`).
+    /// Refreshed by `inspectSystem()` / `selectRuntime(_:)` / `selectRuntime(id:)`;
+    /// never recomputed on the 250ms mirror tick.
+    private(set) var runtimeCandidatesSnapshot: [ControlPlaneRuntimeCandidate] = []
+
     // MARK: - Private
 
     private let recipe: GameRecipe
@@ -803,6 +808,19 @@ final class UltimateSetupCoordinator {
             self.steamUIRenderProfile = .automatic
         }
 
+        // Read MACSTEAM_PREFIX_ROOT env var for a non-persistent prefix-root
+        // override. Used by deterministic runtime A/B to exercise a candidate
+        // Wine against a fresh disposable prefix instead of the canonical
+        // cloverpit prefix (never touched by an unproven runtime).
+        // Production (no env var) keeps the canonical prefix root.
+        let prefixRootEnv = ProcessInfo.processInfo.environment["MACSTEAM_PREFIX_ROOT"] ?? ""
+        let effectivePrefixManager: PrefixManager
+        if prefixRootEnv.isEmpty {
+            effectivePrefixManager = prefixManager
+        } else {
+            effectivePrefixManager = PrefixManager(prefixesRootOverride: URL(fileURLWithPath: prefixRootEnv))
+        }
+
         self.runtimeRegistry = RuntimeRegistry(commercialPolicy: .disabled)
         // Canonical CloverPit recipe authority (U1R18-R8): the runtime recipe is
         // the single source of truth; the bundled cloverpit.json is its
@@ -811,7 +829,7 @@ final class UltimateSetupCoordinator {
 
         self.sessionSupervisor = sessionSupervisor
         self.lifecycleInstaller = installerSupervisor
-        self.prefixManager = prefixManager
+        self.prefixManager = effectivePrefixManager
         self.localAcceptanceReceiptStore = receiptStore
         self.buildIdentity = BuildIdentity.current()
         self.launchClock = launchClock
@@ -884,6 +902,7 @@ final class UltimateSetupCoordinator {
         log("Runtime selection source: \(runtimeRegistry.preferredRuntimeID != nil ? "persisted" : "discovery")")
 
         let candidates = await runtimeRegistry.discover()
+        rememberCandidates(candidates)
 
         // Log discovered candidates
         for c in candidates {
@@ -924,6 +943,7 @@ final class UltimateSetupCoordinator {
 
         log("Selecting runtime type: \(type.rawValue)")
         let candidates = await runtimeRegistry.discover()
+        rememberCandidates(candidates)
         let narrowed = candidates.filter { $0.runtimeType == type }
         for c in narrowed {
             log("  Candidate: \(c.displayName) type=\(c.runtimeType.rawValue) usable=\(c.inspection?.isUsable ?? false)")
@@ -942,12 +962,59 @@ final class UltimateSetupCoordinator {
         return selected
     }
 
+    /// Exact-candidate runtime selection over the production discovery +
+    /// selection lane. Used by deterministic A/B: `macsteamctl runtime
+    /// select-id <safe-runtime-id>` picks ONE discovered candidate by its
+    /// stable safe ID (e.g. `imported-wine-WineHQStable11.app`) instead of the
+    /// type-first ordering in `selectRuntime(_:)`.
+    ///
+    /// Returns true only when the requested candidate was actually selected
+    /// (`state == .runtimeReady` after the shared real-load/capability lane).
+    @discardableResult
+func selectRuntime(id: String) async -> Bool {
+        state = .inspecting
+        error = nil
+
+        log("Selecting runtime by id: \(id)")
+        let candidates = await runtimeRegistry.discover()
+        rememberCandidates(candidates)
+        for c in candidates {
+            log("  Candidate: \(c.id) usable=\(c.inspection?.isUsable ?? false) v\(c.inspection?.version ?? "?")")
+        }
+
+        guard let match = candidates.first(where: {
+            $0.id == id && $0.inspection?.isUsable == true
+        }) else {
+            state = .runtimeRequired
+            error = .runtimeNotFound
+            log("No usable runtime candidate found for id: \(id)")
+            return false
+        }
+
+        let selected = await selectRuntimeCandidate(match)
+        generateInstallerID()
+        return selected
+    }
+
+    /// Cache discovered candidates into a bounded snapshot projection for the
+    /// control plane. Safe stable ID only — never an absolute path.
+    private func rememberCandidates(_ candidates: [RuntimeCandidate]) {
+        runtimeCandidatesSnapshot = candidates.map {
+            ControlPlaneRuntimeCandidate(
+                id: $0.id,
+                name: $0.displayName,
+                type: $0.runtimeType.rawValue,
+                version: $0.inspection?.version,
+                usable: $0.inspection?.isUsable ?? false
+            )
+        }
+    }
+
     /// Shared production selection lane: real-load preflight → capability gate
     /// → `selectCandidate`. Both `inspectSystem()` and explicit runtime
     /// selection route through here so terminal and GUI share one authority.
     @discardableResult
-    private func selectRuntimeCandidate(_ candidate: RuntimeCandidate) async -> Bool {
-        // U1R18: Real-load preflight — prove the runtime executes a Windows
+    private func selectRuntimeCandidate(_ candidate: RuntimeCandidate) async -> Bool {        // U1R18: Real-load preflight — prove the runtime executes a Windows
         // command (and thus steam-client capability) BEFORE the capability gate.
         if let url = candidate.url {
             let wineURL = WineExecutableLayout.detect(from: url).wine
@@ -1501,6 +1568,12 @@ final class UltimateSetupCoordinator {
         !steamExePresent && signatureValid
     }
 
+    /// Wine prefix bootstrap (wineboot) can settle more slowly in-app than
+    /// under direct invocation. Bounded accommodation for Wine 11 prefixes:
+    /// keep this explicitly scoped to prefix creation — not the general
+    /// command timeout, and not a global runner default.
+    static let prefixBootstrapTimeout: TimeInterval = 300
+
     /// Step 2: Create the CloverPit Wine prefix.
     func createPrefix() async {
         guard !isCreatingPrefix else {
@@ -1620,7 +1693,10 @@ final class UltimateSetupCoordinator {
             if runtime is SystemWineRuntime {
                 winebootURL = runtimeURL.appendingPathComponent("wineboot")
             } else if runtime is ImportedWineRuntime {
-                winebootURL = runtimeURL.appendingPathComponent("bin/wineboot")
+                // Resolve via the detected layout (standard OR .app bundle) —
+                // never assume `<root>/bin/wineboot`.
+                let layout = WineExecutableLayout.detect(from: runtimeURL)
+                winebootURL = try layout.ensureWineboot()
             } else {
                 state = .runtimeInvalid
                 error = .runtimeInspectionFailed("Unknown runtime type")
@@ -1642,7 +1718,7 @@ final class UltimateSetupCoordinator {
                     "WINEDEBUG": "-all",
                 ],
                 workingDirectory: layout.root,
-                timeout: 120
+                timeout: Self.prefixBootstrapTimeout
             )
 
             log("wineboot exit code: \(result.exitCode)")
@@ -2247,7 +2323,7 @@ final class UltimateSetupCoordinator {
         if runtime is SystemWineRuntime {
             wineURL = runtimeURL.appendingPathComponent("wine")
         } else {
-            wineURL = runtimeURL.appendingPathComponent("bin/wine")
+            wineURL = WineExecutableLayout.detect(from: runtimeURL).wine
         }
 
         let steamExe1 = prefixLayout?.root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null")
@@ -2693,6 +2769,17 @@ final class UltimateSetupCoordinator {
             disabled_reason: !onRuntimeSurface ? "Runtime surface is not active." : activeOp ? "An operation is in progress." : state == .inspecting ? "Runtime inspection is in progress." : nil
         )
 
+        // Exact-candidate runtime selection feeds `macsteamctl runtime
+        // select-id <safe-runtime-id>` for deterministic A/B. Same gate as the
+        // type-based `runtime.select`.
+        actions["runtime.select_id"] = ControlPlaneAction(
+            id: "runtime.select_id",
+            enabled: onRuntimeSurface && !activeOp && state != .inspecting,
+            source: "runtime",
+            target: "runtime",
+            disabled_reason: !onRuntimeSurface ? "Runtime surface is not active." : activeOp ? "An operation is in progress." : state == .inspecting ? "Runtime inspection is in progress." : nil
+        )
+
         // Prefix preparation: enabled on the environment surface while the
         // canonical prefix is not yet bound and no creation is in flight.
         let prefixReady = runtimeURL != nil && !canonicalPrefixEvidenceValid && !isCreatingPrefix
@@ -2849,7 +2936,8 @@ final class UltimateSetupCoordinator {
             runtime: ControlPlaneRuntime(
                 type: runtimeSourceType ?? "unknown",
                 selected: runtimeURL != nil,
-                real_load_healthy: realLoadHealthy
+                real_load_healthy: realLoadHealthy,
+                candidates: runtimeCandidatesSnapshot
             ),
             prefix: ControlPlanePrefix(
                 bound: canonicalPrefixEvidenceValid,

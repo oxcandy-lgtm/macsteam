@@ -12,7 +12,10 @@ private func makeWindow(
     layer: Int = 0,
     alpha: Double = 1.0,
     width: Double = 800,
-    height: Double = 600
+    height: Double = 600,
+    boundsX: Double = 0,
+    boundsY: Double = 0,
+    isOnscreen: Bool = false
     ) -> WindowInfo {
     WindowInfo(
         ownerPID: pid,
@@ -20,8 +23,11 @@ private func makeWindow(
         windowTitle: title,
         layer: layer,
         alpha: alpha,
+        boundsX: boundsX,
+        boundsY: boundsY,
         boundsWidth: width,
-        boundsHeight: height
+        boundsHeight: height,
+        isOnscreen: isOnscreen
     )
 }
 

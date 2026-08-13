@@ -60,11 +60,38 @@ public struct ControlPlaneRuntime: Codable, Equatable, Sendable {
     public var type: String
     public var selected: Bool
     public var real_load_healthy: Bool
+    /// Bounded discovered runtime candidates (safe stable ID, never a path).
+    /// Optional so older persisted snapshots still decode.
+    public var candidates: [ControlPlaneRuntimeCandidate]?
 
-    public init(type: String, selected: Bool, real_load_healthy: Bool) {
+    public init(
+        type: String,
+        selected: Bool,
+        real_load_healthy: Bool,
+        candidates: [ControlPlaneRuntimeCandidate]? = nil
+    ) {
         self.type = type
         self.selected = selected
         self.real_load_healthy = real_load_healthy
+        self.candidates = candidates
+    }
+}
+
+/// One discovered runtime candidate. Safe stable ID only — never an absolute
+/// path, never the runtime's own account/session identity.
+public struct ControlPlaneRuntimeCandidate: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    public var type: String
+    public var version: String?
+    public var usable: Bool
+
+    public init(id: String, name: String, type: String, version: String?, usable: Bool) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.version = version
+        self.usable = usable
     }
 }
 

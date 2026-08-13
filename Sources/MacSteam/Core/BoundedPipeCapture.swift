@@ -130,6 +130,46 @@ final class BoundedPipeCapture: @unchecked Sendable {
         }
     }
 
+    /// Wait for EOF, but give up after `grace` seconds and return whatever has
+    /// been captured so far.
+    ///
+    /// The launched process may legitimately exit while a daemonized descendant
+    /// (e.g. Wine's `wineserver`) keeps the pipe write-ends open indefinitely.
+    /// For an exited process the capture is best-effort: bounded output is
+    /// drained within the grace window, then the read source is cancelled and
+    /// the captured bytes returned.
+    func waitForEOF(afterExitGrace grace: TimeInterval = 5.0) async throws -> Data {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            lock.lock()
+            switch state {
+            case .idle, .starting, .reading:
+                guard !waiterSet else { lock.unlock(); cont.resume(throwing: ProcessRunner.RunnerError.multipleWaiters); return }
+                waiterSet = true; continuation = cont; lock.unlock()
+                let deadline = DispatchTime.now() + .milliseconds(Int(grace * 1000))
+                DispatchQueue.global().asyncAfter(deadline: deadline) { [weak self] in
+                    self?.completeGrace()
+                }
+            case .completed(let d): lock.unlock(); cont.resume(returning: d)
+            case .failed(let err): lock.unlock(); cont.resume(throwing: err)
+            case .cancelled: lock.unlock(); cont.resume(throwing: ProcessRunner.RunnerError.pipeReadFailed)
+            }
+        }
+    }
+
+    /// Grace-drain completion: snapshot the captured bytes, cancel the read
+    /// source (closing the read fd), and resume the waiter.
+    private func completeGrace() {
+        lock.lock()
+        guard case .reading = state else { lock.unlock(); return }
+        let data = storage
+        state = .completed(data)
+        let src = source; source = nil
+        let c = continuation; continuation = nil
+        lock.unlock()
+        src?.cancel()
+        c?.resume(returning: data)
+    }
+
     private func resumeWaiter(throwing error: ProcessRunner.RunnerError) {
         let c: CheckedContinuation<Data, Error>? = lock.withLock { let c = continuation; continuation = nil; return c }
         c?.resume(throwing: error)

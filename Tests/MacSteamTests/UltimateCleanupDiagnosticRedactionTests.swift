@@ -95,6 +95,12 @@ final class RedactionFakeGameSessionSupervisor: GameSessionSupervising {
 
     var censusResult: ProcessCensusResult = .incomplete(.noLedger)
     func processCensus() async -> ProcessCensusResult { censusResult }
+
+    var ownedWindowOwnerPIDs: Set<Int32>?
+    func ownedSteamWindowOwnerPIDs() async -> Set<Int32>? { ownedWindowOwnerPIDs }
+
+    var diagnostics: (stdout: String, stderr: String) = ("", "")
+    func steamProcessDiagnostics() async -> (stdout: String, stderr: String) { diagnostics }
 }
 
 final class RedactionFakeInstallerLifecycleSupervisor: @unchecked Sendable, InstallerLifecycleSupervising {
