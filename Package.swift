@@ -9,13 +9,29 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "MacsTeam", targets: ["MacSteam"])
+        .executable(name: "MacsTeam", targets: ["MacSteam"]),
+        .executable(name: "macsteamctl", targets: ["MacsTeamControlPlaneCLI"])
     ],
     dependencies: [],
     targets: [
         .target(
             name: "MacsTeamNavigationCore",
             path: "Sources/MacsTeamNavigationCore",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .target(
+            name: "MacsTeamControlPlane",
+            path: "Sources/MacsTeamControlPlane",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .executableTarget(
+            name: "MacsTeamControlPlaneCLI",
+            dependencies: ["MacsTeamControlPlane"],
+            path: "Sources/MacsTeamControlPlaneCLI",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
@@ -30,7 +46,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "MacSteam",
-            dependencies: ["MacsTeamNavigationCore"],
+            dependencies: ["MacsTeamNavigationCore", "MacsTeamControlPlane"],
             path: "Sources/MacSteam",
             resources: [
                 .copy("Resources/Recipes")

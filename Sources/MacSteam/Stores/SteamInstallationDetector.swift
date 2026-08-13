@@ -24,6 +24,15 @@ final class SteamInstallationDetector: @unchecked Sendable {
         let installState: GameInstallState
         let canonicalInstallPresent: Bool
         let downloadPayloadPresent: Bool
+        /// CLOVERPIT-WINDOWS-INSTALL1 §1: evidence found in a non-canonical
+        /// location (SteamCMD staging area). Diagnosed only — never the install
+        /// authority and never readiness.
+        let noncanonicalPayloadPresent: Bool
+        /// CLOVERPIT-WINDOWS-INSTALL1 §7: byte progress read from the canonical
+        /// manifest (`BytesDownloaded` / `BytesToDownload`). Nil when the
+        /// manifest does not report a value.
+        let bytesDownloaded: Int64?
+        let bytesTotal: Int64?
 
         static var empty: GameInstallEvidence {
             GameInstallEvidence(
@@ -34,9 +43,12 @@ final class SteamInstallationDetector: @unchecked Sendable {
                 executablePresent: false,
                 executableName: nil,
                 stateFlags: nil,
-                installState: .notFound,
+                installState: .notInstalled,
                 canonicalInstallPresent: false,
-                downloadPayloadPresent: false
+                downloadPayloadPresent: false,
+                noncanonicalPayloadPresent: false,
+                bytesDownloaded: nil,
+                bytesTotal: nil
             )
         }
     }
@@ -79,10 +91,9 @@ final class SteamInstallationDetector: @unchecked Sendable {
             return tier2Result
         }
 
-        // Phase 4: Tier 3 — SteamCMD diagnostic only
-        let tier3Result = inspectSteamCMD(prefix: prefix, manifestName: manifestName, recipe: recipe)
-
-        // If Tier 1 manifest exists but install is incomplete → inconsistent
+        // Phase 4: Tier 1 manifest exists but install is incomplete → the
+        // canonical Windows Steam library has accepted the install but not yet
+        // delivered a resolvable install directory (CLOVERPIT-WINDOWS-INSTALL1 §1).
         if tier1Result.manifestPresent && !tier1Result.installDirectoryResolved {
             return GameInstallEvidence(
                 manifestPresent: true,
@@ -92,14 +103,20 @@ final class SteamInstallationDetector: @unchecked Sendable {
                 executablePresent: false,
                 executableName: nil,
                 stateFlags: tier1Result.stateFlags,
-                installState: .inconsistent,
+                installState: .installRequested,
                 canonicalInstallPresent: false,
-                downloadPayloadPresent: tier2Result.downloadPayloadPresent
+                downloadPayloadPresent: tier2Result.downloadPayloadPresent,
+                noncanonicalPayloadPresent: false,
+                bytesDownloaded: tier1Result.bytesDownloaded,
+                bytesTotal: tier1Result.bytesTotal
             )
         }
 
-        // Return the most advanced evidence found
-        if tier3Result.manifestPresent || tier3Result.downloadPayloadPresent {
+        // Phase 5: Tier 3 — SteamCMD diagnostic ONLY. A leftover SteamCMD
+        // staging area is a non-canonical payload: it must never be reported as
+        // staged/installing/ready nor count toward canonical install truth.
+        let tier3Result = inspectSteamCMD(prefix: prefix, manifestName: manifestName, recipe: recipe)
+        if tier3Result.noncanonicalPayloadPresent {
             return tier3Result
         }
 
@@ -122,13 +139,17 @@ final class SteamInstallationDetector: @unchecked Sendable {
                     manifestPresent: true, manifestAppID: nil, installdir: nil,
                     installDirectoryResolved: false, executablePresent: false,
                     executableName: nil, stateFlags: nil,
-                    installState: .manifestOnly,
-                    canonicalInstallPresent: false, downloadPayloadPresent: false
+                    installState: .blocked,
+                    canonicalInstallPresent: false, downloadPayloadPresent: false,
+                    noncanonicalPayloadPresent: false,
+                    bytesDownloaded: nil, bytesTotal: nil
                 )
             }
 
             let appID = extractAppID(from: content) ?? ""
             let stateFlags = extractStateFlags(from: content)
+            let bytesDownloaded = extractBytesDownloaded(from: content)
+            let bytesTotal = extractBytesTotal(from: content)
             let commonDir = steamapps.appendingPathComponent("common").appendingPathComponent(installdir)
 
             // Check for complete installation
@@ -153,11 +174,15 @@ final class SteamInstallationDetector: @unchecked Sendable {
                         stateFlags: stateFlags,
                         installState: .installed,
                         canonicalInstallPresent: true,
-                        downloadPayloadPresent: false
+                        downloadPayloadPresent: false,
+                        noncanonicalPayloadPresent: false,
+                        bytesDownloaded: bytesDownloaded,
+                        bytesTotal: bytesTotal
                     )
                 }
 
-                // Files present but incomplete → inconsistent
+                // Files present but incomplete → installing (canonical location,
+                // not yet complete; blocked only if nothing can advance).
                 return GameInstallEvidence(
                     manifestPresent: true,
                     manifestAppID: appID,
@@ -166,13 +191,16 @@ final class SteamInstallationDetector: @unchecked Sendable {
                     executablePresent: exeFound != nil,
                     executableName: exeName,
                     stateFlags: stateFlags,
-                    installState: .inconsistent,
+                    installState: .installing,
                     canonicalInstallPresent: false,
-                    downloadPayloadPresent: false
+                    downloadPayloadPresent: false,
+                    noncanonicalPayloadPresent: false,
+                    bytesDownloaded: bytesDownloaded,
+                    bytesTotal: bytesTotal
                 )
             }
 
-            // Manifest exists but no install dir → manifestOnly
+            // Manifest exists but no install dir → install accepted, not delivered.
             return GameInstallEvidence(
                 manifestPresent: true,
                 manifestAppID: appID,
@@ -181,9 +209,12 @@ final class SteamInstallationDetector: @unchecked Sendable {
                 executablePresent: false,
                 executableName: nil,
                 stateFlags: stateFlags,
-                installState: .manifestOnly,
+                installState: .installRequested,
                 canonicalInstallPresent: false,
-                downloadPayloadPresent: false
+                downloadPayloadPresent: false,
+                noncanonicalPayloadPresent: false,
+                bytesDownloaded: bytesDownloaded,
+                bytesTotal: bytesTotal
             )
         }
 
@@ -216,15 +247,23 @@ final class SteamInstallationDetector: @unchecked Sendable {
                 stateFlags: nil,
                 installState: .downloading,
                 canonicalInstallPresent: false,
-                downloadPayloadPresent: true
+                downloadPayloadPresent: true,
+                noncanonicalPayloadPresent: false,
+                bytesDownloaded: nil,
+                bytesTotal: nil
             )
         }
 
         return .empty
     }
 
-    // MARK: - Tier 3: SteamCMD (diagnostic only)
+    // MARK: - Tier 3: SteamCMD (diagnostic ONLY)
 
+    /// CLOVERPIT-WINDOWS-INSTALL1 §1/§12: a leftover SteamCMD staging area is a
+    /// non-canonical payload. It is diagnosed (flag surfaced to the terminal)
+    /// but NEVER projected as a canonical manifest, install directory,
+    /// executable, download payload, or readiness. Old staging/download hints
+    /// must never be interpreted as CloverPit installed/ready.
     private func inspectSteamCMD(prefix: PrefixLayout, manifestName: String, recipe: GameRecipe) -> GameInstallEvidence {
         let steamcmdSteamapps = prefix.driveC
             .appendingPathComponent("steamcmd")
@@ -235,51 +274,21 @@ final class SteamInstallationDetector: @unchecked Sendable {
             return .empty
         }
 
-        guard let content = try? String(contentsOf: manifestURL, encoding: .utf8),
-              let installdir = extractInstallDir(from: content) else {
-            return GameInstallEvidence(
-                manifestPresent: true, manifestAppID: nil, installdir: nil,
-                installDirectoryResolved: false, executablePresent: false,
-                executableName: nil, stateFlags: nil,
-                installState: .staged,
-                canonicalInstallPresent: false, downloadPayloadPresent: false
-            )
-        }
-
-        let appID = extractAppID(from: content) ?? ""
-        let stateFlags = extractStateFlags(from: content)
-
-        // Check downloading/<appid>/
-        let downloadingDir = steamcmdSteamapps
-            .appendingPathComponent("downloading")
-            .appendingPathComponent(recipe.store.appId)
-        var isDir: ObjCBool = false
-        let hasDownloading = fm.fileExists(atPath: downloadingDir.path, isDirectory: &isDir) && isDir.boolValue
-        let exeInDownloading: String? = hasDownloading ? recipe.detection.executableCandidates.first { candidate in
-            fm.fileExists(atPath: downloadingDir.appendingPathComponent(candidate).path)
-        } : nil
-
-        // Check common/<installdir>/
-        let commonDir = steamcmdSteamapps.appendingPathComponent("common").appendingPathComponent(installdir)
-        let hasCommon = fm.fileExists(atPath: commonDir.path, isDirectory: &isDir) && isDir.boolValue
-        let exeInCommon: String? = hasCommon ? recipe.detection.executableCandidates.first { candidate in
-            fm.fileExists(atPath: commonDir.appendingPathComponent(candidate).path)
-        } : nil
-
-        let installDirResolved = hasCommon || hasDownloading
-        let executablePresent = exeInCommon != nil || exeInDownloading != nil
-
+        // Diagnose the mere existence of the leftover staging area.
         return GameInstallEvidence(
-            manifestPresent: true,
-            manifestAppID: appID,
-            installdir: installdir,
-            installDirectoryResolved: installDirResolved,
-            executablePresent: executablePresent,
-            executableName: exeInCommon ?? exeInDownloading,
-            stateFlags: stateFlags,
-            installState: .staged,
+            manifestPresent: false,
+            manifestAppID: nil,
+            installdir: nil,
+            installDirectoryResolved: false,
+            executablePresent: false,
+            executableName: nil,
+            stateFlags: nil,
+            installState: .notInstalled,
             canonicalInstallPresent: false,
-            downloadPayloadPresent: exeInDownloading != nil
+            downloadPayloadPresent: false,
+            noncanonicalPayloadPresent: true,
+            bytesDownloaded: nil,
+            bytesTotal: nil
         )
     }
 
@@ -296,7 +305,7 @@ final class SteamInstallationDetector: @unchecked Sendable {
 
         return GameInspection(
             recipeID: recipe.id,
-            steamPresent: evidence.manifestPresent || evidence.downloadPayloadPresent,
+            steamPresent: evidence.manifestPresent || evidence.downloadPayloadPresent || evidence.noncanonicalPayloadPresent,
             isWindowsSteam: true,
             manifestPresent: evidence.manifestPresent,
             manifestAppID: evidence.manifestAppID,
@@ -308,7 +317,10 @@ final class SteamInstallationDetector: @unchecked Sendable {
             stateFlags: evidence.stateFlags,
             installState: evidence.installState,
             canonicalInstallPresent: evidence.canonicalInstallPresent,
-            downloadPayloadPresent: evidence.downloadPayloadPresent
+            downloadPayloadPresent: evidence.downloadPayloadPresent,
+            noncanonicalPayloadPresent: evidence.noncanonicalPayloadPresent,
+            bytesDownloaded: evidence.bytesDownloaded,
+            bytesTotal: evidence.bytesTotal
         )
     }
 
@@ -354,5 +366,30 @@ final class SteamInstallationDetector: @unchecked Sendable {
             return String(manifest[swiftRange])
         }
         return nil
+    }
+
+    /// CLOVERPIT-WINDOWS-INSTALL1 §7: read `BytesDownloaded` (or
+    /// `BytesToDownload`-style keys) from the manifest.
+    private func extractByteValue(from manifest: String, key: String) -> Int64? {
+        let escaped = NSRegularExpression.escapedPattern(for: key)
+        let pattern = #""\#(escaped)"\s+"(\d+)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: manifest, range: NSRange(manifest.startIndex..., in: manifest)) else {
+            return nil
+        }
+        if let swiftRange = Range(match.range(at: 1), in: manifest) {
+            return Int64(manifest[swiftRange])
+        }
+        return nil
+    }
+
+    private func extractBytesDownloaded(from manifest: String) -> Int64? {
+        if let value = extractByteValue(from: manifest, key: "BytesDownloaded") { return value }
+        return extractByteValue(from: manifest, key: "BytesToDownload")
+    }
+
+    private func extractBytesTotal(from manifest: String) -> Int64? {
+        if let value = extractByteValue(from: manifest, key: "BytesToDownload") { return value }
+        return extractByteValue(from: manifest, key: "BytesToStage")
     }
 }

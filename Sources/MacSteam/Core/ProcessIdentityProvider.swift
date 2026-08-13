@@ -11,6 +11,19 @@ struct ProcessIdentitySnapshot: Sendable, Equatable {
     let canonicalExecutablePath: String
     let startTimeSeconds: UInt64
     let startTimeMicroseconds: UInt64
+
+    /// Ownership predicate: pid + process start time.
+    ///
+    /// A process may legitimately re-exec into another binary (e.g. a Wine
+    /// launcher exec'ing its real loader), which changes `canonicalExecutablePath`
+    /// while pid and start time stay constant. pid + start time uniquely identify
+    /// a process *instance*, so they are the correct ownership signal; the
+    /// executable path is retained for diagnostics only.
+    func owns(_ other: ProcessIdentitySnapshot) -> Bool {
+        pid == other.pid
+            && startTimeSeconds == other.startTimeSeconds
+            && startTimeMicroseconds == other.startTimeMicroseconds
+    }
 }
 
 protocol ProcessIdentityProviding: Sendable {

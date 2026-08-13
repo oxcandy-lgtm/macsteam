@@ -9,8 +9,19 @@ struct WindowInfo: Sendable, Equatable {
     var windowTitle: String?
     var layer: Int
     var alpha: Double
+    var boundsX: Double
+    var boundsY: Double
     var boundsWidth: Double
     var boundsHeight: Double
+    /// `kCGWindowIsOnscreen` from the WindowServer. Wine/Mac-driver windows
+    /// frequently report `false` even when genuinely placed on a visible
+    /// display, so placement is decided by `WindowMatcher.isOnDisplay`, which
+    /// falls back to real display-frame intersection.
+    var isOnscreen: Bool
+
+    var frame: CGRect {
+        CGRect(x: boundsX, y: boundsY, width: boundsWidth, height: boundsHeight)
+    }
 }
 
 extension WindowInfo {
@@ -26,6 +37,7 @@ extension WindowInfo {
             .precomposedStringWithCanonicalMapping ?? ""
         let windowTitle = (row[kCGWindowName as String] as? String)?
             .precomposedStringWithCanonicalMapping
+        let isOnscreen = (row[kCGWindowIsOnscreen as String] as? Bool) ?? false
 
         self.init(
             ownerPID: pid,
@@ -33,8 +45,11 @@ extension WindowInfo {
             windowTitle: windowTitle,
             layer: layer,
             alpha: alpha,
+            boundsX: rect.origin.x,
+            boundsY: rect.origin.y,
             boundsWidth: rect.width,
-            boundsHeight: rect.height
+            boundsHeight: rect.height,
+            isOnscreen: isOnscreen
         )
     }
 }
@@ -65,7 +80,8 @@ enum WindowTarget: Sendable, Equatable {
 enum WindowMatcher {
     static func isValidCandidate(_ info: WindowInfo, target: WindowTarget) -> Bool {
         guard isValidGeometry(info) else { return false }
-        return hasTargetIdentity(info, target: target)
+        guard hasTargetIdentity(info, target: target) else { return false }
+        return isOnDisplay(info)
     }
 
     static func isValidGeometry(_ info: WindowInfo) -> Bool {
@@ -75,6 +91,46 @@ enum WindowMatcher {
         guard info.boundsWidth > 0 else { return false }
         guard info.boundsHeight > 0 else { return false }
         return true
+    }
+
+    /// A window is on a visible display when the WindowServer flags it on
+    /// screen, OR when its real bounds intersect the frame of an active
+    /// display. Wine/Mac-driver windows (Steam under Wine) are placed on the
+    /// user's display but frequently report `kCGWindowIsOnscreen == false`, so
+    /// the WindowServer flag alone would keep a genuinely visible Steam window
+    /// stuck at "launching" forever. The frame-intersection fallback is
+    /// grounded in real geometry, not names.
+    static func isOnDisplay(_ info: WindowInfo) -> Bool {
+        if info.isOnscreen { return true }
+        guard info.boundsWidth > 0, info.boundsHeight > 0 else { return false }
+        let windowRect = info.frame
+        for displayRect in onScreenDisplayRects() {
+            let intersection = displayRect.intersection(windowRect)
+            if intersection.width > 0 && intersection.height > 0 {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// The union of active display frames in WindowServer coordinates
+    /// (top-left origin on the primary display). Bounded to a handful of
+    /// displays; falls back to the main display only.
+    private static func onScreenDisplayRects() -> [CGRect] {
+        var rects: [CGRect] = []
+        var displayCount: UInt32 = 0
+        var displays = [CGDirectDisplayID](repeating: 0, count: 16)
+        CGGetActiveDisplayList(16, &displays, &displayCount)
+        let count = min(Int(displayCount), displays.count)
+        for index in 0..<count {
+            let bounds = CGDisplayBounds(displays[index])
+            rects.append(CGRect(origin: bounds.origin, size: bounds.size))
+        }
+        if rects.isEmpty {
+            let main = CGDisplayBounds(CGMainDisplayID())
+            rects.append(CGRect(origin: main.origin, size: main.size))
+        }
+        return rects
     }
 
     static func hasTargetIdentity(_ info: WindowInfo, target: WindowTarget) -> Bool {
@@ -240,8 +296,14 @@ protocol WindowInfoProviding: Sendable {
 
 struct WindowServerProvider: WindowInfoProviding {
     func snapshot() throws -> [WindowInfo] {
+        // Enumerate EVERY window (not only `optionOnScreenOnly`): Wine/Mac-
+        // driver windows report `kCGWindowIsOnscreen == false` regardless of
+        // whether a human can see them. Whether a window is genuinely visible
+        // is decided per-window by `WindowMatcher.isOnDisplay` (WindowServer
+        // flag OR real display-frame intersection), so an owned Steam window
+        // on the user's display is never dropped at enumeration time.
         guard let raw = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
+            [.excludeDesktopElements],
             kCGNullWindowID
         ) as? [[String: Any]] else {
             throw WindowObserverError.snapshotFailed

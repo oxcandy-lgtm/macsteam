@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Foundation
+import MacsTeamControlPlane
 import MacsTeamNavigationCore
 
 /// Coordinates the full Ultimate U1 setup flow: runtime → prefix → Steam → CloverPit.
@@ -245,6 +246,11 @@ final class UltimateSetupCoordinator {
     var runtimeExactVersion: String?
     var runtimeArchitecture: String?
 
+    /// Discovered runtime candidates snapshot (bounded, for `runtime list`).
+    /// Refreshed by `inspectSystem()` / `selectRuntime(_:)` / `selectRuntime(id:)`;
+    /// never recomputed on the 250ms mirror tick.
+    private(set) var runtimeCandidatesSnapshot: [ControlPlaneRuntimeCandidate] = []
+
     // MARK: - Private
 
     private let recipe: GameRecipe
@@ -297,6 +303,12 @@ final class UltimateSetupCoordinator {
 
     @MainActor var currentPage: InstallerPage = .runtime
     @MainActor var lastNavigationResult: InstallerNavigationResult?
+
+    /// Control-plane navigation tracking: the intent and source page of the
+    /// last `send(_:)`. Captured at the top of every navigation dispatch so the
+    /// terminal transition record never invents a from/action.
+    @MainActor private(set) var lastNavigationIntent: InstallerNavigationIntent?
+    @MainActor private(set) var lastNavigationFromPage: InstallerPage?
 
     private var activeRuntime: (any CompatibilityRuntime)?
     var runtimeURL: URL?
@@ -796,6 +808,19 @@ final class UltimateSetupCoordinator {
             self.steamUIRenderProfile = .automatic
         }
 
+        // Read MACSTEAM_PREFIX_ROOT env var for a non-persistent prefix-root
+        // override. Used by deterministic runtime A/B to exercise a candidate
+        // Wine against a fresh disposable prefix instead of the canonical
+        // cloverpit prefix (never touched by an unproven runtime).
+        // Production (no env var) keeps the canonical prefix root.
+        let prefixRootEnv = ProcessInfo.processInfo.environment["MACSTEAM_PREFIX_ROOT"] ?? ""
+        let effectivePrefixManager: PrefixManager
+        if prefixRootEnv.isEmpty {
+            effectivePrefixManager = prefixManager
+        } else {
+            effectivePrefixManager = PrefixManager(prefixesRootOverride: URL(fileURLWithPath: prefixRootEnv))
+        }
+
         self.runtimeRegistry = RuntimeRegistry(commercialPolicy: .disabled)
         // Canonical CloverPit recipe authority (U1R18-R8): the runtime recipe is
         // the single source of truth; the bundled cloverpit.json is its
@@ -804,7 +829,7 @@ final class UltimateSetupCoordinator {
 
         self.sessionSupervisor = sessionSupervisor
         self.lifecycleInstaller = installerSupervisor
-        self.prefixManager = prefixManager
+        self.prefixManager = effectivePrefixManager
         self.localAcceptanceReceiptStore = receiptStore
         self.buildIdentity = BuildIdentity.current()
         self.launchClock = launchClock
@@ -823,6 +848,30 @@ final class UltimateSetupCoordinator {
         LaunchPlan(
             runtimeExecutable: wineURL,
             arguments: [steamURL.path] + renderArguments,
+            mode: .supervisedSession,
+            environment: environment,
+            workingDirectory: prefixURL
+        )
+    }
+
+    /// CLOVERPIT-WINDOWS-INSTALL1 §5: Windows Steam supports `steam://`
+    /// navigation URLs as command-line arguments. Appending
+    /// `steam://install/<appid>` instructs the LIVE client to queue the game
+    /// install (verified against the running client). Kept as a distinct plan
+    /// so the install intent is explicit and the detection stays the truth
+    /// authority.
+    func makeSteamInstallPlan(
+        wineURL: URL,
+        steamURL: URL,
+        prefixURL: URL,
+        environment: [String: String],
+        renderArguments: [String],
+        appID: String
+    ) -> LaunchPlan {
+        let installURL = "steam://install/\(appID)"
+        return LaunchPlan(
+            runtimeExecutable: wineURL,
+            arguments: [steamURL.path] + renderArguments + [installURL],
             mode: .supervisedSession,
             environment: environment,
             workingDirectory: prefixURL
@@ -877,6 +926,7 @@ final class UltimateSetupCoordinator {
         log("Runtime selection source: \(runtimeRegistry.preferredRuntimeID != nil ? "persisted" : "discovery")")
 
         let candidates = await runtimeRegistry.discover()
+        rememberCandidates(candidates)
 
         // Log discovered candidates
         for c in candidates {
@@ -896,12 +946,104 @@ final class UltimateSetupCoordinator {
             return
         }
 
-        // U1R18: Real-load preflight — prove the runtime executes a Windows
+        _ = await selectRuntimeCandidate(preferred)
+        generateInstallerID()
+    }
+
+    /// AI-CP-STEP2: explicit selection of a single runtime type (e.g.
+    /// `runtime select imported-wine`) over the production discovery +
+    /// selection path. Candidates are narrowed to the requested type, then the
+    /// existing registry ordering/selection rules apply. CrossOver fallback and
+    /// silent System Wine fallback are both forbidden — a missing candidate
+    /// returns false so the caller can report `runtime_imported_wine_not_found`.
+    ///
+    /// Returns true only when the requested runtime was actually selected
+    /// (`state == .runtimeReady`); a real-load/capability rejection or a
+    /// missing candidate returns false.
+    @discardableResult
+    func selectRuntime(_ type: RuntimeType) async -> Bool {
+        state = .inspecting
+        error = nil
+
+        log("Selecting runtime type: \(type.rawValue)")
+        let candidates = await runtimeRegistry.discover()
+        rememberCandidates(candidates)
+        let narrowed = candidates.filter { $0.runtimeType == type }
+        for c in narrowed {
+            log("  Candidate: \(c.displayName) type=\(c.runtimeType.rawValue) usable=\(c.inspection?.isUsable ?? false)")
+        }
+
+        guard let preferred = runtimeRegistry.selectExplicit(type, from: narrowed)
+        else {
+            state = .runtimeRequired
+            error = .runtimeNotFound
+            log("No \(type.rawValue) runtime found")
+            return false
+        }
+
+        let selected = await selectRuntimeCandidate(preferred)
+        generateInstallerID()
+        return selected
+    }
+
+    /// Exact-candidate runtime selection over the production discovery +
+    /// selection lane. Used by deterministic A/B: `macsteamctl runtime
+    /// select-id <safe-runtime-id>` picks ONE discovered candidate by its
+    /// stable safe ID (e.g. `imported-wine-WineHQStable11.app`) instead of the
+    /// type-first ordering in `selectRuntime(_:)`.
+    ///
+    /// Returns true only when the requested candidate was actually selected
+    /// (`state == .runtimeReady` after the shared real-load/capability lane).
+    @discardableResult
+func selectRuntime(id: String) async -> Bool {
+        state = .inspecting
+        error = nil
+
+        log("Selecting runtime by id: \(id)")
+        let candidates = await runtimeRegistry.discover()
+        rememberCandidates(candidates)
+        for c in candidates {
+            log("  Candidate: \(c.id) usable=\(c.inspection?.isUsable ?? false) v\(c.inspection?.version ?? "?")")
+        }
+
+        guard let match = candidates.first(where: {
+            $0.id == id && $0.inspection?.isUsable == true
+        }) else {
+            state = .runtimeRequired
+            error = .runtimeNotFound
+            log("No usable runtime candidate found for id: \(id)")
+            return false
+        }
+
+        let selected = await selectRuntimeCandidate(match)
+        generateInstallerID()
+        return selected
+    }
+
+    /// Cache discovered candidates into a bounded snapshot projection for the
+    /// control plane. Safe stable ID only — never an absolute path.
+    private func rememberCandidates(_ candidates: [RuntimeCandidate]) {
+        runtimeCandidatesSnapshot = candidates.map {
+            ControlPlaneRuntimeCandidate(
+                id: $0.id,
+                name: $0.displayName,
+                type: $0.runtimeType.rawValue,
+                version: $0.inspection?.version,
+                usable: $0.inspection?.isUsable ?? false
+            )
+        }
+    }
+
+    /// Shared production selection lane: real-load preflight → capability gate
+    /// → `selectCandidate`. Both `inspectSystem()` and explicit runtime
+    /// selection route through here so terminal and GUI share one authority.
+    @discardableResult
+    private func selectRuntimeCandidate(_ candidate: RuntimeCandidate) async -> Bool {        // U1R18: Real-load preflight — prove the runtime executes a Windows
         // command (and thus steam-client capability) BEFORE the capability gate.
-        if let url = preferred.url {
+        if let url = candidate.url {
             let wineURL = WineExecutableLayout.detect(from: url).wine
             let outcome = await performRealLoadPreflightOrFastPath(
-                runtimeURL: url, wineURL: wineURL, runtimeType: preferred.runtimeType.rawValue
+                runtimeURL: url, wineURL: wineURL, runtimeType: candidate.runtimeType.rawValue
             )
             if !outcome.result.isHealthy {
                 state = .runtimeInvalid
@@ -909,18 +1051,19 @@ final class UltimateSetupCoordinator {
                     "Wine real-load preflight failed (\(outcome.result.status.rawValue)): \(outcome.result.detail)"
                 )
                 log("Real-load preflight REJECTED runtime: \(outcome.result.status.rawValue)")
-                return
+                return false
             }
         }
 
-        selectCandidate(preferred)
-        log("Runtime selected: \(preferred.displayName) v\(preferred.inspection?.version ?? "?")")
-        log("Runtime type: \(preferred.runtimeType.rawValue)")
-        log("Runtime version: \(preferred.inspection?.version ?? "?")")
+        selectCandidate(candidate)
+        let selected = state == .runtimeReady
+        log("Runtime selected: \(candidate.displayName) v\(candidate.inspection?.version ?? "?")")
+        log("Runtime type: \(candidate.runtimeType.rawValue)")
+        log("Runtime version: \(candidate.inspection?.version ?? "?")")
         if let prefixID = prefixSafeID {
             log("Prefix safe ID: \(prefixID)")
         }
-        generateInstallerID()
+        return selected
     }
 
     /// Compute build SHA for freshness proof.
@@ -1449,6 +1592,12 @@ final class UltimateSetupCoordinator {
         !steamExePresent && signatureValid
     }
 
+    /// Wine prefix bootstrap (wineboot) can settle more slowly in-app than
+    /// under direct invocation. Bounded accommodation for Wine 11 prefixes:
+    /// keep this explicitly scoped to prefix creation — not the general
+    /// command timeout, and not a global runner default.
+    static let prefixBootstrapTimeout: TimeInterval = 300
+
     /// Step 2: Create the CloverPit Wine prefix.
     func createPrefix() async {
         guard !isCreatingPrefix else {
@@ -1568,7 +1717,10 @@ final class UltimateSetupCoordinator {
             if runtime is SystemWineRuntime {
                 winebootURL = runtimeURL.appendingPathComponent("wineboot")
             } else if runtime is ImportedWineRuntime {
-                winebootURL = runtimeURL.appendingPathComponent("bin/wineboot")
+                // Resolve via the detected layout (standard OR .app bundle) —
+                // never assume `<root>/bin/wineboot`.
+                let layout = WineExecutableLayout.detect(from: runtimeURL)
+                winebootURL = try layout.ensureWineboot()
             } else {
                 state = .runtimeInvalid
                 error = .runtimeInspectionFailed("Unknown runtime type")
@@ -1590,7 +1742,7 @@ final class UltimateSetupCoordinator {
                     "WINEDEBUG": "-all",
                 ],
                 workingDirectory: layout.root,
-                timeout: 120
+                timeout: Self.prefixBootstrapTimeout
             )
 
             log("wineboot exit code: \(result.exitCode)")
@@ -2060,6 +2212,122 @@ final class UltimateSetupCoordinator {
         }
     }
 
+    /// CLOVERPIT-WINDOWS-INSTALL1 §5: request the CloverPit install through the
+    /// LIVE Windows Steam client via `steam://install/<appid>`. The Windows
+    /// client performs the real download into the canonical prefix library — a
+    /// native-Mac shortcut is NEVER used. If Steam is already running, the URL
+    /// is still delivered to the running client (Steam handles `steam://`
+    /// links on the command line of a second invocation against the same
+    /// instance). Detection remains the install truth authority.
+    func installCloverPit() async {
+        guard !isLaunchingSteam else {
+            log("Steam launch already in progress, ignoring install request")
+            return
+        }
+        guard steamInstallLifecycle == .verifiedComplete else {
+            log("Steam installation incomplete (\(steamInstallLifecycle)), blocking CloverPit install")
+            error = .steamInstallationFailed(
+                "Steam installation is incomplete. Verify installation before installing CloverPit."
+            )
+            state = .steamInstallationPending
+            return
+        }
+
+        isLaunchingSteam = true
+        defer { isLaunchingSteam = false }
+        error = nil
+
+        await reconcileSteamClient()
+
+        switch steamClientState {
+        case .runningVisible, .runningHidden:
+            // Steam already running — deliver the install URL to the live client.
+            log("Steam already running — delivering steam://install/\(recipe.store.appId) to live client")
+        case .launching, .stopping:
+            log("Steam is launching/stopping, ignoring install request")
+            return
+        case .stopped, .stale, .recoveryRequired:
+            break // proceed to launch with the install URL
+        }
+
+        state = .launching
+
+        guard let runtime = activeRuntime,
+              let runtimeURL = runtimeURL,
+              let runtimeControl = runtime as? WineRuntimeControl
+        else {
+            error = .launchFailed("No runtime selected or runtime lacks WineRuntimeControl")
+            state = .steamReady
+            return
+        }
+
+        let layout = WineExecutableLayout.detect(from: runtimeURL)
+        let wineURL = layout.wine
+
+        guard let prefixRoot = prefixLayout?.root,
+              let steamExe = resolveSteamExecutable(in: prefixRoot) else {
+            error = .launchFailed("Steam not installed in prefix")
+            state = .steamInstallerRequired
+            return
+        }
+
+        log("Requesting CloverPit install via Windows Steam (appid \(recipe.store.appId))…")
+        steamClientState = .launching
+        beginSteamAttempt()
+        guard requireLaunchTransition(to: .startingSteam) == .admitted else {
+            failLaunchAttempt()
+            return
+        }
+
+        do {
+            do {
+                let healthy = try await ensureCurrentValidationDecisionBeforeLaunch()
+                if !healthy {
+                    failLaunchAttempt()
+                    return
+                }
+            } catch {
+                failLaunchAttempt()
+                return
+            }
+
+            let environment = buildWineEnvironment()
+            let prefixURL = prefixRoot
+
+            let plan = makeSteamInstallPlan(
+                wineURL: wineURL,
+                steamURL: steamExe,
+                prefixURL: prefixURL,
+                environment: environment,
+                renderArguments: steamUIRenderProfile.launchArguments,
+                appID: recipe.store.appId
+            )
+
+            guard requireLaunchTransition(to: .waitingForSteam) == .admitted else {
+                failLaunchAttempt()
+                return
+            }
+            let _ = try await sessionSupervisor.launch(
+                plan: plan,
+                runtimeControl: runtimeControl,
+                prefixRoot: prefixURL,
+                recipeID: "steam-setup",
+                runtimeID: runtimeSourceType ?? "unknown",
+                purpose: .steamSetup
+            )
+
+            log("Windows Steam session started with install URL for CloverPit (appid \(recipe.store.appId))")
+            steamClientState = .launching
+            state = .steamReady
+            observeSteamReadyBoundary()
+        } catch {
+            self.error = .launchFailed(error.localizedDescription)
+            steamClientState = .stopped
+            state = .steamReady
+            failLaunchAttempt()
+        }
+    }
+
     /// U1R18-R13-FIX1-FIX2 §4/§13/§14: bounded observer for the real Steam-ready
     /// boundary. Steam ready is only admitted when the supervisor reports
     /// `.runningVisible` (WindowServer evidence), never a manual assignment.
@@ -2195,7 +2463,7 @@ final class UltimateSetupCoordinator {
         if runtime is SystemWineRuntime {
             wineURL = runtimeURL.appendingPathComponent("wine")
         } else {
-            wineURL = runtimeURL.appendingPathComponent("bin/wine")
+            wineURL = WineExecutableLayout.detect(from: runtimeURL).wine
         }
 
         let steamExe1 = prefixLayout?.root.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe") ?? URL(fileURLWithPath: "/dev/null")
@@ -2472,6 +2740,11 @@ final class UltimateSetupCoordinator {
 
     /// Single navigation entry point for all UI pages.
     func send(_ intent: InstallerNavigationIntent) async {
+        // Control-plane telemetry: record the intent + source page exactly as
+        // the production authority sees them (never inferred later).
+        self.lastNavigationIntent = intent
+        self.lastNavigationFromPage = currentPage
+
         // coordinator.currentPage is the single authority — the reducer
         // adopts it before every intent so the two can never diverge.
         await navigationReducer.adopt(page: currentPage)
@@ -2573,6 +2846,451 @@ final class UltimateSetupCoordinator {
         completion[.cloverPit] = cloverPitInspection?.isReady == true
         completion[.diagnostics] = true
         return completion
+    }
+
+    // MARK: - Control-plane canonical actions
+
+    /// U1R18-R13-ACCEPTANCE4-STATE-MIRROR: single production authority for the
+    /// machine-readable action model consumed by BOTH the SwiftUI footer and the
+    /// terminal mirror. There is deliberately NO terminal-only shadow logic —
+    /// `enabled`/`target`/`disabled_reason` are pure projections of the same
+    /// `currentPage` + `computePageCompletion()` + `lastNavigationResult` state
+    /// the reducer validates against.
+    var canonicalControlPlaneActions: [String: ControlPlaneAction] {
+        let pages = InstallerPage.allCases
+        let index = pages.firstIndex(of: currentPage) ?? 0
+        let hasPrev = index > 0
+        let hasNext = index + 1 < pages.count
+        let completion = computePageCompletion()
+        let activeOp = hasActiveOperation
+        let cleanupRequired = isCleanupRequired
+
+        // BACK / NEXT derive from the same gates the reducer enforces:
+        // cleanup + active operation + page completion.
+        var actions: [String: ControlPlaneAction] = [:]
+
+        let backTarget = hasPrev ? pages[index - 1].rawValue : currentPage.rawValue
+        actions["back"] = ControlPlaneAction(
+            id: "back",
+            enabled: hasPrev && !cleanupRequired && !activeOp,
+            source: currentPage.rawValue,
+            target: backTarget,
+            disabled_reason: backDisabledReason(hasPrev: hasPrev, cleanup: cleanupRequired, active: activeOp)
+        )
+
+        let nextTarget = hasNext ? pages[index + 1].rawValue : currentPage.rawValue
+        let pageComplete = completion[currentPage] == true
+        actions["next"] = ControlPlaneAction(
+            id: "next",
+            enabled: hasNext && !cleanupRequired && !activeOp && pageComplete,
+            source: currentPage.rawValue,
+            target: nextTarget,
+            disabled_reason: nextDisabledReason(hasNext: hasNext, cleanup: cleanupRequired, active: activeOp, complete: pageComplete)
+        )
+
+        // RETRY: available exactly when an error is present on the current page.
+        actions["retry"] = ControlPlaneAction(
+            id: "retry",
+            enabled: error != nil,
+            source: currentPage.rawValue,
+            target: currentPage.rawValue,
+            disabled_reason: error == nil ? "No error to retry." : nil
+        )
+
+        // AI-CP-STEP2: explicit runtime-type selection on the runtime surface
+        // (feeds `macsteamctl runtime select imported-wine`). Reuses the same
+        // discovery + capability + real-load production path as inspectSystem.
+        let onRuntimeSurface = currentPage == .runtime
+        actions["runtime.select"] = ControlPlaneAction(
+            id: "runtime.select",
+            enabled: onRuntimeSurface && !activeOp && state != .inspecting,
+            source: "runtime",
+            target: "runtime",
+            disabled_reason: !onRuntimeSurface ? "Runtime surface is not active." : activeOp ? "An operation is in progress." : state == .inspecting ? "Runtime inspection is in progress." : nil
+        )
+
+        // Exact-candidate runtime selection feeds `macsteamctl runtime
+        // select-id <safe-runtime-id>` for deterministic A/B. Same gate as the
+        // type-based `runtime.select`.
+        actions["runtime.select_id"] = ControlPlaneAction(
+            id: "runtime.select_id",
+            enabled: onRuntimeSurface && !activeOp && state != .inspecting,
+            source: "runtime",
+            target: "runtime",
+            disabled_reason: !onRuntimeSurface ? "Runtime surface is not active." : activeOp ? "An operation is in progress." : state == .inspecting ? "Runtime inspection is in progress." : nil
+        )
+
+        // Prefix preparation: enabled on the environment surface while the
+        // canonical prefix is not yet bound and no creation is in flight.
+        let prefixReady = runtimeURL != nil && !canonicalPrefixEvidenceValid && !isCreatingPrefix
+        actions["prefix.prepare"] = ControlPlaneAction(
+            id: "prefix.prepare",
+            enabled: prefixReady,
+            source: "environment",
+            target: "environment",
+            disabled_reason: prefixDisabledReason(runtimeSelected: runtimeURL != nil, bound: canonicalPrefixEvidenceValid, creating: isCreatingPrefix)
+        )
+
+        // Steam installer selection + install on the steamInstaller surface.
+        let installerSelected = selectedInstaller != nil
+        let steamAlreadyComplete = steamInstallLifecycle == .verifiedComplete
+        let onInstallerSurface = currentPage == .steamInstaller
+        actions["steam.select_installer"] = ControlPlaneAction(
+            id: "steam.select_installer",
+            enabled: onInstallerSurface && !installerSelected && !steamAlreadyComplete,
+            source: "steamInstaller",
+            target: "steamInstaller",
+            disabled_reason: !onInstallerSurface ? "Steam installer surface is not active." : steamAlreadyComplete ? "Steam is already installed." : installerSelected ? "Installer already selected." : nil
+        )
+        actions["steam.install"] = ControlPlaneAction(
+            id: "steam.install",
+            enabled: onInstallerSurface && installerSelected && !steamAlreadyComplete && !activeOp,
+            source: "steamInstaller",
+            target: "steamInstaller",
+            disabled_reason: !onInstallerSurface ? "Steam installer surface is not active." : !installerSelected ? "Select a Steam installer first." : steamAlreadyComplete ? "Steam is already installed." : activeOp ? "An operation is in progress." : nil
+        )
+
+        // Steam client re-check + launch on the steamClient surface.
+        let onClientSurface = currentPage == .steamClient
+        let launchable = steamInstallEvidence.canLaunchSteam && !isLaunchingSteam
+        actions["steam.recheck"] = ControlPlaneAction(
+            id: "steam.recheck",
+            enabled: onClientSurface,
+            source: "steamClient",
+            target: "steamClient",
+            disabled_reason: onClientSurface ? nil : "Steam client surface is not active."
+        )
+        actions["steam.launch"] = ControlPlaneAction(
+            id: "steam.launch",
+            enabled: launchable && onClientSurface,
+            source: "steamClient",
+            target: "steamClient",
+            disabled_reason: onClientSurface ? (isLaunchingSteam ? "Steam launch is already in progress." : !steamInstallEvidence.canLaunchSteam ? "Steam is not ready to launch." : nil) : "Steam client surface is not active."
+        )
+
+        // Steam diagnose: read-only live capture of the on-screen error, Steam
+        // logs, and process output. Always available — it is pure observation.
+        actions["steam.diagnose"] = ControlPlaneAction(
+            id: "steam.diagnose",
+            enabled: true,
+            source: "steamClient",
+            target: "steamClient",
+            disabled_reason: nil
+        )
+
+        // CloverPit check + launch. cloverpit.check is a read-only file
+        // inspection (recheckCloverPit) that is also safe to run on the Steam
+        // Client surface while Steam finalizes a staged payload — the terminal
+        // polls it there instead of looping on the cloverPit surface.
+        let onCloverPitSurface = currentPage == .cloverPit
+        let onCloverPitOrSteamSurface = onCloverPitSurface || currentPage == .steamClient
+        let cloverReady = cloverPitInspection?.isReady == true
+        actions["cloverpit.check"] = ControlPlaneAction(
+            id: "cloverpit.check",
+            enabled: onCloverPitOrSteamSurface,
+            source: "cloverPit",
+            target: "cloverPit",
+            disabled_reason: onCloverPitOrSteamSurface ? nil : "CloverPit surface is not active."
+        )
+        actions["cloverpit.install"] = ControlPlaneAction(
+            id: "cloverpit.install",
+            enabled: onCloverPitSurface && !cloverReady && (steamInstallLifecycle == .verifiedComplete) && !activeOp,
+            source: "cloverPit",
+            target: "steamClient",
+            disabled_reason: !onCloverPitSurface ? "CloverPit surface is not active." : cloverReady ? "CloverPit is already installed." : (steamInstallLifecycle != .verifiedComplete) ? "Windows Steam is not installed yet." : activeOp ? "An operation is in progress." : nil
+        )
+        actions["cloverpit.launch"] = ControlPlaneAction(
+            id: "cloverpit.launch",
+            enabled: onCloverPitSurface && cloverReady && !activeOp,
+            source: "cloverPit",
+            target: "cloverPit",
+            disabled_reason: !onCloverPitSurface ? "CloverPit surface is not active." : !cloverReady ? "CloverPit is not ready to launch." : activeOp ? "An operation is in progress." : nil
+        )
+
+        // Session stop: enabled whenever a supervised session is running.
+        actions["session.stop"] = ControlPlaneAction(
+            id: "session.stop",
+            enabled: sessionSupervisorIsRunning,
+            source: "session",
+            target: "session",
+            disabled_reason: sessionSupervisorIsRunning ? nil : "No active session to stop."
+        )
+
+        return actions
+    }
+
+    private func backDisabledReason(hasPrev: Bool, cleanup: Bool, active: Bool) -> String? {
+        if cleanup { return "Cleanup is required before navigating back." }
+        if active { return "An operation is active; stop it first." }
+        if !hasPrev { return "Already on the first screen." }
+        return nil
+    }
+
+    private func nextDisabledReason(hasNext: Bool, cleanup: Bool, active: Bool, complete: Bool) -> String? {
+        if cleanup { return "Cleanup is required before navigating next." }
+        if active { return "An operation is active; stop it first." }
+        if !hasNext { return "Already on the last screen." }
+        if !complete { return "Current screen is not complete yet." }
+        return nil
+    }
+
+    private func prefixDisabledReason(runtimeSelected: Bool, bound: Bool, creating: Bool) -> String? {
+        if !runtimeSelected { return "Select a runtime first." }
+        if bound { return "Canonical prefix is already bound." }
+        if creating { return "Prefix creation is already in progress." }
+        return nil
+    }
+
+    // MARK: - Control-plane snapshot projection
+
+    /// U1R18-R13-ACCEPTANCE4-STATE-MIRROR: project the CURRENT production state
+    /// into a bounded, machine-readable snapshot. Pure read of coordinator
+    /// state; no process/WindowServer probing of its own (steam/cloverpit
+    /// flags are the production supervisor's already-observed state).
+    func controlPlaneSnapshot() async -> ControlPlaneSnapshot {
+        let installerOp = await lifecycleInstaller.snapshot()
+        let evidence = steamInstallEvidence
+        let session = activeSession
+        let supervisorState = sessionSupervisorState
+        let steamDiagnostics = await steamDiagnosticsProjection()
+
+        // Session-purpose split: Steam-owned sessions are `.steamSetup`;
+        // game sessions are `.game`. Visibility comes from the supervisor's
+        // WindowServer observer only (runningVisible), never guessed.
+        let steamSession = session?.purpose == .steamSetup
+        let steamRunning = steamSession
+            ? sessionSupervisorIsRunning
+            : (steamClientState == .runningVisible || steamClientState == .runningHidden)
+        let steamVisible = steamSession
+            ? supervisorState == .runningVisible
+            : steamClientState == .runningVisible
+        // U1R18 R1: the client-state label follows the same live observer the
+        // booleans above use, so `status` never reports launching while the
+        // WindowServer already shows the Steam window.
+        let steamClientLabel = steamSession
+            ? steamClientStateLabel(SteamClientState(sessionState: supervisorState))
+            : steamClientStateLabel(steamClientState)
+        let gamePurpose = session?.purpose == .game
+        let cloverRunning = gamePurpose && sessionSupervisorIsRunning
+        let cloverVisible = gamePurpose && supervisorState == .runningVisible
+        let inspection = cloverPitInspection
+
+        return ControlPlaneSnapshot(
+            schema_version: 1,
+            build_sha: buildIdentity.commitSHA,
+            screen: currentPage.rawValue,
+            setup_state: state.rawValue,
+            runtime: ControlPlaneRuntime(
+                type: runtimeSourceType ?? "unknown",
+                selected: runtimeURL != nil,
+                real_load_healthy: realLoadHealthy,
+                candidates: runtimeCandidatesSnapshot
+            ),
+            prefix: ControlPlanePrefix(
+                bound: canonicalPrefixEvidenceValid,
+                valid: prefixInspection?.isValid ?? false
+            ),
+            steam: ControlPlaneSteam(
+                exe_present: evidence.steamExePresent,
+                installed: steamInstallLifecycle == .verifiedComplete,
+                lifecycle: steamInstallLifecycle.rawValue,
+                running: steamRunning,
+                window_visible: steamVisible,
+                client_state: steamClientLabel,
+                visible_error: steamDiagnostics.visibleError,
+                observed_errors: steamDiagnostics.observedErrors,
+                stdout_tail: steamDiagnostics.stdoutTail,
+                stderr_tail: steamDiagnostics.stderrTail
+            ),
+            cloverpit: ControlPlaneCloverPit(
+                ready: inspection?.isReady ?? false,
+                running: cloverRunning,
+                window_visible: cloverVisible,
+                install_state: inspection?.installState.rawValue ?? "notInstalled",
+                manifest_present: inspection?.manifestPresent ?? false,
+                install_directory_resolved: inspection?.installDirectoryResolved ?? false,
+                executable_present: inspection?.executablePresent ?? false,
+                canonical_install_present: inspection?.canonicalInstallPresent ?? false,
+                download_payload_present: inspection?.downloadPayloadPresent ?? false,
+                noncanonical_payload_present: inspection?.noncanonicalPayloadPresent ?? false,
+                download_bytes_downloaded: inspection?.bytesDownloaded,
+                download_bytes_total: inspection?.bytesTotal
+            ),
+            session: ControlPlaneSession(
+                purpose: session?.purpose.rawValue ?? "none",
+                running: sessionSupervisorIsRunning,
+                window_visible: supervisorState == .runningVisible
+            ),
+            actions: canonicalControlPlaneActions,
+            installer: ControlPlaneInstaller(
+                session: installerID.isEmpty ? "none" : installerID,
+                phase: installerOp?.phase.rawValue ?? "idle",
+                active: installerOp?.phase.isActive ?? false,
+                message: latestInstallerMessage(),
+                last_error: installerOp?.lastError.map(Self.redactMessage)
+            ),
+            last_transition: controlPlaneTransition(),
+            last_error: controlPlaneError()
+        )
+    }
+
+    /// Bounded latest installer log line (single message, no full-log copy).
+    private func latestInstallerMessage() -> String? {
+        let lines = installerLog.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        guard let last = lines.last else { return nil }
+        return Self.redactMessage(String(last.prefix(200)))
+    }
+
+    // MARK: - Steam live diagnostics (STEP3-FIX2)
+
+    private struct SteamDiagnosticsProjection {
+        var visibleError: ControlPlaneVisibleError?
+        var observedErrors: [ControlPlaneSteamLogEntry]
+        var stdoutTail: String?
+        var stderrTail: String?
+    }
+
+    private var lastSteamDiagnosticsCapture: Date?
+    private var cachedSteamDiagnostics: SteamDiagnosticsProjection?
+
+    /// Throttled projection of live Steam error evidence for the snapshot.
+    /// Re-captures at most once every 2 seconds unless `force` is set (the
+    /// `steam.diagnose` action forces a fresh read).
+    private func steamDiagnosticsProjection(force: Bool = false) async -> SteamDiagnosticsProjection {
+        let now = Date()
+        if !force,
+            let cached = cachedSteamDiagnostics,
+            let last = lastSteamDiagnosticsCapture,
+            now.timeIntervalSince(last) < 2 {
+            return cached
+        }
+        let projection = await computeSteamDiagnostics(includeOCR: force)
+        cachedSteamDiagnostics = projection
+        lastSteamDiagnosticsCapture = now
+        return projection
+    }
+
+    /// Read the ACTUAL on-screen Steam error (Accessibility first, OCR in the
+    /// forced diagnose path) plus Steam's own generic logs and the supervised
+    /// process stdout/stderr. Ownership-bounded: only session-proven owned
+    /// PIDs are inspected. Permission deficits are reported, never masked.
+    private func computeSteamDiagnostics(includeOCR: Bool) async -> SteamDiagnosticsProjection {
+        let owned = await sessionSupervisor.ownedSteamWindowOwnerPIDs() ?? []
+        let pids = Array(owned)
+
+        var visibleError: ControlPlaneVisibleError?
+        if !pids.isEmpty {
+            let accessibility = SteamLiveDiagnostics.readAccessibility(ownerPIDs: pids)
+            if accessibility.permissionDenied {
+                visibleError = ControlPlaneVisibleError(
+                    present: false,
+                    permission_required: "accessibility"
+                )
+            } else if let title = accessibility.title {
+                visibleError = ControlPlaneVisibleError(
+                    present: true,
+                    source: "accessibility",
+                    title: SteamLiveDiagnostics.redact(title, maxLength: 200),
+                    message: accessibility.messages.first.map {
+                        SteamLiveDiagnostics.redact($0, maxLength: 200)
+                    }
+                )
+            } else if let message = accessibility.messages.first {
+                visibleError = ControlPlaneVisibleError(
+                    present: true,
+                    source: "accessibility",
+                    title: nil,
+                    message: SteamLiveDiagnostics.redact(message, maxLength: 200)
+                )
+            }
+
+            // OCR fallback: only when Accessibility produced no text, only in
+            // the forced diagnose path (Vision recognition is not per-tick).
+            if includeOCR, visibleError?.present != true {
+                let ocr = await SteamLiveDiagnostics.readOCR(ownerPIDs: pids)
+                if ocr.permissionDenied {
+                    visibleError = visibleError ?? ControlPlaneVisibleError(
+                        present: false,
+                        permission_required: "screen_recording"
+                    )
+                } else if let first = ocr.texts.first {
+                    visibleError = ControlPlaneVisibleError(
+                        present: true,
+                        source: "ocr",
+                        title: nil,
+                        message: SteamLiveDiagnostics.redact(first, maxLength: 200)
+                    )
+                }
+            }
+        }
+
+        let observedErrors = SteamLiveDiagnostics.scanSteamLogs(directory: steamLogsDirectory())
+        let outputs = await sessionSupervisor.steamProcessDiagnostics()
+        return SteamDiagnosticsProjection(
+            visibleError: visibleError,
+            observedErrors: observedErrors,
+            stdoutTail: outputs.stdout.isEmpty ? nil : SteamLiveDiagnostics.redact(
+                String(outputs.stdout.suffix(4000)), maxLength: 4000
+            ),
+            stderrTail: outputs.stderr.isEmpty ? nil : SteamLiveDiagnostics.redact(
+                String(outputs.stderr.suffix(4000)), maxLength: 4000
+            )
+        )
+    }
+
+    /// Detect Steam's own generic log directory in the canonical prefix.
+    private func steamLogsDirectory() -> URL? {
+        guard let prefix = prefixLayout?.root else { return nil }
+        let candidates = [
+            prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam/logs"),
+            prefix.appendingPathComponent("drive_c/Program Files/Steam/logs"),
+        ]
+        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+        return nil
+    }
+
+    /// `steam.diagnose`: force a fresh live capture so the next snapshot and
+    /// doctor report reflect what is actually on screen right now.
+    func refreshSteamDiagnostics() async {
+        _ = await steamDiagnosticsProjection(force: true)
+    }
+
+
+    /// The last navigation transition projected from the production record.
+    private func controlPlaneTransition() -> ControlPlaneTransition? {
+        guard let intent = lastNavigationIntent else { return nil }
+        return ControlPlaneTransition(
+            from: lastNavigationFromPage?.rawValue,
+            action: intent.rawValue,
+            to: currentPage.rawValue,
+            accepted: lastNavigationResult?.accepted ?? false
+        )
+    }
+
+    /// The current coordinator error, bounded + redacted (fail-closed: never
+    /// leaks raw error text, paths, or identity into the control plane).
+    private func controlPlaneError() -> ControlPlaneError? {
+        guard let error else { return nil }
+        return ControlPlaneError(
+            subsystem: "coordinator",
+            code: Self.errorCaseLabel(error),
+            message: Self.redactMessage(error.localizedDescription),
+            screen: currentPage.rawValue,
+            last_action: lastNavigationIntent?.rawValue
+        )
+    }
+
+    /// Bound length and redact path-like fragments. Shared by snapshot +
+    /// installer error so the control plane never carries absolute paths.
+    nonisolated private static func redactMessage(_ message: String) -> String {
+        let bounded = String(message.prefix(200))
+        return bounded.replacingOccurrences(
+            of: #"/[^\s/]+"#,
+            with: "<sanitized>",
+            options: .regularExpression
+        )
     }
 
     /// Stop Steam setup session for app termination.
@@ -2767,6 +3485,19 @@ final class UltimateSetupCoordinator {
         case .stopped: return "stopped"
         case .recoveryRequired: return "recoveryRequired"
         case .failed: return "failed"
+        }
+    }
+
+    /// Bounded Steam client-state label for the control-plane snapshot.
+    private func steamClientStateLabel(_ s: SteamClientState) -> String {
+        switch s {
+        case .stopped: return "stopped"
+        case .launching: return "launching"
+        case .runningVisible: return "runningVisible"
+        case .runningHidden: return "runningHidden"
+        case .stale: return "stale"
+        case .stopping: return "stopping"
+        case .recoveryRequired: return "recoveryRequired"
         }
     }
 

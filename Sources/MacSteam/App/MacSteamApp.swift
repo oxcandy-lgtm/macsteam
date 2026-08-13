@@ -2,15 +2,23 @@
 
 import SwiftUI
 
-/// Shared application context — single-owner for guard and coordinator.
+/// Shared application context — single-owner for guard, coordinator, and the
+/// control-plane mirror.
 @MainActor
 final class MacsTeamApplicationContext {
     let instanceGuard: AppInstanceGuard
     let coordinator: UltimateSetupCoordinator
+    let controlPlaneMirror: ControlPlaneMirror
 
     init(instanceGuard: AppInstanceGuard, coordinator: UltimateSetupCoordinator) {
         self.instanceGuard = instanceGuard
         self.coordinator = coordinator
+        // U1R18-R13-ACCEPTANCE4: the mirror is a production, always-on observer.
+        // Started here (single owner) so state.json/events.ndjson exist for any
+        // terminal client from app launch onward.
+        let mirror = ControlPlaneMirror(coordinator: coordinator)
+        self.controlPlaneMirror = mirror
+        mirror.start()
     }
 }
 
@@ -53,6 +61,10 @@ final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
     ) -> NSApplication.TerminateReply {
         guard let context else { return .terminateCancel }
 
+        // Stop the mirror loop first: the final persisted state.json/events
+        // must never be mutated after the termination transaction begins.
+        context.controlPlaneMirror.stop()
+
         // Exact-once: a second Dock-Quit while the first cleanup is in flight
         // is a true no-op — never spawn a second cleanup Task or reply twice.
         if terminationTransactionStarted { return .terminateLater }
@@ -61,8 +73,10 @@ final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             let result = await context.coordinator.stopAllForApplicationTermination()
             if result == .clean {
-                // Zero-residue proven only here: release the instance lock,
-                // then affirm the quit — release ALWAYS strictly precedes reply.
+                // Zero-residue proven only here: remove the heartbeat (graceful
+                // termination marker), release the instance lock, then affirm
+                // the quit — release ALWAYS strictly precedes reply.
+                context.controlPlaneMirror.removeHeartbeat()
                 context.instanceGuard.release()
                 sender.reply(toApplicationShouldTerminate: true)
         } else {
@@ -72,8 +86,11 @@ final class MacsTeamAppDelegate: NSObject, NSApplicationDelegate {
             // re-enters the full guard (fail-closed: missing context ->
             // .terminateCancel) and may drive a fresh cleanup transaction. The
             // lock is retained until a zero-residue proof is granted (no
-            // release, no reply(true) without COMPLETE_ZERO).
+            // release, no reply(true) without COMPLETE_ZERO). The mirror + command
+            // consumer + heartbeat resume so the terminal never sees a false
+            // `app_unresponsive` while the app survives the aborted quit.
             terminationTransactionStarted = false
+            context.controlPlaneMirror.start()
             sender.reply(toApplicationShouldTerminate: false)
         }
         }

@@ -30,8 +30,11 @@ private func cloverPitWindow(pid: Int32) -> WindowInfo {
         windowTitle: "CloverPit",
         layer: 0,
         alpha: 1.0,
+        boundsX: 0,
+        boundsY: 0,
         boundsWidth: 1280,
-        boundsHeight: 720
+        boundsHeight: 720,
+        isOnscreen: true
     )
 }
 

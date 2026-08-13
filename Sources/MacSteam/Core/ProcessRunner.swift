@@ -34,6 +34,11 @@ actor ProcessRunner {
     enum IdentityResolution { case owned(ProcessIdentitySnapshot); case quickExit(ProcessResult) }
     enum ChildCleanupOutcome { case exited; case deadline }
 
+    /// How long to keep draining captured output after the launched process has
+    /// exited. A daemonized descendant (e.g. Wine's `wineserver`) may hold the
+    /// pipe write-ends open after the parent exits, so EOF is never reached.
+    static let postExitDrainGrace: TimeInterval = 5.0
+
     private let identityProvider: any ProcessIdentityProviding
     private let signalSender: any ProcessSignalSending
 
@@ -114,8 +119,8 @@ actor ProcessRunner {
             }
             await termCtrl.cancelPending()
             if exit.cause == .cancellation { stdoutCapture?.cancel(); stderrCapture?.cancel(); throw RunnerError.cancelled }
-            let outData = try await stdoutCapture?.waitForEOF() ?? Data()
-            let errData = try await stderrCapture?.waitForEOF() ?? Data()
+            let outData = try await stdoutCapture?.waitForEOF(afterExitGrace: Self.postExitDrainGrace) ?? Data()
+            let errData = try await stderrCapture?.waitForEOF(afterExitGrace: Self.postExitDrainGrace) ?? Data()
             if case .timeout(let t) = exit.cause { throw RunnerError.timeoutReached(t) }
             if exit.event.signaled { throw RunnerError.processTerminated(signal: exit.event.exitCode) }
             return ProcessResult(exitCode: exit.event.exitCode, stdout: String(data: outData, encoding: .utf8) ?? "",
@@ -137,8 +142,8 @@ actor ProcessRunner {
         let exit = try await termCtrl.wait(until: nil)
         guard let t = exit else { captures.0?.cancel(); captures.1?.cancel(); throw RunnerError.ownershipLost }
         if t.event.signaled { captures.0?.cancel(); captures.1?.cancel(); throw RunnerError.processTerminated(signal: t.event.exitCode) }
-        let o = try await captures.0?.waitForEOF() ?? Data()
-        let e = try await captures.1?.waitForEOF() ?? Data()
+        let o = try await captures.0?.waitForEOF(afterExitGrace: Self.postExitDrainGrace) ?? Data()
+        let e = try await captures.1?.waitForEOF(afterExitGrace: Self.postExitDrainGrace) ?? Data()
         return .quickExit(ProcessResult(exitCode: t.event.exitCode, stdout: String(data: o, encoding: .utf8) ?? "",
                                         stderr: String(data: e, encoding: .utf8) ?? "", pid: pid))
     }
@@ -422,7 +427,7 @@ actor TermController {
         guard let identity = launchedIdentity else { fail(.ownershipLost); return }
         do {
             let current = try identityProvider.identity(forPID: pid)
-            guard current == identity else { fail(.ownershipLost); return }
+            guard current.owns(identity) else { fail(.ownershipLost); return }
         } catch { fail(.ownershipLost); return }
         guard signalSender.sendSignal(SIGTERM, to: pid) else { fail(.signalFailed(signal: SIGTERM)); return }
         let killWork = DispatchWorkItem { [weak self] in
@@ -438,7 +443,7 @@ actor TermController {
         guard let identity = launchedIdentity else { fail(.ownershipLost); return }
         do {
             let current = try identityProvider.identity(forPID: pid)
-            guard current == identity else { fail(.ownershipLost); return }
+            guard current.owns(identity) else { fail(.ownershipLost); return }
         } catch { fail(.ownershipLost); return }
         guard signalSender.sendSignal(SIGKILL, to: pid) else { fail(.signalFailed(signal: SIGKILL)); return }
     }
